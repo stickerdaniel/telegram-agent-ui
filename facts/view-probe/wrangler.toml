@@ -1,0 +1,14 @@
+# The view probe (worker.ts). Set the KV id and the two vars, then `wrangler secret put READ_KEY`
+# and `wrangler deploy` inside this folder.
+name = "telegram-agent-ui-view-probe"
+main = "worker.ts"
+compatibility_date = "2026-10-27"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "VIEWS"
+id = "REPLACE_WITH_KV_ID"
+
+[vars]
+BOT_ID = "REPLACE"
+ALLOWED_USER = "REPLACE"

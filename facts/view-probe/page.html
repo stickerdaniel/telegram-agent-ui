@@ -1,0 +1,27 @@
+<meta http-equiv="refresh" content="1; url=ORIGIN/hit?from=refresh">
+<link rel="stylesheet" href="ORIGIN/hit?from=css">
+<style>
+body { font: 16px/1.5 system-ui, -apple-system, sans-serif; margin: 16px; background: url(ORIGIN/hit?from=cssurl); }
+table { border-collapse: collapse; }
+td, th { border: 1px solid #888888; padding: 4px 8px; }
+</style>
+<p>page tab</p>
+<table>
+<tr><th>Attempt</th><th>Hit label</th></tr>
+<tr><td>inline script fetch</td><td>script</td></tr>
+<tr><td>same-origin image</td><td>img-same-origin</td></tr>
+<tr><td>meta refresh after 1 s</td><td>refresh</td></tr>
+<tr><td>stylesheet link</td><td>css</td></tr>
+<tr><td>CSS background</td><td>cssurl</td></tr>
+<tr><td>link tap</td><td>link</td></tr>
+<tr><td>form submit</td><td>form</td></tr>
+</table>
+<script>
+parent.postMessage('script-ran', '*');
+document.title = 'script ran';
+fetch('ORIGIN/hit?from=script');
+</script>
+<img src="ORIGIN/hit?from=img-same-origin" alt="same-origin image">
+<img src="https://example.com/x.png" alt="other-origin image">
+<p><a href="ORIGIN/hit?from=link">a link</a></p>
+<form action="ORIGIN/hit?from=form"><button>submit</button></form>
