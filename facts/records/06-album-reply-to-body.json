@@ -1,0 +1,507 @@
+{
+	"status": 200,
+	"body": {
+		"ok": true,
+		"result": [
+			{
+				"message_id": 633,
+				"from": {
+					"id": 222,
+					"is_bot": true,
+					"first_name": "x",
+					"username": "x"
+				},
+				"chat": {
+					"id": 111,
+					"first_name": "x",
+					"username": "x",
+					"type": "private"
+				},
+				"date": 1794908520,
+				"reply_to_message": {
+					"message_id": 632,
+					"from": {
+						"id": 222,
+						"is_bot": true,
+						"first_name": "x",
+						"username": "x"
+					},
+					"chat": {
+						"id": 111,
+						"first_name": "x",
+						"username": "x",
+						"type": "private"
+					},
+					"date": 1794908513,
+					"edit_date": 1794908514,
+					"rich_message": {
+						"blocks": [
+							{
+								"type": "paragraph",
+								"text": {
+									"type": "bold",
+									"text": "Probe: a question with 3 options"
+								}
+							},
+							{
+								"type": "table",
+								"cells": [
+									[
+										{
+											"text": "Branch",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Commits",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Checks",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "feat/views"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "4",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "pass",
+											"align": "left",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "fix/lock"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "1",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "fail",
+											"align": "left",
+											"valign": "middle"
+										}
+									]
+								],
+								"is_bordered": true,
+								"is_striped": true
+							},
+							{
+								"type": "details",
+								"summary": "Details",
+								"blocks": [
+									{
+										"type": "paragraph",
+										"text": "The second branch fails 1 of 212 tests."
+									}
+								]
+							},
+							{
+								"type": "paragraph",
+								"text": [
+									"Which way for ",
+									{
+										"type": "code",
+										"text": "fix/lock"
+									},
+									"?"
+								]
+							}
+						]
+					},
+					"reply_markup": {
+						"inline_keyboard": [
+							[
+								{
+									"text": "✓ Rebase",
+									"style": "primary",
+									"callback_data": "q:probe001:0"
+								}
+							],
+							[
+								{
+									"text": "Merge",
+									"callback_data": "q:probe001:1"
+								}
+							],
+							[
+								{
+									"text": "Close",
+									"style": "danger",
+									"callback_data": "q:probe001:2"
+								}
+							]
+						]
+					}
+				},
+				"media_group_id": "14359268162828234",
+				"photo": [
+					{
+						"file_id": "AgACAgIAAxUHavwhaClQ_ta_SKQh98ckV_BL0Z4AAokdaxtlOuFLr4pWDQcYSewBAAMCAANtAAM9BA",
+						"file_unique_id": "AQADiR1rG2U64Uty",
+						"file_size": 310,
+						"width": 64,
+						"height": 64
+					}
+				],
+				"caption": "first"
+			},
+			{
+				"message_id": 634,
+				"from": {
+					"id": 222,
+					"is_bot": true,
+					"first_name": "x",
+					"username": "x"
+				},
+				"chat": {
+					"id": 111,
+					"first_name": "x",
+					"username": "x",
+					"type": "private"
+				},
+				"date": 1794908520,
+				"reply_to_message": {
+					"message_id": 632,
+					"from": {
+						"id": 222,
+						"is_bot": true,
+						"first_name": "x",
+						"username": "x"
+					},
+					"chat": {
+						"id": 111,
+						"first_name": "x",
+						"username": "x",
+						"type": "private"
+					},
+					"date": 1794908513,
+					"edit_date": 1794908514,
+					"rich_message": {
+						"blocks": [
+							{
+								"type": "paragraph",
+								"text": {
+									"type": "bold",
+									"text": "Probe: a question with 3 options"
+								}
+							},
+							{
+								"type": "table",
+								"cells": [
+									[
+										{
+											"text": "Branch",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Commits",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Checks",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "feat/views"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "4",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "pass",
+											"align": "left",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "fix/lock"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "1",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "fail",
+											"align": "left",
+											"valign": "middle"
+										}
+									]
+								],
+								"is_bordered": true,
+								"is_striped": true
+							},
+							{
+								"type": "details",
+								"summary": "Details",
+								"blocks": [
+									{
+										"type": "paragraph",
+										"text": "The second branch fails 1 of 212 tests."
+									}
+								]
+							},
+							{
+								"type": "paragraph",
+								"text": [
+									"Which way for ",
+									{
+										"type": "code",
+										"text": "fix/lock"
+									},
+									"?"
+								]
+							}
+						]
+					},
+					"reply_markup": {
+						"inline_keyboard": [
+							[
+								{
+									"text": "✓ Rebase",
+									"style": "primary",
+									"callback_data": "q:probe001:0"
+								}
+							],
+							[
+								{
+									"text": "Merge",
+									"callback_data": "q:probe001:1"
+								}
+							],
+							[
+								{
+									"text": "Close",
+									"style": "danger",
+									"callback_data": "q:probe001:2"
+								}
+							]
+						]
+					}
+				},
+				"media_group_id": "14359268162828234",
+				"photo": [
+					{
+						"file_id": "AgACAgIAAxUHavwhaEamu17-petmgLbutJwsDQcAAoodaxtlOuFLZFtxRvbqhjYBAAMCAANtAAM9BA",
+						"file_unique_id": "AQADih1rG2U64Uty",
+						"file_size": 310,
+						"width": 64,
+						"height": 64
+					}
+				]
+			},
+			{
+				"message_id": 635,
+				"from": {
+					"id": 222,
+					"is_bot": true,
+					"first_name": "x",
+					"username": "x"
+				},
+				"chat": {
+					"id": 111,
+					"first_name": "x",
+					"username": "x",
+					"type": "private"
+				},
+				"date": 1794908520,
+				"reply_to_message": {
+					"message_id": 632,
+					"from": {
+						"id": 222,
+						"is_bot": true,
+						"first_name": "x",
+						"username": "x"
+					},
+					"chat": {
+						"id": 111,
+						"first_name": "x",
+						"username": "x",
+						"type": "private"
+					},
+					"date": 1794908513,
+					"edit_date": 1794908514,
+					"rich_message": {
+						"blocks": [
+							{
+								"type": "paragraph",
+								"text": {
+									"type": "bold",
+									"text": "Probe: a question with 3 options"
+								}
+							},
+							{
+								"type": "table",
+								"cells": [
+									[
+										{
+											"text": "Branch",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Commits",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										},
+										{
+											"text": "Checks",
+											"is_header": true,
+											"align": "center",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "feat/views"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "4",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "pass",
+											"align": "left",
+											"valign": "middle"
+										}
+									],
+									[
+										{
+											"text": {
+												"type": "code",
+												"text": "fix/lock"
+											},
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "1",
+											"align": "left",
+											"valign": "middle"
+										},
+										{
+											"text": "fail",
+											"align": "left",
+											"valign": "middle"
+										}
+									]
+								],
+								"is_bordered": true,
+								"is_striped": true
+							},
+							{
+								"type": "details",
+								"summary": "Details",
+								"blocks": [
+									{
+										"type": "paragraph",
+										"text": "The second branch fails 1 of 212 tests."
+									}
+								]
+							},
+							{
+								"type": "paragraph",
+								"text": [
+									"Which way for ",
+									{
+										"type": "code",
+										"text": "fix/lock"
+									},
+									"?"
+								]
+							}
+						]
+					},
+					"reply_markup": {
+						"inline_keyboard": [
+							[
+								{
+									"text": "✓ Rebase",
+									"style": "primary",
+									"callback_data": "q:probe001:0"
+								}
+							],
+							[
+								{
+									"text": "Merge",
+									"callback_data": "q:probe001:1"
+								}
+							],
+							[
+								{
+									"text": "Close",
+									"style": "danger",
+									"callback_data": "q:probe001:2"
+								}
+							]
+						]
+					}
+				},
+				"media_group_id": "14359268162828234",
+				"photo": [
+					{
+						"file_id": "AgACAgIAAxUHavwhaIOqw2ocObd-nyq6nKzVA88AAogdaxtlOuFLQjTH9Zo5Rx0BAAMCAANtAAM9BA",
+						"file_unique_id": "AQADiB1rG2U64Uty",
+						"file_size": 310,
+						"width": 64,
+						"height": 64
+					}
+				]
+			}
+		]
+	}
+}

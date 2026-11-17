@@ -1,0 +1,14 @@
+{
+	"first": {
+		"status": 409,
+		"body": {
+			"ok": false,
+			"error_code": 409,
+			"description": "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"
+		}
+	},
+	"second": {
+		"status": 200,
+		"ok": true
+	}
+}
