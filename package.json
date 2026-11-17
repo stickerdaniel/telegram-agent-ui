@@ -19,11 +19,29 @@
 			"types": "./dist/store/file.d.ts",
 			"default": "./dist/store/file.js"
 		},
+		"./telegram": {
+			"bun": "./src/telegram/index.ts",
+			"types": "./dist/telegram/index.d.ts",
+			"default": "./dist/telegram/index.js"
+		},
+		"./grammy": {
+			"bun": "./src/grammy/index.ts",
+			"types": "./dist/grammy/index.d.ts",
+			"default": "./dist/grammy/index.js"
+		},
+		"./commands": {
+			"bun": "./src/commands/index.ts",
+			"types": "./dist/commands/index.d.ts",
+			"default": "./dist/commands/index.js"
+		},
 		"./testing": {
 			"bun": "./src/testing/index.ts",
 			"types": "./dist/testing/index.d.ts",
 			"default": "./dist/testing/index.js"
 		}
+	},
+	"bin": {
+		"telegram-agent-ui": "./dist/cli/bin.js"
 	},
 	"files": ["dist", "src"],
 	"scripts": {
@@ -35,10 +53,19 @@
 	"dependencies": {
 		"@grammyjs/types": "5.0.0"
 	},
+	"peerDependencies": {
+		"grammy": "^1.46.0"
+	},
+	"peerDependenciesMeta": {
+		"grammy": {
+			"optional": true
+		}
+	},
 	"devDependencies": {
 		"@types/bun": "1.4.4",
 		"@types/node": "26.6.6",
 		"fast-check": "4.10.2",
+		"grammy": "1.46.0",
 		"typescript": "7.0.2"
 	}
 }

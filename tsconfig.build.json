@@ -11,5 +11,15 @@
 		"lib": ["ES2023", "DOM"],
 		"types": ["node"]
 	},
-	"include": ["src/index.ts", "src/store/memory.ts", "src/store/file.ts", "src/testing/index.ts"]
+	"include": [
+		"src/index.ts",
+		"src/store/memory.ts",
+		"src/store/file.ts",
+		"src/telegram/index.ts",
+		"src/grammy/index.ts",
+		"src/commands/index.ts",
+		"src/commands/supervise.ts",
+		"src/cli/bin.ts",
+		"src/testing/index.ts"
+	]
 }

@@ -50,6 +50,37 @@ await chat.flush(); // onAnswer gets { ref, seq, answer, by, meta, delivery: 'k7
 await chat.wait('k7q2m4xa', { seconds: 10 }); // { status: 'answered', answer: { kind: 'choice', index: 0, label: 'Yes', value: 'yes' }, ... }
 ```
 
-Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them and imports all 4 entries with `node`.
+Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them, imports all 7 entries with `node` and runs the bin.
+
+## CLI
+
+`init` pairs a bot from @BotFather with your private chat. It reads the token from `TELEGRAM_BOT_TOKEN` or stdin, prints a link that opens the bot with `/start <code>`, and writes `$XDG_CONFIG_HOME/telegram-agent-ui/config.json` and the token in `.env` beside it, mode 0600.
+
+```sh
+telegram-agent-ui init
+# Open https://t.me/my_agent_bot?start=k2m4xa7qp3re on your phone and tap Start.
+# {"bot":{"id":222,"username":"my_agent_bot"},"chat":111,"users":[111],...}
+```
+
+`init` refuses with `conflict` while a listener of the bot runs, and keeps an `apiUrl` of an earlier config.
+
+`listen` is the one process that polls Telegram. It holds a lease on the store, so a second `listen` exits 5. `--on-answer` runs a shell command with each answer as JSON on stdin, until it exits 0 within 30 s; `--on-message` gets each message that answers nothing, such as a reply to a choice question, with the question's `ref`. Both get each item at least once: an item whose command fails 5 times waits, and `info` lists it until the next `listen` starts. A supervisor process ends a command at its deadline and when the listener dies.
+
+```sh
+telegram-agent-ui listen --on-answer 'my-router' --meta-key session
+```
+
+`ask` sends a question and returns at once. `wait` returns the answer, or `pending` after 10 s.
+
+```sh
+telegram-agent-ui ask -o Merge -o Wait --meta '{"session":"s1"}' question.md
+# {"ref":"k7q2m4xa","status":"pending","next":"push"}
+telegram-agent-ui wait k7q2m4xa --seconds 50
+# {"status":"answered","answer":{"kind":"choice","index":0,"label":"Merge"},"by":{"id":111,"name":"Dana"},"listener":{"alive":true}}
+```
+
+A body comes from a file or from `-` for stdin. A file must lie below the working directory or a directory of `publishRoots` in the config; a file outside them, a link that leaves them, a secret such as `.env`, and a working directory that is `/` or the home directory are refused before anything is sent.
+
+Every command prints one JSON object on stdout and exits 0, or prints `{ error, code?, message, ref? }` and exits 1 (refused), 2 (usage), 3 (no listener), 4 (uncertain), 5 (listener stopped), 6 (no config or a rejected token) or 7 (no view host). `send`, `edit`, `close` and `info --json` complete the set. `TELEGRAM_AGENT_UI_API_URL` points every command at another Bot API server, and `TELEGRAM_AGENT_UI_FAKE=<dir>` records every call in `<dir>/calls.jsonl` instead of sending it. `telegram-agent-ui/commands` holds the command table, and `telegram-agent-ui/telegram` holds `fetchCall` and `listen` for a program of its own. A bot on grammY uses `telegram-agent-ui/grammy` instead: `grammyCall(bot.api)` as the transport and `bot.use(grammyHandler(chat))` in its own loop.
 
 `telegram-agent-ui/store/memory` holds `memoryStore`, a store in memory with a lock per key. `telegram-agent-ui/store/file` holds `fileStore(dir)`, one JSON file per key in a directory of mode 0700, for Node and Bun on macOS and Linux, with a lock that several processes share. `telegram-agent-ui/testing` holds `fakeCall`, a transport that records calls and answers from a script, and `faultyStore`, a store that fails one chosen call before or after it runs.

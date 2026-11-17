@@ -38,7 +38,7 @@ import {
 	type Warning,
 } from '../core/types.ts';
 import { DEADLINES, deadlineOf, messageIds, NO_ANSWER, paced, RETRY_WINDOW, replyingTo, START_WINDOW, sleep, within } from './calls.ts';
-import { LISTENER_KEY, listenerStatus } from './listener.ts';
+import { DELIVERY_ATTEMPTS, LISTENER_KEY, listenerStatus, readRenewed, renew, spent } from './listener.ts';
 
 /** What `onAnswer` receives: the answer as `handle` reported it, with `delivery: '<ref>:<seq>'` as its idempotency key. */
 export type Delivered = Extract<Handled, { kind: 'answered' }> & { delivery: string };
@@ -84,7 +84,9 @@ export type Chat = {
 type Refused = Extract<Outcome, { kind: 'refused' }>;
 
 /** After this many rejected deliveries an answer counts as undelivered until its seq rises or `flush({ restart: true })` renews it. */
-export const DELIVERY_ATTEMPTS = 5;
+export { DELIVERY_ATTEMPTS };
+/** The key of an answer's delivery and of its renewed baseline: `<ref>:<seq>`. */
+export const deliveryKey = (question: Pick<Question, 'ref' | 'seq'>) => `${question.ref}:${question.seq}`;
 /** `wait` in seconds: its default and its most. */
 export const WAIT_SECONDS = { default: 10, most: 50 } as const;
 const WAIT_POLL = 200;
@@ -94,9 +96,10 @@ const UPDATES = ['message', 'callback_query'] as const;
 const OK: CallClass = { kind: 'ok', result: null };
 const REF_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 
-const questionKey = (ref: string) => `q:${ref}`;
-const tombstoneKey = (ref: string) => `t:${ref}`;
-const indexKey = (at: { chat: number; message: number }) => `m:${at.chat}:${at.message}`;
+/** The store keys of 4.5: a question, the tombstone of a deleted one, and the reply index entry of a message. */
+export const questionKey = (ref: string) => `q:${ref}`;
+export const tombstoneKey = (ref: string) => `t:${ref}`;
+export const indexKey = (at: { chat: number; message: number }) => `m:${at.chat}:${at.message}`;
 
 const refused = (code: Refused['code'], reason: string): Refused => ({ kind: 'refused', code, reason });
 const sentOf = (question: Question): Sent | undefined => ('sent' in question ? question.sent : undefined);
@@ -622,24 +625,30 @@ export function createChat(io: ChatIO): Chat {
 		if (question.status !== 'answered' && question.status !== 'closed') return undefined;
 		const { ref, seq, answer, by, answeredAt, previous, meta } = question;
 		if (!answer || !by || answeredAt === undefined) return undefined;
-		return { kind: 'answered', ref, seq, answer, by, at: answeredAt, ...(previous ? { previous } : {}), ...(meta !== undefined ? { meta } : {}), delivery: `${ref}:${seq}` };
+		return { kind: 'answered', ref, seq, answer, by, at: answeredAt, ...(previous ? { previous } : {}), ...(meta !== undefined ? { meta } : {}), delivery: deliveryKey(question) };
 	}
 
-	// The attempts each delivery key had when a restart pass renewed it: from there it gets
-	// DELIVERY_ATTEMPTS more. Stored attempts keep counting, so `info` sees every rejection.
-	const renewed = new Map<string, number>();
-	function withinBudget(question: Question, restart: boolean): boolean {
-		const key = `${question.ref}:${question.seq}`;
-		const { attempts } = question.delivery;
-		if (restart && attempts - (renewed.get(key) ?? 0) >= DELIVERY_ATTEMPTS) renewed.set(key, attempts);
-		return attempts - (renewed.get(key) ?? 0) < DELIVERY_ATTEMPTS;
+	/**
+	 * The baselines of the delivery budgets, from the listener record, where `info` reads them too.
+	 * A restart pass first renews every owed answer whose budget is spent. Stored attempts keep
+	 * counting, so `info` sees every rejection.
+	 */
+	async function baselines(restart: boolean): Promise<Record<string, number>> {
+		if (!restart) return (await readRenewed(store)).answers;
+		const owed: { key: string; attempts: number }[] = [];
+		for (const key of await store.list('q:')) {
+			const question = parseQuestion(await store.get(key));
+			if (question && question.delivery.seq < question.seq) owed.push({ key: deliveryKey(question), attempts: question.delivery.attempts });
+		}
+		return (await renew(store, 'answers', owed)).answers;
 	}
 
 	/**
 	 * Under the question's lock: finishes the delete of a question whose tombstone exists, closes
-	 * it past expiresAt, writes its index entry, pays or rechecks its edit and names the answer it owes.
+	 * it past expiresAt, writes its index entry, pays or rechecks its edit and names the answer it
+	 * owes, unless its budget since `baseline` is spent.
 	 */
-	async function repair(ref: string, restart: boolean): Promise<Delivered | undefined> {
+	async function repair(ref: string, baseline: Record<string, number>): Promise<Delivered | undefined> {
 		if ((await store.get(tombstoneKey(ref))) !== undefined) {
 			// A refused send wrote the tombstone and failed before the delete.
 			await store.delete(questionKey(ref));
@@ -654,7 +663,8 @@ export function createChat(io: ChatIO): Chat {
 		}
 		await index(question);
 		question = await show(question, true);
-		return io.onAnswer && question.delivery.seq < question.seq && withinBudget(question, restart) ? delivered(question) : undefined;
+		const owed = question.delivery.seq < question.seq && !spent(question.delivery.attempts, baseline[deliveryKey(question)]);
+		return io.onAnswer && owed ? delivered(question) : undefined;
 	}
 
 	/** Calls `onAnswer` outside the lock, then applies `delivered` under it. */
@@ -677,9 +687,10 @@ export function createChat(io: ChatIO): Chat {
 	 */
 	async function pass(restart: boolean): Promise<unknown[]> {
 		const errors: unknown[] = [];
+		const baseline = io.onAnswer ? await baselines(restart) : {};
 		for (const key of await store.list('q:')) {
 			try {
-				const owed = await store.lock(key, () => repair(key.slice(2), restart));
+				const owed = await store.lock(key, () => repair(key.slice(2), baseline));
 				if (owed && io.onAnswer) await deliver(owed, io.onAnswer);
 			} catch (error) {
 				if (error instanceof TokenRefused) throw error;
