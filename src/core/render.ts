@@ -41,7 +41,7 @@ type Kind = 'photo' | 'video' | 'document';
 const PHOTO = /\.(png|jpe?g|webp)$/i;
 const VIDEO = /\.mp4$/i;
 /** `as`, else the ending of the path: png, jpg, jpeg and webp are photos, mp4 is a video, the rest are documents. */
-const kindOf = (file: Attachment): Kind => file.as ?? (PHOTO.test(file.path) ? 'photo' : VIDEO.test(file.path) ? 'video' : 'document');
+export const kindOf = (file: Attachment): Kind => file.as ?? (PHOTO.test(file.path) ? 'photo' : VIDEO.test(file.path) ? 'video' : 'document');
 
 const METHOD = { photo: 'sendPhoto', video: 'sendVideo', document: 'sendDocument' } as const;
 

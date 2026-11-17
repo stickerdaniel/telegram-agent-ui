@@ -51,8 +51,12 @@ export type Question = {
 	seq: number;
 	/** Keys of the last 32 applied inputs: `cq:<callback query id>` or `msg:<message id>`. */
 	applied: string[];
-	/** The message against the state: an edit is owed while `done < want`. */
-	shown: { want: number; done: number; failures: number; retryAt?: number; error?: string };
+	/**
+	 * The message against the state: an edit is owed while `done < want`. `recheckAt` is set by an
+	 * uncertain edit, which may still reach the server after a later one: from that time on the
+	 * message is edited once more to confirm it.
+	 */
+	shown: { want: number; done: number; failures: number; retryAt?: number; recheckAt?: number; error?: string };
 	/** The answer against the consumer: a delivery is owed while `seq < Question.seq`. */
 	delivery: { seq: number; attempts: number; error?: string };
 	/** Opaque JSON of the asker, returned with the answer. */
@@ -95,12 +99,61 @@ export type Step = { call: Call; role: 'body' | 'files' };
  */
 export type Warning = { code: 'no-question-mark' | 'table-candidate' | 'answer-hint' | 'unconfirmed-message' | 'not-shown'; message: string };
 
+/**
+ * What `createChat` returns for `send`, `edit` and `close`. `refused` means that no message was
+ * sent and no question exists. `partial` means that the body arrived and a files step did not:
+ * `sent` holds the body and every file whose answer arrived. `uncertain` means that a request
+ * may have arrived; a question then stays as the store holds it.
+ */
+export type Outcome =
+	| { kind: 'ok'; sent?: Sent; ref?: string; status?: 'pending' | 'answered' | 'closed'; warnings: Warning[] }
+	| { kind: 'dry'; steps: Step[]; warnings: Warning[] }
+	| { kind: 'partial'; sent: Sent; ref?: string; failed: { step: number; class: 'refused' | 'uncertain'; reason: string }; warnings: Warning[] }
+	| {
+			kind: 'refused';
+			code: 'shape' | 'guard' | 'unknown-ref' | 'ref-conflict' | 'closed' | 'origin' | 'chat' | 'no-listener' | 'busy' | 'server' | 'token' | 'outside-roots' | 'secret-file' | 'publish-root';
+			reason: string;
+	  }
+	| { kind: 'uncertain'; ref?: string; reason: string };
+
+/** A file that may leave the machine: opened once, checked on the open handle, read from it afterwards. */
+export type Publishable = { path: string; type: string; size: number; stream(): ReadableStream<Uint8Array>; bytes(): Promise<Uint8Array>; close(): Promise<void> };
+/** What a file reader returns for a list of paths: every file opened, or the refusal of the first that failed. */
+export type Readable = { kind: 'ok'; files: Publishable[] } | { kind: 'refused'; code: 'outside-roots' | 'secret-file' | 'publish-root' | 'shape'; reason: string };
+
+/** A view as the host stores it: 1 to 8 tabs, media referenced by index. */
+export type StoredView = { v: 1; title?: string; tabs: { label: string; content: StoredContent }[] };
+export type StoredContent = { markdown: string } | { diff: string } | { page: string } | { gallery: { media: number; type: string; caption?: string }[] };
+/** A view ready to publish: the stored view and its media bytes, in index order. */
+export type PreparedView = { view: StoredView; media: { type: string; bytes: Uint8Array }[] };
+/** A view host's answer that refuses a request, such as a wrong upload key or a limit. */
+export type HostRefusal = { kind: 'refused'; reason: string };
+
+/**
+ * The client of a view host. `createChat` uses `context` alone: it stores a question's body under
+ * the pair of view id and ref, so the view shows the question it was opened from.
+ */
+export type ViewClient = {
+	put(prepared: PreparedView, options?: { id?: string; ttlDays?: number }): Promise<{ kind: 'ok'; id: string; url: string; expiresAt: number } | HostRefusal | { kind: 'uncertain'; id: string; reason: string }>;
+	context(id: string, ref: string, body: Body): Promise<{ kind: 'ok' } | { kind: 'missing' } | HostRefusal>;
+	has(id: string): Promise<{ kind: 'present'; tabs: string[] } | { kind: 'missing' } | HostRefusal>;
+	delete(id: string): Promise<{ kind: 'ok' } | { kind: 'missing' } | HostRefusal>;
+};
+
 /** A spec or body that breaks a shape check of section 8. Every caller refuses it with code `shape`. */
 export class ShapeError extends Error {
 	override name = 'ShapeError';
 }
 
-/** A `Store.lock` that waited 10 s without getting the lock. */
+/**
+ * A call answered HTTP 401: the bot token is rejected. A method of `createChat` stores what it
+ * already decided and then rejects with it; the listener stops on it.
+ */
+export class TokenRefused extends Error {
+	override name = 'TokenRefused';
+}
+
+/** A `Store.lock` whose lock one holder kept for 10 s of its wait. */
 export class LockTimeout extends Error {
 	override name = 'LockTimeout';
 }
@@ -110,7 +163,7 @@ export type Store = {
 	set(key: string, value: unknown): Promise<void>;
 	delete(key: string): Promise<void>;
 	list(prefix: string): Promise<string[]>;
-	/** Runs `fn` while no other process or task holds the lock of `key`. A held lock never expires while `fn` runs. Rejects with LockTimeout after a 10 s wait. */
+	/** Runs `fn` while no other process or task holds the lock of `key`. A held lock never expires while `fn` runs. Rejects with LockTimeout when one holder kept the lock for 10 s of the wait; a lock that is free or changes hands restarts the count. */
 	lock<T>(key: string, fn: () => Promise<T>): Promise<T>;
 };
 

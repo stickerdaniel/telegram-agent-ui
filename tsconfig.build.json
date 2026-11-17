@@ -9,7 +9,7 @@
 		"outDir": "dist",
 		"rootDir": "src",
 		"lib": ["ES2023", "DOM"],
-		"types": []
+		"types": ["node"]
 	},
-	"include": ["src/index.ts", "src/store/memory.ts", "src/testing/index.ts"]
+	"include": ["src/index.ts", "src/store/memory.ts", "src/store/file.ts", "src/testing/index.ts"]
 }

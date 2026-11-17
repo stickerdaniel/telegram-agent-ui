@@ -14,6 +14,11 @@
 			"types": "./dist/store/memory.d.ts",
 			"default": "./dist/store/memory.js"
 		},
+		"./store/file": {
+			"bun": "./src/store/file.ts",
+			"types": "./dist/store/file.d.ts",
+			"default": "./dist/store/file.js"
+		},
 		"./testing": {
 			"bun": "./src/testing/index.ts",
 			"types": "./dist/testing/index.d.ts",
@@ -32,6 +37,7 @@
 	},
 	"devDependencies": {
 		"@types/bun": "1.4.4",
+		"@types/node": "26.6.6",
 		"fast-check": "4.10.2",
 		"typescript": "7.0.2"
 	}

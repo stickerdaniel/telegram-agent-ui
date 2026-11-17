@@ -54,7 +54,7 @@ export function isAnswer(value: unknown): value is Answer {
 export const isUser = (value: unknown): value is User => isRecord(value) && isInt(value.id) && optional(isString)(value.name);
 
 export const isShown = (value: unknown): value is Question['shown'] =>
-	isRecord(value) && isNat(value.want) && isNat(value.done) && isNat(value.failures) && optional(isNat)(value.retryAt) && optional(isString)(value.error);
+	isRecord(value) && isNat(value.want) && isNat(value.done) && isNat(value.failures) && optional(isNat)(value.retryAt) && optional(isNat)(value.recheckAt) && optional(isString)(value.error);
 
 export const isDelivery = (value: unknown): value is Question['delivery'] => isRecord(value) && isNat(value.seq) && isNat(value.attempts) && optional(isString)(value.error);
 

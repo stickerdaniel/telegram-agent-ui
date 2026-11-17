@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, jest, test } from 'bun:test';
 import { LockTimeout } from '../core/types.ts';
 import { memoryStore } from './memory.ts';
 
@@ -53,6 +53,33 @@ test('a waiter rejects with LockTimeout after lockWait, and the tasks behind it 
 	// Queued behind the waiter that gave up: it runs once the holder releases, 50 ms later.
 	await Promise.all([holder, store.lock('q:a', async () => trace.push('third'))]);
 	expect(trace).toEqual(['holder', 'third']);
+});
+
+/** `holders` tasks that each hold `q:a` for `holdMs`, one after another, and a waiter with lockWait 10 s behind them. */
+async function behindHolders(holders: number, holdMs: number): Promise<unknown> {
+	jest.useFakeTimers();
+	try {
+		const store = memoryStore();
+		const held = Array.from({ length: holders }, () => store.lock('q:a', () => new Promise<void>((resolve) => setTimeout(resolve, holdMs))));
+		const waiter = store.lock('q:a', async () => 'turn').catch((error: unknown) => error);
+		// Promise jobs run between the timer steps, so each holder takes the key as the one before it lets go.
+		for (let elapsed = 0; elapsed <= holders * holdMs + 1_000; elapsed += 100) {
+			jest.advanceTimersByTime(100);
+			for (let tick = 0; tick < 20; tick++) await Promise.resolve();
+		}
+		await Promise.allSettled(held);
+		return await waiter;
+	} finally {
+		jest.useRealTimers();
+	}
+}
+
+test('the wait counts per holder: three holders of 4 s each do not time out a waiter with a 10 s wait', async () => {
+	expect(await behindHolders(3, 4_000)).toBe('turn');
+});
+
+test('one holder that keeps the key for 11 s times out a waiter with a 10 s wait', async () => {
+	expect(await behindHolders(1, 11_000)).toBeInstanceOf(LockTimeout);
 });
 
 test('values are copied in and out', async () => {

@@ -61,5 +61,14 @@ export function storable(value: unknown, levels = JSON_LEVELS): boolean {
 	return walk(value, 1);
 }
 
+/** True when two JSON values are equal, whatever the order of their keys. */
+export function sameJson(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((item, index) => sameJson(item, b[index]));
+	if (!isRecord(a) || !isRecord(b)) return false;
+	const keys = Object.keys(a);
+	return keys.length === Object.keys(b).length && keys.every((key) => key in b && sameJson(a[key], b[key]));
+}
+
 /** `storable` as a type guard, for fields typed as Json. */
 export const isJson = (value: unknown): value is Json => storable(value);

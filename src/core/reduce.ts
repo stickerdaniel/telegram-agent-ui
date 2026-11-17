@@ -8,12 +8,14 @@ import { isBody, isCallClass, isSent, isSpec } from './guards.ts';
 import { checkLabels } from './labels.ts';
 import { bodyLike } from './render.ts';
 import { checkQuestionBody, checkSpec, metaIssue, sameForm } from './shape.ts';
-import { type Answer, type Body, type Call, defaultLabels, type Handled, type Labels, type Question, type QuestionEvent, type Sent, ShapeError, type User } from './types.ts';
+import { type Answer, type Body, type Call, type CallClass, defaultLabels, type Handled, type Labels, type Question, type QuestionEvent, type Sent, ShapeError, type User } from './types.ts';
 
 /** How many input keys a question keeps to find replays. */
 export const APPLIED_WINDOW = 32;
 /** How many edits without an answer turn into `shown.error`. */
 export const EDIT_FAILURES = 10;
+/** How long after an uncertain edit ended the message is edited once more: the edit may still reach the server after a later one. */
+export const RECHECK_DELAY = 60_000;
 
 // Callback data `q:<ref>:<n>`, with the ref pattern of shape.ts.
 const DATA = /^q:([A-Za-z0-9_-]{1,32}):(\d{1,2})$/;
@@ -178,9 +180,15 @@ function orphan(update: Update, labels: Labels): Result {
 	return update.callback_query ? stale(undefined, 'unknown', toast(update.callback_query, labels.unknown)) : ignored(undefined);
 }
 
+/**
+ * The answer to an edit of `want`. `now` is the time the edit ended: its answer or its deadline.
+ * An uncertain edit sets `recheckAt`, and a later success keeps it, since the uncertain edit may
+ * still reach the server after the later one.
+ */
 function shown(question: Question, event: Extract<QuestionEvent, { type: 'shown' }>, now: number): Question {
 	const { want, outcome } = event;
-	if (want > question.shown.want || want <= question.shown.done) return question;
+	if (want > question.shown.want) return question;
+	if (want <= question.shown.done) return recheck(question, want, outcome, now);
 	const { retryAt: _retryAt, error: _error, ...rest } = question.shown;
 	switch (outcome.kind) {
 		case 'ok':
@@ -193,8 +201,34 @@ function shown(question: Question, event: Extract<QuestionEvent, { type: 'shown'
 			return { ...question, shown: { ...question.shown, retryAt: outcome.at ?? now } };
 		case 'uncertain': {
 			const failures = question.shown.failures + 1;
-			if (failures < EDIT_FAILURES) return { ...question, shown: { ...question.shown, failures } };
-			return { ...question, shown: { ...rest, failures, done: want, error: `${EDIT_FAILURES} edits got no answer` } };
+			const recheckAt = now + RECHECK_DELAY;
+			if (failures < EDIT_FAILURES) return { ...question, shown: { ...question.shown, failures, recheckAt } };
+			return { ...question, shown: { ...rest, failures, done: want, recheckAt, error: `${EDIT_FAILURES} edits got no answer` } };
+		}
+	}
+}
+
+/**
+ * The answer to the edit that confirms a message already shown, sent once `recheckAt` has come.
+ * A success or "message is not modified" confirms the message: it clears `recheckAt`, the
+ * failures and the error. An uncertain answer counts as a failed edit, 10 of them set the error,
+ * and it moves `recheckAt`, so the recheck goes on.
+ */
+function recheck(question: Question, want: number, outcome: CallClass, now: number): Question {
+	const { recheckAt, retryAt: _retryAt, error: _error, ...rest } = question.shown;
+	if (recheckAt === undefined || want !== question.shown.want) return question;
+	switch (outcome.kind) {
+		case 'ok':
+		case 'unchanged':
+			return { ...question, shown: { ...rest, failures: 0 } };
+		case 'refused':
+			return outcome.code === 'token' ? question : { ...question, shown: { ...rest, error: outcome.reason } };
+		case 'retry':
+			return { ...question, shown: { ...question.shown, retryAt: outcome.at ?? now } };
+		case 'uncertain': {
+			const failures = question.shown.failures + 1;
+			const next = { ...question.shown, failures, recheckAt: now + RECHECK_DELAY };
+			return { ...question, shown: failures < EDIT_FAILURES ? next : { ...next, error: `${EDIT_FAILURES} edits got no answer` } };
 		}
 	}
 }

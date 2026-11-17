@@ -1,11 +1,13 @@
-// The pure core runs on any runtime with the Fetch API: its source imports only its own files
-// and the types of @grammyjs/types, and names no Node global.
+// The entry `.` runs on any runtime with the Fetch API: the core and createChat import only
+// their own files and the types of @grammyjs/types, and name no Node global.
 import { expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const root = join(import.meta.dir, '..');
-const sources = [...readdirSync(join(root, 'core')).map((name) => `core/${name}`), 'index.ts', 'store/memory.ts'].filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts'));
+const sources = [...readdirSync(join(root, 'core')).map((name) => `core/${name}`), 'chat/create.ts', 'chat/calls.ts', 'chat/listener.ts', 'index.ts', 'store/memory.ts'].filter(
+	(path) => path.endsWith('.ts') && !path.endsWith('.test.ts'),
+);
 
 /** Every module a source names, with whether the statement imports types only. */
 function imports(source: string): { specifier: string; typeOnly: boolean }[] {
@@ -44,8 +46,8 @@ test('the matcher finds every form of import', () => {
 	expect(imports(sample).filter(allowed).map((found) => found.specifier)).toEqual(['./a.ts', '@grammyjs/types']);
 });
 
-test('the core and memoryStore import nothing but their own files and grammY types', () => {
-	expect(sources.length).toBeGreaterThan(8);
+test('the core, createChat and memoryStore import nothing but their own files and grammY types', () => {
+	expect(sources.length).toBeGreaterThan(11);
 	for (const path of sources) {
 		const source = readFileSync(join(root, path), 'utf8');
 		expect(imports(source).filter((found) => !allowed(found)).map((found) => `${path}: ${found.specifier}`)).toEqual([]);

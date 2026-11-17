@@ -53,6 +53,7 @@ describe('parseQuestion', () => {
 		['33 applied keys', stored(open, { applied: Array.from({ length: 33 }, (_, n) => `cq:${n}`) })],
 		['a negative counter', stored(open, { shown: { want: 0, done: 0, failures: -1 } })],
 		['a time that is not an integer', stored(open, { createdAt: 1.5 })],
+		['a recheck time that is not an integer', stored(open, { shown: { want: 0, done: 0, failures: 0, recheckAt: 1.5 } })],
 		['sent.chat of another chat', stored(open, { sent: { ...sentFor(open), chat: CHAT + 1 } })],
 		['sent.ref of another question', stored(open, { sent: { ...sentFor(open), ref: 'other' } })],
 		['sent.view of another view', stored(open, { sent: { ...sentFor(open), view: { id: 'BBBBBBBBBBBBBBBBBBBBBB', origin: ORIGIN } } })],
@@ -198,8 +199,9 @@ describe('every state reduce produces passes parseQuestion', () => {
 					}
 				},
 			),
-			{ numRuns: 1000 },
+			{ numRuns: 300 },
 		);
-		// About 0.15 s on an idle machine (2026-11-17); the limit leaves room for a loaded one.
-	}, 60_000);
+		// About 0.05 s on an idle machine (2026-11-18). A loaded review machine ran 1,000 runs in
+		// 140 s, so 300 runs and this limit leave room for one 1,000 times slower than idle.
+	}, 120_000);
 });

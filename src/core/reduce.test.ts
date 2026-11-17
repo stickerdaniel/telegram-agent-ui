@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { asked, CHAT, input, MESSAGE, NOW, ORIGIN, plain, REF, reply, sentFor, states, step, tap, USER, VIEW } from '../fixtures.ts';
 import { choice, text } from './builders.ts';
-import { locate, reduce } from './reduce.ts';
+import { locate, RECHECK_DELAY, reduce } from './reduce.ts';
 import { renderEdit } from './render.ts';
 import { defaultLabels, type Handled, type Question, type QuestionEvent, ShapeError, type Update } from './types.ts';
 
@@ -293,8 +293,42 @@ describe('edit, close, shown and delivered', () => {
 		expect(step(answered, { type: 'shown', want, outcome: { kind: 'retry', at: NOW + 3000 } }).shown).toEqual({ ...answered.shown, retryAt: NOW + 3000 });
 		let uncertain = answered;
 		for (let n = 1; n < 10; n++) uncertain = step(uncertain, { type: 'shown', want, outcome: { kind: 'uncertain' } });
-		expect(uncertain.shown).toEqual({ want, done: answered.shown.done, failures: 9 });
-		expect(step(uncertain, { type: 'shown', want, outcome: { kind: 'uncertain' } }).shown).toEqual({ want, done: want, failures: 10, error: '10 edits got no answer' });
+		expect(uncertain.shown).toEqual({ want, done: answered.shown.done, failures: 9, recheckAt: NOW + RECHECK_DELAY });
+		expect(step(uncertain, { type: 'shown', want, outcome: { kind: 'uncertain' } }).shown).toEqual({ want, done: want, failures: 10, recheckAt: NOW + RECHECK_DELAY, error: '10 edits got no answer' });
+	});
+
+	test('an uncertain edit sets recheckAt, a later success keeps it, and the recheck clears it', () => {
+		const { answered } = states(choiceSpec);
+		const want = answered.shown.want;
+		const uncertain = step(answered, { type: 'shown', want, outcome: { kind: 'uncertain' } }, NOW + 30_000);
+		expect(uncertain.shown).toEqual({ want, done: want - 1, failures: 1, recheckAt: NOW + 30_000 + RECHECK_DELAY });
+		// A later edit of a newer state succeeds: the old one may still land, so recheckAt stays.
+		const edited = step(uncertain, { type: 'edit', body: { markdown: 'Rebase now?' } });
+		const confirmed = step(edited, { type: 'shown', want: want + 1, outcome: { kind: 'ok', result: true } });
+		expect(confirmed.shown).toEqual({ want: want + 1, done: want + 1, failures: 0, recheckAt: NOW + 30_000 + RECHECK_DELAY });
+		// The recheck is an edit of the current want after done reached it.
+		const later = NOW + 30_000 + RECHECK_DELAY;
+		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'uncertain' } }, later).shown.recheckAt).toBe(later + RECHECK_DELAY);
+		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'unchanged' } }, later).shown).toEqual({ want: want + 1, done: want + 1, failures: 0 });
+		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'ok', result: true } }, later).shown).toEqual({ want: want + 1, done: want + 1, failures: 0 });
+		// An answer for an older want changes nothing.
+		expect(step(confirmed, { type: 'shown', want, outcome: { kind: 'unchanged' } }, later)).toEqual(confirmed);
+	});
+
+	test('uncertain rechecks count as failed edits, 10 set the error, and a confirmed recheck resets both', () => {
+		const { answered } = states(choiceSpec);
+		const want = answered.shown.want;
+		let question = step(step(answered, { type: 'shown', want, outcome: { kind: 'uncertain' } }), { type: 'shown', want, outcome: { kind: 'ok', result: true } });
+		expect(question.shown).toEqual({ want, done: want, failures: 0, recheckAt: NOW + RECHECK_DELAY });
+		let at = NOW;
+		for (let n = 1; n <= 10; n++) {
+			at = question.shown.recheckAt ?? at;
+			question = step(question, { type: 'shown', want, outcome: { kind: 'uncertain' } }, at);
+			expect(question.shown).toMatchObject({ failures: n, recheckAt: at + RECHECK_DELAY });
+			expect(question.shown.error).toBe(n < 10 ? undefined : '10 edits got no answer');
+		}
+		at = question.shown.recheckAt ?? at;
+		expect(step(question, { type: 'shown', want, outcome: { kind: 'unchanged' } }, at).shown).toEqual({ want, done: want, failures: 0 });
 	});
 
 	test('delivered moves delivery.seq and counts rejected attempts', () => {
