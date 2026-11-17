@@ -31,6 +31,8 @@ Sent on 2026-11-17 as `sendRichMessage` with `rich_message.markdown`; the answer
 | `<b>x</b>` | a bold `x` |
 | `a \\ b` and `C:\dir\x` | `a \ b` and `C:\dir\x`: a doubled backslash reads as one, a single one before a letter stays |
 
+A Markdown body also accepts the Rich HTML tag `<tg-button>`: `<tg-button type="callback_data" data="q:other:1">x</tg-button>` came back as an inline `button` node with that callback data, and `<tg-button type="url" url="https://t.me">u</tg-button>` as one with that URL. So a Markdown or HTML body can carry its own buttons.
+
 ## Screens
 
 An agent takes every device screenshot itself: the desktop one from Telegram on the Mac, the iOS one on the connected iPhone, the Android one in an emulator. No person is asked for one.
