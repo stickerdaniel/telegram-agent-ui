@@ -16,11 +16,19 @@ Records of what Telegram does, taken before any package code. Each rule of the d
 | A caption of 1,025 characters | `08-caption-1025.json` | 400, "message caption is too long" |
 | An album with one image the server cannot read | first run, not kept | 400 for the whole request, `failed to send message #2 with the error message "IMAGE_PROCESS_FAILED"` |
 
+## Screens
+
+An agent takes every device screenshot itself: the desktop one from Telegram on the Mac, the iOS one on the connected iPhone, the Android one in an emulator. No person is asked for one.
+
+| Client | State | Result |
+| --- | --- | --- |
+| Telegram for macOS | `screens/desktop-macos.png` | The table draws with borders and a shaded second row, the details block folds, the 3 buttons take the styles `primary` and `danger`, and the album and the document both show the quoted body they reply to |
+| Telegram for iOS | open | The app is installed on the iPhone and signed out. Its first screen took no tap on 2026-11-17, and the account has no sign-in stored in the vault |
+| Telegram for Android | open | No emulator image exists on the Mac, and the app needs a signed-in account there too |
+
 ## Open
 
-These need a person with a phone, or a deployed view host.
-
-- Screenshots on iOS, Android and desktop: the rich message with its table, the question with 3 options, a view with a Markdown tab and a page tab.
+- The iOS and Android screens above.
 - A reply written by the human carries `reply_to_message.reply_markup`.
 - Launch data carries `signature`.
 - A page inside the view cannot read launch data, and a link or a refresh inside it loads nothing.
