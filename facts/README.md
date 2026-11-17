@@ -29,7 +29,7 @@ Sent on 2026-11-17 as `sendRichMessage` with `rich_message.markdown`; the answer
 | `&lt;/details&gt; and &amp;` | `</details> and &`: HTML entities escape them |
 | `a < b & c > d </details> end` | `a < b & c > d  end`: a raw `</details>` is dropped |
 | `<b>x</b>` | a bold `x` |
-| `a \\\\ b` and `C:\\dir\\x` | `a \\ b` and `C:\\dir\\x`: a doubled backslash reads as one, a single one before a letter stays |
+| `a \\ b` and `C:\dir\x` | `a \ b` and `C:\dir\x`: a doubled backslash reads as one, a single one before a letter stays |
 
 ## Screens
 
