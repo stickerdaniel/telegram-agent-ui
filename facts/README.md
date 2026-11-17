@@ -18,6 +18,18 @@ Records of what Telegram does, taken before any package code. Each rule of the d
 | A reply written by a person on iOS | `09-human-updates.json` | `reply_to_message` holds the question with its `reply_markup`, so the callback data of its buttons names the question |
 | An album with one image the server cannot read | first run, not kept | 400 for the whole request, `failed to send message #2 with the error message "IMAGE_PROCESS_FAILED"` |
 
+## Markdown escapes
+
+Sent on 2026-11-17 as `sendRichMessage` with `rich_message.markdown`; the answer's `rich_message.blocks` shows how the server read each string.
+
+| Input | Returned paragraph text |
+| --- | --- |
+| `\*not bold\* \_x\_ \`code\` \[a\]\(b\) \# h \| p \~ \!` | `*not bold* _x_ `code` [a](b) # h | p ~ !`: backslash escapes work for these |
+| `\</details\>` and `\&` | `\</details>` and `\&`: the backslash stays, so it is no escape for `<`, `>` and `&` |
+| `&lt;/details&gt; and &amp;` | `</details> and &`: HTML entities escape them |
+| `a < b & c > d </details> end` | `a < b & c > d  end`: a raw `</details>` is dropped |
+| `<b>x</b>` | a bold `x` |
+
 ## Screens
 
 An agent takes every device screenshot itself: the desktop one from Telegram on the Mac, the iOS one on the connected iPhone, the Android one in an emulator. No person is asked for one.
