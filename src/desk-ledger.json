@@ -1,0 +1,664 @@
+[
+	{
+		"type": "msg_pending",
+		"msg": 1038,
+		"parts": [
+			"<b>Reply draft</b>\n\n<blockquote>Placeholder reply.</blockquote>\n\nDoes the text fit?"
+		],
+		"answers": [
+			1813
+		],
+		"replyTo": 1813,
+		"keyboard": {
+			"inline_keyboard": [
+				[
+					{
+						"text": "Send",
+						"callback_data": "c:31lx:0"
+					}
+				]
+			]
+		},
+		"thread": "thread-placeholder",
+		"at": "2026-11-12T08:52:00.383Z"
+	},
+	{
+		"type": "msg_part_delivered",
+		"msg": 1038,
+		"part": 0,
+		"messageId": 1814,
+		"date": 1794473520,
+		"at": "2026-11-12T08:52:00.438Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 275633836,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899944869452246",
+			"data": "c:31lx:0",
+			"messageId": 1814
+		},
+		"at": "2026-11-12T08:55:48.788Z"
+	},
+	{
+		"type": "choice_received",
+		"updateId": 275633836,
+		"space": 1,
+		"choice": {
+			"update_id": 275633836,
+			"kind": "callback_choice",
+			"message_id": 1814,
+			"choice": 0,
+			"keyboard": "31lx",
+			"label": "Send",
+			"target": {
+				"kind": "msg",
+				"msg": 1038,
+				"part": 0,
+				"text": "<b>Reply draft</b>\n\n<blockquote>Placeholder reply.</blockquote>\n\nDoes the text fit?",
+				"thread": "thread-placeholder"
+			},
+			"reply_to": {
+				"message_id": 1813
+			},
+			"dedupe_key": "c:1:275633836"
+		},
+		"at": "2026-11-12T08:55:48.866Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 275633836,
+		"action": "refused",
+		"reason": "answer button",
+		"toast": "✓ Send",
+		"space": 1,
+		"at": "2026-11-12T08:55:48.870Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 1814,
+		"html": "<b>Decision 1 on question 1038. State: placeholder.</b>\n\n<blockquote expandable><b>Reply draft</b>\n\n<blockquote>Placeholder reply.</blockquote>\n\nDoes the text fit?</blockquote>",
+		"editDate": 1794473808,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"at": "2026-11-12T08:56:48.408Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 275633838,
+		"kind": "message",
+		"envelope": {
+			"update_id": 275633838,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 1823,
+			"date": 1794482620,
+			"text": "",
+			"links": [],
+			"media": "voice",
+			"files": [
+				{
+					"kind": "voice",
+					"file_id": "file-id-placeholder",
+					"file_unique_id": "unique-id-placeholder",
+					"mime_type": "audio/ogg",
+					"duration": 6,
+					"size": 26045,
+					"path": "/placeholder/voice.oga"
+				}
+			],
+			"reply_to": {
+				"message_id": 1814,
+				"text": "<b>Reply draft</b>\n\n<blockquote>Placeholder reply.</blockquo"
+			},
+			"answered": false,
+			"dedupe_key": "1823:0"
+		},
+		"at": "2026-11-12T11:23:41.120Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 1814,
+		"html": "<b>Decision 2 on question 1038. State: placeholder.</b>\n\n<blockquote expandable><b>Reply draft</b>\n\n<blockquote>Placeholder reply.</blockquote>\n\nDoes the text fit?</blockquote>",
+		"editDate": 1794482655,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"at": "2026-11-12T11:24:15.303Z"
+	},
+	{
+		"type": "msg_pending",
+		"msg": 1328,
+		"parts": [
+			"Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes this version fit?"
+		],
+		"answers": [],
+		"replyTo": 2400,
+		"thread": "thread-placeholder",
+		"at": "2026-11-14T09:24:18.465Z"
+	},
+	{
+		"type": "msg_part_delivered",
+		"msg": 1328,
+		"part": 0,
+		"messageId": 2409,
+		"date": 1794648258,
+		"at": "2026-11-14T09:24:18.753Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 275634110,
+		"kind": "message",
+		"envelope": {
+			"update_id": 275634110,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 2415,
+			"date": 1794649012,
+			"text": "Reply placeholder 2415",
+			"links": [],
+			"reply_to": {
+				"message_id": 2409,
+				"text": "Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes",
+				"msg": 1328,
+				"thread": "thread-placeholder"
+			},
+			"answered": false,
+			"dedupe_key": "2415:0"
+		},
+		"at": "2026-11-14T09:36:53.057Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 275634111,
+		"kind": "edited_message",
+		"envelope": {
+			"update_id": 275634111,
+			"kind": "edited_message",
+			"chat_id": 111,
+			"message_id": 2415,
+			"date": 1794649012,
+			"edit_date": 1794649017,
+			"text": "Reply placeholder 2415 edited",
+			"links": [],
+			"reply_to": {
+				"message_id": 2409,
+				"text": "Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes",
+				"msg": 1328,
+				"thread": "thread-placeholder"
+			},
+			"answered": false,
+			"dedupe_key": "2415:1794649017"
+		},
+		"at": "2026-11-14T09:36:58.427Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2409,
+		"html": "<b>Decision 1 on question 1328. State: placeholder.</b>\n\n<blockquote expandable>Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes this version fit?</blockquote>",
+		"editDate": 1794652462,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-14T10:34:22.834Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266488,
+		"kind": "message",
+		"envelope": {
+			"update_id": 221266488,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 2415,
+			"date": 1794649012,
+			"text": "Reply placeholder 2415",
+			"links": [],
+			"reply_to": {
+				"message_id": 2409,
+				"text": "Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes",
+				"msg": 1328,
+				"thread": "thread-placeholder"
+			},
+			"answered": true,
+			"dedupe_key": "2415:0"
+		},
+		"at": "2026-11-14T16:57:26.733Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266489,
+		"kind": "edited_message",
+		"envelope": {
+			"update_id": 221266489,
+			"kind": "edited_message",
+			"chat_id": 111,
+			"message_id": 2415,
+			"date": 1794649012,
+			"edit_date": 1794649017,
+			"text": "Reply placeholder 2415 edited",
+			"links": [],
+			"reply_to": {
+				"message_id": 2409,
+				"text": "Reply draft:\n\n<pre>Hi,\n\nplaceholder reply.\n\nBest</pre>\n\nDoes",
+				"msg": 1328,
+				"thread": "thread-placeholder"
+			},
+			"answered": true,
+			"dedupe_key": "2415:1794649017"
+		},
+		"at": "2026-11-14T16:57:26.739Z"
+	},
+	{
+		"type": "msg_pending",
+		"msg": 1382,
+		"parts": [
+			"<b>Three variants for a new level.</b>\nA opens the gap while dragging.\nB shows a line.\nC is A with a dashed line.\n\nWhich variant?"
+		],
+		"answers": [],
+		"keyboard": {
+			"inline_keyboard": [
+				[
+					{
+						"text": "A: Gap opens",
+						"callback_data": "c:eqbe:0"
+					}
+				],
+				[
+					{
+						"text": "B: Line with plus",
+						"callback_data": "c:eqbe:1"
+					}
+				],
+				[
+					{
+						"text": "C: All gaps",
+						"callback_data": "c:eqbe:2"
+					}
+				]
+			]
+		},
+		"thread": "thread-placeholder",
+		"view": "https://views.example.com/?v=UIDbZdFHAVxhNRS_1nBn9w",
+		"at": "2026-11-15T13:41:01.902Z"
+	},
+	{
+		"type": "msg_part_delivered",
+		"msg": 1382,
+		"part": 0,
+		"messageId": 2513,
+		"date": 1794750062,
+		"at": "2026-11-15T13:41:02.611Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266513,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899945803487409",
+			"data": "c:eqbe:0",
+			"messageId": 2513
+		},
+		"at": "2026-11-15T13:42:31.113Z"
+	},
+	{
+		"type": "choice_received",
+		"updateId": 221266513,
+		"space": 2,
+		"choice": {
+			"update_id": 221266513,
+			"kind": "callback_choice",
+			"message_id": 2513,
+			"choice": 0,
+			"keyboard": "eqbe",
+			"label": "A: Gap opens",
+			"target": {
+				"kind": "msg",
+				"msg": 1382,
+				"part": 0,
+				"text": "<b>Three variants for a new level.</b>\nA opens the gap while dragging.\nB shows a line.\nC is A with a dashed line.\n\nWhich variant?",
+				"thread": "thread-placeholder"
+			},
+			"dedupe_key": "c:2:221266513"
+		},
+		"at": "2026-11-15T13:42:31.292Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 221266513,
+		"action": "refused",
+		"reason": "answer button",
+		"toast": "✓ A: Gap opens",
+		"space": 2,
+		"at": "2026-11-15T13:42:31.296Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2513,
+		"html": "<b>Decision 1 on question 1382. State: placeholder.</b>\n\n<blockquote expandable><b>Three variants for a new level.</b>\nA opens the gap while dragging.\nB shows a line.\nC is A with a dashed line.\n\nWhich variant?</blockquote>",
+		"editDate": 1794750165,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-15T13:42:45.532Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266514,
+		"kind": "message",
+		"envelope": {
+			"update_id": 221266514,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 2514,
+			"date": 1794750306,
+			"text": "Reply placeholder 2514",
+			"links": [],
+			"reply_to": {
+				"message_id": 2513,
+				"text": "<b>Three variants for a new level.</b>\nA opens the gap while",
+				"msg": 1382,
+				"thread": "thread-placeholder"
+			},
+			"answered": false,
+			"dedupe_key": "2514:0"
+		},
+		"at": "2026-11-15T13:45:06.816Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2513,
+		"html": "Decision 2 on question 1382. State: placeholder.\n\n<blockquote expandable><b>Three variants for a new level.</b>\nA opens the gap while dragging.\nB shows a line.\nC is A with a dashed line.\n\nWhich variant?</blockquote>",
+		"editDate": 1794752680,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-15T14:24:40.705Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2513,
+		"html": "<b>Decision 3 on question 1382. State: placeholder.</b>\n\n<blockquote expandable><b>Three variants for a new level.</b>\nA opens the gap while dragging.\nB shows a line.\nC is A with a dashed line.\n\nWhich variant?</blockquote>",
+		"editDate": 1794796606,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T02:36:46.640Z"
+	},
+	{
+		"type": "msg_pending",
+		"msg": 1453,
+		"parts": [
+			"I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?"
+		],
+		"answers": [
+			2627
+		],
+		"replyTo": 2627,
+		"keyboard": {
+			"inline_keyboard": [
+				[
+					{
+						"text": "A3 for runs without context",
+						"callback_data": "c:h9k1:0"
+					}
+				],
+				[
+					{
+						"text": "B: Project documents",
+						"callback_data": "c:h9k1:1"
+					}
+				],
+				[
+					{
+						"text": "Change nothing",
+						"callback_data": "c:h9k1:2"
+					}
+				]
+			]
+		},
+		"thread": "thread-placeholder",
+		"at": "2026-11-16T06:29:30.844Z"
+	},
+	{
+		"type": "msg_part_delivered",
+		"msg": 1453,
+		"part": 0,
+		"messageId": 2643,
+		"date": 1794810571,
+		"at": "2026-11-16T06:29:31.647Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266590,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899944212141089",
+			"data": "c:h9k1:2",
+			"messageId": 2643
+		},
+		"at": "2026-11-16T06:41:58.758Z"
+	},
+	{
+		"type": "choice_received",
+		"updateId": 221266590,
+		"space": 2,
+		"choice": {
+			"update_id": 221266590,
+			"kind": "callback_choice",
+			"message_id": 2643,
+			"choice": 2,
+			"keyboard": "h9k1",
+			"label": "Change nothing",
+			"target": {
+				"kind": "msg",
+				"msg": 1453,
+				"part": 0,
+				"text": "I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?",
+				"thread": "thread-placeholder"
+			},
+			"reply_to": {
+				"message_id": 2627
+			},
+			"dedupe_key": "c:2:221266590"
+		},
+		"at": "2026-11-16T06:42:03.234Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 221266590,
+		"action": "refused",
+		"reason": "answer button",
+		"toast": "✓ Change nothing",
+		"space": 2,
+		"at": "2026-11-16T06:42:03.348Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266591,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899945477769593",
+			"data": "c:h9k1:0",
+			"messageId": 2643
+		},
+		"at": "2026-11-16T06:42:21.598Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266592,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899942496269711",
+			"data": "c:h9k1:0",
+			"messageId": 2643
+		},
+		"at": "2026-11-16T06:42:21.718Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 221266591,
+		"action": "refused",
+		"reason": "answer keyboard already tapped",
+		"toast": "Schon beantwortet: Change nothing",
+		"space": 2,
+		"at": "2026-11-16T06:42:36.958Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 221266592,
+		"action": "refused",
+		"reason": "answer keyboard already tapped",
+		"toast": "Schon beantwortet: Change nothing",
+		"space": 2,
+		"at": "2026-11-16T06:42:38.707Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 221266593,
+		"kind": "callback_query",
+		"callback": {
+			"id": "4333899942462402045",
+			"data": "c:h9k1:0",
+			"messageId": 2643
+		},
+		"at": "2026-11-16T06:43:31.920Z"
+	},
+	{
+		"type": "callback_decided",
+		"updateId": 221266593,
+		"action": "refused",
+		"reason": "answer keyboard already tapped",
+		"toast": "Schon beantwortet: Change nothing",
+		"space": 2,
+		"at": "2026-11-16T06:43:44.565Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2643,
+		"html": "Decision 1 on question 1453. State: placeholder.\n\n<blockquote expandable>I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?</blockquote>",
+		"editDate": 1794811565,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T06:46:05.127Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2643,
+		"html": "Decision 2 on question 1453. State: placeholder.\n\n<blockquote expandable>I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?</blockquote>",
+		"editDate": 1794813179,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T07:12:59.814Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2643,
+		"html": "Decision 3 on question 1453. State: placeholder.\n\n<blockquote expandable>I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?</blockquote>",
+		"editDate": 1794813226,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T07:13:46.728Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2643,
+		"html": "Decision 4 on question 1453. State: placeholder.\n\n<blockquote expandable>I recommend A3 for runs without context.\n<blockquote expandable>Placeholder measurements.</blockquote>\n\nWhich option?</blockquote>",
+		"editDate": 1794831815,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T12:23:35.415Z"
+	},
+	{
+		"type": "msg_pending",
+		"msg": 1522,
+		"parts": [
+			"Placeholder findings.\n\n<b>Recommendation</b>\n1. Placeholder step.\n\nShould I build it?"
+		],
+		"answers": [
+			2762
+		],
+		"replyTo": 2762,
+		"thread": "thread-placeholder",
+		"at": "2026-11-16T16:57:09.789Z"
+	},
+	{
+		"type": "msg_part_delivered",
+		"msg": 1522,
+		"part": 0,
+		"messageId": 2771,
+		"date": 1794848230,
+		"at": "2026-11-16T16:57:10.139Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 671715659,
+		"kind": "message",
+		"envelope": {
+			"update_id": 671715659,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 2772,
+			"date": 1794848439,
+			"text": "Reply placeholder 2772",
+			"links": [],
+			"reply_to": {
+				"message_id": 2771,
+				"text": "Placeholder findings.\n\n<b>Recommendation</b>\n1. Placeholder ",
+				"msg": 1522,
+				"thread": "thread-placeholder"
+			},
+			"answered": false,
+			"dedupe_key": "2772:0"
+		},
+		"at": "2026-11-16T17:00:39.518Z"
+	},
+	{
+		"type": "update_received",
+		"updateId": 671715660,
+		"kind": "message",
+		"envelope": {
+			"update_id": 671715660,
+			"kind": "message",
+			"chat_id": 111,
+			"message_id": 2774,
+			"date": 1794848550,
+			"text": "Reply placeholder 2774",
+			"links": [],
+			"reply_to": {
+				"message_id": 2771,
+				"text": "Placeholder findings.\n\n<b>Recommendation</b>\n1. Placeholder ",
+				"msg": 1522,
+				"thread": "thread-placeholder"
+			},
+			"answered": false,
+			"dedupe_key": "2774:0"
+		},
+		"at": "2026-11-16T17:02:30.399Z"
+	},
+	{
+		"type": "msg_edited",
+		"messageId": 2771,
+		"html": "Decision 1 on question 1522. State: placeholder.\n\n<blockquote expandable>Placeholder findings.\n\n<b>Recommendation</b>\n1. Placeholder step.\n\nShould I build it?</blockquote>\n\n<blockquote expandable>Placeholder findings.\n\n<b>Recommendation</b>\n1. Placeholder step.\n\nShould I build it?</blockquote>",
+		"editDate": 1794848676,
+		"keyboard": {
+			"inline_keyboard": []
+		},
+		"resolved": true,
+		"at": "2026-11-16T17:04:36.475Z"
+	}
+]

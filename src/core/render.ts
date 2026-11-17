@@ -1,0 +1,158 @@
+// `render` turns a spec into the Bot API calls that send it, and `renderEdit` builds the one
+// edit that makes a message show a new body or a question show its state. Both are pure: they
+// name file paths and open nothing.
+import type { InlineKeyboardButton } from '@grammyjs/types';
+import { checkLabels } from './labels.ts';
+import { checkSpec, messageBodyIssue, specWarnings } from './shape.ts';
+import { type AnswerSpec, type Attachment, type Body, type Call, defaultLabels, type Labels, type Question, type Sent, ShapeError, type Spec, type Step, type Warning } from './types.ts';
+
+/** The callback data of option `index` of question `ref`: at most 36 of Telegram's 64 bytes. */
+export const callbackData = (ref: string, index: number) => `q:${ref}:${index}`;
+
+/** The Web App URL of a view button: `v` the view, `q` the question whose context it shows, `t` the tab to open. */
+export function viewUrl(view: { id: string; origin: string }, ref?: string, tab?: string): string {
+	const url = new URL('/', view.origin);
+	url.searchParams.set('v', view.id);
+	if (ref !== undefined) url.searchParams.set('q', ref);
+	if (tab !== undefined) url.searchParams.set('t', tab);
+	return url.href;
+}
+
+/**
+ * The answer buttons of a choice. `picked` gets the mark, "✓ " before its label. With
+ * `onlyPicked`, the keyboard keeps the marked button alone, as a closed question shows it.
+ */
+function answerRows(ref: string, answer: AnswerSpec, picked: number | undefined, onlyPicked: boolean): InlineKeyboardButton[][] {
+	if (answer.type !== 'choice') return [];
+	const buttons = answer.options.flatMap((option, index): InlineKeyboardButton[] => {
+		if (onlyPicked && index !== picked) return [];
+		const text = index === picked ? `✓ ${option.label}` : option.label;
+		return [{ text, callback_data: callbackData(ref, index), ...(option.style ? { style: option.style } : {}) }];
+	});
+	if (buttons.length === 0) return [];
+	return answer.layout === 'row' ? [buttons] : buttons.map((button) => [button]);
+}
+
+const viewRow = (view: { id: string; origin: string }, labels: Labels, ref?: string, tab?: string): InlineKeyboardButton[] => [{ text: labels.view, web_app: { url: viewUrl(view, ref, tab) } }];
+
+const markup = (rows: InlineKeyboardButton[][]) => (rows.length > 0 ? { reply_markup: { inline_keyboard: rows } } : {});
+
+type Kind = 'photo' | 'video' | 'document';
+const PHOTO = /\.(png|jpe?g|webp)$/i;
+const VIDEO = /\.mp4$/i;
+/** `as`, else the ending of the path: png, jpg, jpeg and webp are photos, mp4 is a video, the rest are documents. */
+const kindOf = (file: Attachment): Kind => file.as ?? (PHOTO.test(file.path) ? 'photo' : VIDEO.test(file.path) ? 'video' : 'document');
+
+const METHOD = { photo: 'sendPhoto', video: 'sendVideo', document: 'sendDocument' } as const;
+
+/** One files call: a single file as its own method, 2 to 10 as one sendMediaGroup. */
+function filesCall(group: { file: Attachment; kind: Kind }[], base: Record<string, unknown>): Call {
+	const [only] = group;
+	if (group.length === 1 && only) {
+		const { file, kind } = only;
+		return {
+			method: METHOD[kind],
+			payload: { ...base, ...(file.caption !== undefined ? { caption: file.caption } : {}), ...(kind === 'video' ? { supports_streaming: true } : {}) },
+			files: [{ field: kind, path: file.path }],
+		};
+	}
+	const media = group.map(({ file, kind }, index) => ({
+		type: kind,
+		media: `attach://file${index}`,
+		...(file.caption !== undefined ? { caption: file.caption } : {}),
+		...(kind === 'video' ? { supports_streaming: true } : {}),
+	}));
+	return { method: 'sendMediaGroup', payload: { ...base, media }, files: group.map(({ file }, index) => ({ field: `file${index}`, path: file.path })) };
+}
+
+/**
+ * A spec to the Bot API calls that send it, in order. Throws ShapeError for the refusals of
+ * section 8. The first step sends the body with its answer buttons and view row. Each later
+ * step sends files: photos and videos first, documents second, a group of 2 or more as one
+ * album. A files step has no `reply_parameters`, since the body's message id exists only once
+ * the body step is answered: the runner sets `reply_parameters.message_id` to it.
+ *
+ *   const { steps, warnings } = render(choice({ markdown: 'Merge?' }, [{ label: 'Merge' }, { label: 'Wait' }]), { chat, ref: 'merge1' });
+ */
+export function render(spec: Spec, at: { chat: number; topic?: number; ref?: string; viewOrigin?: string; labels?: Labels }): { steps: Step[]; warnings: Warning[] } {
+	checkSpec(spec, at);
+	const labels = at.labels ? checkLabels(at.labels) : defaultLabels;
+	const base = { chat_id: at.chat, ...(at.topic !== undefined ? { message_thread_id: at.topic } : {}), ...(spec.silent ? { disable_notification: true } : {}) };
+	const rows = [
+		...(spec.answer && at.ref !== undefined ? answerRows(at.ref, spec.answer, undefined, false) : []),
+		...(spec.view !== undefined && at.viewOrigin !== undefined ? [viewRow({ id: spec.view, origin: at.viewOrigin }, labels, at.ref)] : []),
+	];
+	const steps: Step[] = [{ role: 'body', call: { method: 'sendRichMessage', payload: { ...base, rich_message: spec.body, ...markup(rows) } } }];
+	const files = (spec.attach ?? []).map((file) => ({ file, kind: kindOf(file) }));
+	for (const group of [files.filter(({ kind }) => kind !== 'document'), files.filter(({ kind }) => kind === 'document')]) {
+		if (group.length > 0) steps.push({ role: 'files', call: filesCall(group, base) });
+	}
+	return { steps, warnings: specWarnings(spec, labels) };
+}
+
+const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// sendRichMessage Markdown keeps a backslash before `<` and `&` and reads raw tags as HTML, so
+// those 3 characters become entities. Every other character that can start markup gets a
+// backslash, which the server drops (recorded 2026-11-17, see escape.test.ts).
+const ENTITIES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+const escapeMarkdown = (text: string) => text.replace(/[&<>\\`*_[\]()#|~!]/g, (char) => ENTITIES[char] ?? `\\${char}`);
+
+/** A body of the same form as `like` that holds the plain text `text`, escaped for that form. */
+export function bodyLike(like: Body, text: string): Body {
+	if ('blocks' in like) return { blocks: [{ type: 'paragraph', text }] };
+	if ('html' in like) return { html: escapeHtml(text) };
+	return { markdown: escapeMarkdown(text) };
+}
+
+/**
+ * The resolved form: the new body, a blank line, then the original body in a details block
+ * with the summary `labels.question`. When that whole would break a body limit, such as 500
+ * blocks, the resolved form is the new body alone.
+ */
+function resolvedBody(original: Body, resolved: Body, labels: Labels): Body {
+	const summary = escapeHtml(labels.question);
+	const composed = (): Body => {
+		if ('blocks' in original && 'blocks' in resolved) return { blocks: [...resolved.blocks, { type: 'details', summary: labels.question, blocks: original.blocks }] };
+		if ('html' in original && 'html' in resolved) return { html: `${resolved.html}\n\n<details><summary>${summary}</summary>${original.html}</details>` };
+		if ('markdown' in original && 'markdown' in resolved) return { markdown: `${resolved.markdown}\n\n<details><summary>${summary}</summary>\n\n${original.markdown}\n\n</details>` };
+		throw new ShapeError('a resolved body needs the form of the question body');
+	};
+	const whole = composed();
+	return messageBodyIssue(whole) ? resolved : whole;
+}
+
+/**
+ * The editMessageText call that makes a sent message show `body`, or a question show its
+ * state. It carries the full keyboard every time, since an edit without `reply_markup` removes
+ * it. A question shows its answer buttons with the mark while it takes answers. Once closed it
+ * shows its resolved form without answer buttons, or without a resolved body its body and its
+ * marked button alone. The view row stays, with the picked option's tab. Throws ShapeError
+ * for a body that cannot go out, and an Error for a question whose message is not known yet.
+ */
+export function renderEdit(target: { sent: Sent; body: Body } | Question, labels: Labels = defaultLabels): Call {
+	if (labels !== defaultLabels) checkLabels(labels);
+	if (!('v' in target)) {
+		const { sent, body } = target;
+		const issue = messageBodyIssue(body);
+		if (issue) throw new ShapeError(issue);
+		const rows = sent.view ? [viewRow(sent.view, labels, sent.ref)] : [];
+		return { method: 'editMessageText', payload: { chat_id: sent.chat, message_id: sent.message, rich_message: body, ...markup(rows) } };
+	}
+	const question = target;
+	const sent = 'sent' in question ? question.sent : undefined;
+	if (!sent) throw new Error(`question ${question.ref} has no known message yet`);
+	const { spec } = question;
+	const answer = 'answer' in question ? question.answer : undefined;
+	const picked = answer?.kind === 'choice' ? answer.index : undefined;
+	const tab = picked !== undefined && spec.answer.type === 'choice' ? spec.answer.options[picked]?.tab : undefined;
+	const closed = question.status === 'closed';
+	const resolved = question.status === 'closed' ? question.resolved : undefined;
+	const rows = [
+		...(resolved || (closed && picked === undefined) ? [] : answerRows(question.ref, spec.answer, picked, closed)),
+		...(sent.view ? [viewRow(sent.view, labels, question.ref, tab)] : []),
+	];
+	const body = resolved ? resolvedBody(spec.body, resolved, labels) : spec.body;
+	const issue = messageBodyIssue(body);
+	if (issue) throw new ShapeError(issue);
+	return { method: 'editMessageText', payload: { chat_id: sent.chat, message_id: sent.message, rich_message: body, ...markup(rows) } };
+}
