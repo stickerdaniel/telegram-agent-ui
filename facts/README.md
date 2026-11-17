@@ -28,9 +28,27 @@ An agent takes every device screenshot itself: the desktop one from Telegram on 
 | Telegram for iOS 18, dark theme | `screens/ios.png` | The table draws with a header row and cell borders in the width of the phone, the details block folds, the 3 buttons take their styles, and the mark on the first button shows |
 | Telegram for Android | open | No emulator image exists on the Mac, and the app needs a signed-in account there too |
 
+## View host
+
+`view-probe/` is a throwaway Worker with the shell policy of the design as a response header and a hostile page in a frame with an empty `sandbox` attribute. Opened on 2026-11-17 from an inline `web_app` button in Telegram for iOS 18 (Web App version 9.6). The shell reported what it saw, and the Worker logged every request the page caused: `records/10-view-probe-ios.json`, `screens/ios-view-page.png`, `screens/ios-view-markdown.png`.
+
+| Fact | Result |
+| --- | --- |
+| Launch data carries `signature` | Yes. The Worker verified it with Telegram's public key and no token |
+| A `srcdoc` frame with an empty `sandbox` draws under `frame-src 'none'` | Yes, the page shows with its table |
+| The shell can reach into the frame | No, `contentDocument` is null |
+| A script in the page | Did not run: no request, no message to the shell, no title change |
+| A meta refresh, a stylesheet link and a form submit in the page | No request reached the host |
+| A tap on a link in the page | Blocked by the shell's `frame-src 'none'`, reported as a violation |
+| An image and a CSS background that point at the view host | Both loaded. `img-src <origin>` allows them, so a page can call any GET route of the host |
+| The launch data after the fragment is removed | `telegram-web-app.js` keeps it in the shell's `sessionStorage` under `__telegram__initParams`. The page has an opaque origin and no script, so it cannot read it |
+| Raw HTML in typed content | Shows as text |
+| A view read about 40 s after its write to KV | Found at the first try, in 281 ms |
+
+The first open of a Mini App asks the person once to accept Telegram's terms.
+
 ## Open
 
 - The Android screen above.
-- Launch data carries `signature`.
-- A page inside the view cannot read launch data, and a link or a refresh inside it loads nothing.
-- How long a new stored view takes to show on the phone.
+- The delay of a KV write read within the first seconds and from another region.
+- The view on Android and on desktop.

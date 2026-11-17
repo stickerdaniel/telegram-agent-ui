@@ -1,0 +1,118 @@
+{
+	"reports": [
+		{
+			"key": "report:n98JjJlXmKH-FjIWnRyWzw:1794913895902",
+			"value": {
+				"trigger": "timer",
+				"tab": "page",
+				"reportedAt": 1794913895725,
+				"platform": "ios",
+				"version": "9.6",
+				"colorScheme": "dark",
+				"initDataLength": 554,
+				"hasSignatureField": true,
+				"fragmentRemoved": true,
+				"sessionStorageKeys": [
+					"__telegram__initParams",
+					"__telegram__themeParams"
+				],
+				"viewFetchStatus": 200,
+				"viewFetchMs": 281,
+				"notFoundRetries": 0,
+				"frameLoaded": true,
+				"frameContentAccessible": "null",
+				"violations": [],
+				"messagesFromFrame": 0,
+				"userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+			}
+		},
+		{
+			"key": "report:n98JjJlXmKH-FjIWnRyWzw:1794913901847",
+			"value": {
+				"trigger": "switch",
+				"tab": "markdown",
+				"reportedAt": 1794913901683,
+				"platform": "ios",
+				"version": "9.6",
+				"colorScheme": "dark",
+				"initDataLength": 554,
+				"hasSignatureField": true,
+				"fragmentRemoved": true,
+				"sessionStorageKeys": [
+					"__telegram__initParams",
+					"__telegram__themeParams"
+				],
+				"viewFetchStatus": 200,
+				"viewFetchMs": 281,
+				"notFoundRetries": 0,
+				"frameLoaded": true,
+				"frameContentAccessible": "null",
+				"violations": [
+					{
+						"violatedDirective": "frame-src",
+						"blockedURI": "https://view-probe.example.workers.dev/hit?from=link",
+						"disposition": "enforce"
+					}
+				],
+				"messagesFromFrame": 0,
+				"userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+			}
+		},
+		{
+			"key": "report:n98JjJlXmKH-FjIWnRyWzw:1794913903867",
+			"value": {
+				"trigger": "switch",
+				"tab": "page",
+				"reportedAt": 1794913903685,
+				"platform": "ios",
+				"version": "9.6",
+				"colorScheme": "dark",
+				"initDataLength": 554,
+				"hasSignatureField": true,
+				"fragmentRemoved": true,
+				"sessionStorageKeys": [
+					"__telegram__initParams",
+					"__telegram__themeParams"
+				],
+				"viewFetchStatus": 200,
+				"viewFetchMs": 281,
+				"notFoundRetries": 0,
+				"frameLoaded": true,
+				"frameContentAccessible": "null",
+				"violations": [
+					{
+						"violatedDirective": "frame-src",
+						"blockedURI": "https://view-probe.example.workers.dev/hit?from=link",
+						"disposition": "enforce"
+					}
+				],
+				"messagesFromFrame": 0,
+				"userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+			}
+		}
+	],
+	"hits": [
+		{
+			"key": "hit:cssurl:1794913892926",
+			"value": {
+				"at": 1794913892926,
+				"dest": "image",
+				"mode": "no-cors",
+				"site": "cross-site",
+				"referer": null,
+				"userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+			}
+		},
+		{
+			"key": "hit:img-same-origin:1794913892874",
+			"value": {
+				"at": 1794913892874,
+				"dest": "image",
+				"mode": "no-cors",
+				"site": "cross-site",
+				"referer": null,
+				"userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+			}
+		}
+	]
+}
