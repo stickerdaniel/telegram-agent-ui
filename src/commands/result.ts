@@ -3,8 +3,8 @@
 import { LockTimeout, type Outcome, ShapeError, TokenRefused } from '../core/types.ts';
 import type { Stopped } from '../telegram/listen.ts';
 
-/** The codes of a refusal: those of `createChat`, plus those of pairing and of an edit by ref. */
-export type RefusedCode = Extract<Outcome, { kind: 'refused' }>['code'] | 'webhook' | 'conflict' | 'not-paired' | 'unconfirmed-message';
+/** The codes of a refusal: those of `createChat`, plus those of pairing, of an edit by ref and of `mcp init`. */
+export type RefusedCode = Extract<Outcome, { kind: 'refused' }>['code'] | 'webhook' | 'conflict' | 'not-paired' | 'unconfirmed-message' | 'client-config';
 
 export type Failure =
 	| { error: 'refused'; code: RefusedCode; message: string; ref?: string }

@@ -1,6 +1,6 @@
 // The input schema of a command: a list of parameters, each with its JSON type and how the CLI
-// spells it. The CLI parser reads the `cli` part, and the MCP tools of a later stage read the
-// rest. A handler receives its input typed by `InputOf`, after `check` proved every field.
+// spells it. The CLI parser reads the `cli` part, and the MCP tools of `./mcp` read the rest.
+// A handler receives its input typed by `InputOf`, after `inputIssue` found every field sound.
 import { arrayOf, isBool, isInt, isJson, isRecord, isString } from '../core/check.ts';
 import type { Json } from '../core/types.ts';
 
@@ -13,9 +13,11 @@ export type Param = {
 	/** A list: the CLI flag may repeat. */
 	readonly many?: boolean;
 	readonly cli?: {
+		/** The parameter exists on the CLI alone, such as `--json`: an MCP tool leaves it out. */
+		readonly only?: boolean;
 		/** Taken from the positional arguments instead of a flag. Optional ones fill from the left once the required ones have theirs. */
 		readonly positional?: boolean;
-		/** The argument is a path, `-` for stdin, and the value is the file's text. */
+		/** The argument is a path, `-` for stdin, and the value is the file's text. An MCP tool takes the path as `<name>File`. */
 		readonly file?: boolean;
 		/** The flag without dashes, when it is not the name in kebab case. */
 		readonly flag?: string;

@@ -1,5 +1,5 @@
 // The command table of section 5. Each entry has a name, a description, its input schema, the
-// MCP tool that will serve it, and a handler over `createChat`. The CLI parser reads the schema
+// MCP tool that serves it, and a handler over `createChat`. The CLI parser reads the schema
 // to parse arguments, and a handler gets its input typed after `inputIssue` checked it.
 import { deliveryKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
@@ -14,6 +14,7 @@ import { listen } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
 import { apiUrlOf } from './config.ts';
 import { init } from './init.ts';
+import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
 import { type InputOf, inputIssue, isInput, type Param, usage } from './params.ts';
 import { done, Failed, failed, failureOf, fromOutcome, type Result } from './result.ts';
 import { type Context, openSession, type Session } from './session.ts';
@@ -42,7 +43,7 @@ function command<const Ps extends readonly Param[]>(spec: { name: string; descri
 		async invoke(raw, context) {
 			if (!isInput(params, raw)) return failed({ error: 'usage', message: `${inputIssue(params, raw) ?? 'the input breaks its schema'}. Usage: ${usage(name, params)}` });
 			try {
-				return await spec.run(raw, context);
+				return await spec.run(raw, { ...context, command: name });
 			} catch (error) {
 				return failed(failureOf(error));
 			}
@@ -88,7 +89,7 @@ const info = command({
 	name: 'info',
 	description: 'Prints the config, the bot, the roots, the listener, the open, unconfirmed and undelivered questions, the undelivered messages and the view host.',
 	tool: 'get_status',
-	params: [{ name: 'json', type: 'boolean', description: 'Prints JSON, which every command does.' }],
+	params: [{ name: 'json', type: 'boolean', description: 'Prints JSON, which every command does.', cli: { only: true } }],
 	async run(_input, context) {
 		const session = await openSession(context);
 		const { config, store, where } = session;
@@ -286,6 +287,13 @@ const listenCommand = command({
 	},
 });
 
+const mcpInitCommand = command({
+	name: 'mcp init',
+	description: 'Writes the MCP server entry npx telegram-agent-ui@latest mcp into the user config of an MCP client. Installs nothing.',
+	params: [{ name: 'client', type: MCP_CLIENTS, required: true, description: 'The MCP client whose config gets the entry.', cli: { label: MCP_CLIENTS.join('|') } }],
+	run: (input, context) => mcpInit(input.client, context.env),
+});
+
 /** The commands of this stage, in the order of section 5. */
 export const commands: readonly Command[] = [
 	command({ name: 'init', description: 'Pairs a bot with your private chat and writes the config.', params: [], run: (_input, context) => init(context) }),
@@ -296,6 +304,7 @@ export const commands: readonly Command[] = [
 	wait,
 	close,
 	listenCommand,
+	mcpInitCommand,
 ];
 
 /** The command `args` names, one word or two, with the arguments after its name. */

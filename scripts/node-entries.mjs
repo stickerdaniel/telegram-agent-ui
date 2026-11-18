@@ -1,4 +1,4 @@
-// Imports the 7 package entries by name with plain Node, as a Node 20 consumer would, runs one
+// Imports the 8 package entries by name with plain Node, as a Node 20 consumer would, runs one
 // small call through each, and runs the bin. Run after the build: `bun run test:node`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -16,6 +16,9 @@ const { fakeCall, faultyStore } = await import('telegram-agent-ui/testing');
 const { fetchCall, listen } = await import('telegram-agent-ui/telegram');
 const { grammyCall, grammyHandler } = await import('telegram-agent-ui/grammy');
 const { commands, EXIT } = await import('telegram-agent-ui/commands');
+const mcp = await import('telegram-agent-ui/mcp');
+const { Client, InMemoryTransport } = await import('@modelcontextprotocol/client');
+const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 const { Bot } = await import('grammy');
 
 const spec = core.choice({ markdown: 'Merge now?' }, [{ label: 'Merge' }, { label: 'Wait' }]);
@@ -87,7 +90,7 @@ server.close();
 // ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'listen'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'listen', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');
@@ -95,6 +98,8 @@ const env = { PATH: process.env.PATH, HOME: root, TELEGRAM_AGENT_UI_FAKE: join(r
 const run = (args, input) => JSON.parse(execFileSync(process.execPath, [bin, ...args], { env, input, encoding: 'utf8' }));
 const { ref } = run(['ask', '--yes-no', '-'], 'Deploy now?');
 assert.deepEqual(run(['wait', ref]).answer, { kind: 'choice', index: 0, label: 'Yes', value: 'yes' });
+// mcp init parses Codex's TOML under Node too.
+assert.equal(run(['mcp', 'init', '--client', 'codex']).changed, true);
 // A body file outside the roots is refused before anything is sent.
 const outside = spawnSync(process.execPath, [bin, 'send', '/etc/hosts'], { env, encoding: 'utf8' });
 assert.equal(outside.status, 1);
@@ -114,6 +119,24 @@ const alive = () => spawnSync('pgrep', ['-f', `supervise.js ${deadline}`]).statu
 for (const until = Date.now() + 60_000; alive() && !existsSync(startedFile) && Date.now() < until; ) await new Promise((resolve) => setTimeout(resolve, 50));
 assert.equal(alive(), false);
 assert.equal(existsSync(startedFile), false);
+
+// ./mcp: a client in memory lists the tools, and one over stdio asks and waits through the bin.
+const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+await mcp.createServer({ env }).connect(serverSide);
+const memory = new Client({ name: 'node', version: '1.0.0' });
+await memory.connect(clientSide);
+assert.deepEqual(
+	(await memory.listTools()).tools.map((tool) => tool.name),
+	['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question'],
+);
+await memory.close();
+const stdio = new Client({ name: 'node', version: '1.0.0' });
+await stdio.connect(new StdioClientTransport({ command: process.execPath, args: [bin, 'mcp'], env, cwd: root, stderr: 'pipe' }));
+const shipIt = await stdio.callTool({ name: 'ask_question', arguments: { answer: 'yesNo', body: 'Ship it?' } });
+assert.deepEqual(JSON.parse(shipIt.content[0].text), shipIt.structuredContent);
+const waited = await stdio.callTool({ name: 'get_answer', arguments: { ref: shipIt.structuredContent.ref } });
+assert.equal(waited.structuredContent.status, 'answered');
+await stdio.close();
 rmSync(root, { recursive: true, force: true });
 
-console.log(`node ${process.version}: 7 entries import and run, and so do the bin and its supervisor`);
+console.log(`node ${process.version}: 8 entries import and run, and so do the bin, its supervisor and its MCP server`);

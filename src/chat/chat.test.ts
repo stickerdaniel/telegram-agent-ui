@@ -803,8 +803,8 @@ describe('pacing', () => {
 
 			const paced = starts.filter((start) => start.chat === CHAT);
 			expect(paced.map((start) => start.method)).toEqual(['sendRichMessage', 'sendRichMessage', 'sendRichMessage', 'sendPhoto', 'editMessageText', 'editMessageText']);
-			// The gate takes its time in the same step that calls the transport: 1 ms covers the gap between the two clock reads.
-			for (const [index, start] of paced.entries()) if (index > 0) expect(start.at - (paced[index - 1]?.at ?? 0)).toBeGreaterThanOrEqual(999);
+			// The gate takes its time after the transport took the call, so the transport's own clock reads lie 1 s apart too.
+			for (const [index, start] of paced.entries()) if (index > 0) expect(start.at - (paced[index - 1]?.at ?? 0)).toBeGreaterThanOrEqual(1_000);
 			const otherStart = starts.find((start) => start.chat === 222)?.at ?? Number.POSITIVE_INFINITY;
 			expect(otherStart - (paced[0]?.at ?? 0)).toBeLessThan(900);
 		} finally {
@@ -835,7 +835,33 @@ describe('pacing', () => {
 			for (let depth = 0; depth < 100; depth++) nest(depth);
 			await Promise.all([one.send(message({ markdown: 'One.' })), two.send(message({ markdown: 'Two.' }))]);
 			expect(entries).toHaveLength(2);
-			expect((entries[1] ?? 0) - (entries[0] ?? 0)).toBeGreaterThanOrEqual(999);
+			expect((entries[1] ?? 0) - (entries[0] ?? 0)).toBeGreaterThanOrEqual(1_000);
+		} finally {
+			PACING.interval = 0;
+		}
+	}, 30_000);
+
+	test('work in the transport before its request starts cannot shorten the interval to the next call', async () => {
+		PACING.interval = 1_000;
+		try {
+			const entries: number[] = [];
+			const server = telegram();
+			// 20 ms of synchronous work in the first call before it reads the clock, as a large body
+			// or a pause of the runtime takes between the gate admitting a call and its request.
+			const call = async (request: Call): Promise<CallResponse> => {
+				if (entries.length === 0) {
+					const until = performance.now() + 20;
+					while (performance.now() < until) {}
+				}
+				entries.push(performance.now());
+				return server.call(request);
+			};
+			// A chat id no other test paces.
+			const one = createChat({ call, store: memoryStore(), chat: 444 });
+			const two = createChat({ call, store: memoryStore(), chat: 444 });
+			await Promise.all([one.send(message({ markdown: 'One.' })), two.send(message({ markdown: 'Two.' }))]);
+			expect(entries).toHaveLength(2);
+			expect((entries[1] ?? 0) - (entries[0] ?? 0)).toBeGreaterThanOrEqual(1_000);
 		} finally {
 			PACING.interval = 0;
 		}

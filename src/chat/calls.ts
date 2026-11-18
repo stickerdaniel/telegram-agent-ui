@@ -16,9 +16,9 @@ export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 export const PACING = { interval: 1_000 };
 // The calls that send or edit a message. A toast and a reaction pass the gate.
 const PACED = new Set(['sendRichMessage', 'editMessageText', 'sendPhoto', 'sendVideo', 'sendDocument', 'sendMediaGroup']);
-// The gate of one chat id: when its last paced call started on the monotonic clock, the calls
-// that wait in arrival order, and whether a timer is set for the first of them. Shared by every
-// chat of the runtime. A timer exists only while a call waits, so none keeps a process alive.
+// The gate of one chat id: when the transport took its last paced call on the monotonic clock,
+// the calls that wait in arrival order, and whether a timer is set for the first of them. Shared
+// by every chat of the runtime. A timer exists only while a call waits, so none keeps a process alive.
 type Gate = { last: number; waiting: (() => void)[]; timer: boolean };
 const gates = new Map<number, Gate>();
 
@@ -40,10 +40,13 @@ function drain(gate: Gate): void {
 }
 
 /**
- * Runs `invoke` under the gate of the call's chat: a send or an edit starts one interval after
- * the previous one of that chat started, in arrival order. The start time is taken and `invoke`
- * is called in one synchronous step, so no queued work runs between them. `invoke` must call the
- * transport synchronously.
+ * Runs `invoke` under the gate of the call's chat: a send or an edit is handed to the transport
+ * one interval after the previous one of that chat, in arrival order. The time is taken when
+ * `invoke` returns, in the same synchronous step that admitted the call, so it lies after the
+ * transport's synchronous part: work or a pause of the runtime there delays the next call instead
+ * of shortening the interval. `invoke` must call the transport synchronously. A transport that
+ * delays its request after it returns, such as a waiting grammY transformer, is not covered; a
+ * 429 that follows is retried like any other.
  */
 export function paced<T>(call: Call, invoke: () => Promise<T>): Promise<T> {
 	const chat = call.payload.chat_id;
@@ -56,8 +59,9 @@ export function paced<T>(call: Call, invoke: () => Promise<T>): Promise<T> {
 	const own = gate;
 	return new Promise<T>((resolve, reject) => {
 		own.waiting.push(() => {
+			const running = invoke();
 			own.last = performance.now();
-			invoke().then(resolve, reject);
+			running.then(resolve, reject);
 		});
 		drain(own);
 	});

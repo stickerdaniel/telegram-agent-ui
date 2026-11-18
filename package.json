@@ -34,6 +34,11 @@
 			"types": "./dist/commands/index.d.ts",
 			"default": "./dist/commands/index.js"
 		},
+		"./mcp": {
+			"bun": "./src/mcp/index.ts",
+			"types": "./dist/mcp/index.d.ts",
+			"default": "./dist/mcp/index.js"
+		},
 		"./testing": {
 			"bun": "./src/testing/index.ts",
 			"types": "./dist/testing/index.d.ts",
@@ -51,7 +56,9 @@
 		"check": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@grammyjs/types": "5.0.0"
+		"@grammyjs/types": "5.0.0",
+		"@modelcontextprotocol/server": "2.4.0",
+		"smol-toml": "1.9.1"
 	},
 	"peerDependencies": {
 		"grammy": "^1.46.0"
@@ -62,6 +69,7 @@
 		}
 	},
 	"devDependencies": {
+		"@modelcontextprotocol/client": "2.4.0",
 		"@types/bun": "1.4.4",
 		"@types/node": "26.6.6",
 		"fast-check": "4.10.2",

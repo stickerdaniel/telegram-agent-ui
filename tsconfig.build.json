@@ -19,6 +19,7 @@
 		"src/grammy/index.ts",
 		"src/commands/index.ts",
 		"src/commands/supervise.ts",
+		"src/mcp/index.ts",
 		"src/cli/bin.ts",
 		"src/testing/index.ts"
 	]

@@ -1,31 +1,36 @@
 // What a command runs on: the config, the token, the store and a chat over them. Fake mode,
 // `TELEGRAM_AGENT_UI_FAKE=<dir>`, replaces the Bot API with a recorder that appends every call
-// to `<dir>/calls.jsonl`, and the config with a built-in one. Its store lives in `<dir>/store`,
-// it reports a live listener without an answer command, and the first `wait` on a question
-// answers it. `TELEGRAM_AGENT_UI_FAKE_SCENARIO` picks a failure script for tests.
+// and its answer to `<dir>/calls.jsonl`, and the config with a built-in one. Its store lives in
+// `<dir>/store`, it reports a live listener without an answer command, and the first `wait` on
+// a question answers it. `TELEGRAM_AGENT_UI_FAKE_SCENARIO` picks a failure script for tests.
 import { appendFile, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { type Chat, createChat, type Delivered } from '../chat/create.ts';
 import { writeListener } from '../chat/listener.ts';
 import { isNat, isRecord } from '../core/check.ts';
-import type { CallResponse, Store, Update } from '../core/types.ts';
+import { LIMITS } from '../core/shape.ts';
+import type { Call, CallResponse, Store, Update } from '../core/types.ts';
+import { readTextInRoots } from '../files/roots.ts';
 import { fileStore } from '../store/file.ts';
 import { fetchCall, type Transport } from '../telegram/fetch.ts';
 import { isUpdate } from '../telegram/listen.ts';
 import { apiUrlOf, type Config, type Env, FILE_LIMITS, findToken, paths, readConfig } from './config.ts';
-import { Failed } from './result.ts';
+import { Failed, type Failure } from './result.ts';
 
 /** What a command gets from its caller: the CLI's process, or an MCP server's. */
 export type Context = {
 	env: Env;
-	/** The working directory: the first root of every file read. */
-	cwd: string;
+	/** The roots files may be read from before `publishRoots`: the CLI's working directory, or the roots an MCP client reports. */
+	roots: readonly string[];
 	/** Progress and warnings, one line each. */
 	log: (line: string) => void;
 	/** Ends a command that runs until stopped: `listen`, and `init` while it waits. */
 	signal: AbortSignal;
 	/** One line a person types, such as a token. Undefined when nobody can type. */
 	readLine?: () => Promise<string | undefined>;
+	/** The name of the running command, set by the table; fake mode records it beside each call. */
+	command?: string;
 };
 
 export type Session = {
@@ -35,7 +40,7 @@ export type Session = {
 	store: Store;
 	call: Transport;
 	chat: Chat;
-	/** The directories files may be read from: the working directory and `publishRoots`. */
+	/** The directories files may be read from: the caller's roots and `publishRoots`. */
 	roots: string[];
 	/** Fake mode only: answers a pending question as a person would, on the first wait. */
 	fake?: { answer(ref: string): Promise<void> };
@@ -68,12 +73,13 @@ function reserve(store: Store, count: number): Promise<number> {
 
 /**
  * The recorder of fake mode: every call becomes one line of `log`, `{ at, method, payload,
- * files? }`. It answers like the cloud Bot API on success, with message ids from `reserve`, one
- * per message an album returns, or as `scenario` says.
+ * files?, response, command? }`, so a reader links an edit to the send whose message it names
+ * and to the command that made it, such as `edit` or `close`. It answers like the cloud Bot API
+ * on success, with message ids from `reserve`, one per message an album returns, or as
+ * `scenario` says.
  */
-function recorder(log: string, store: Store, scenario: Scenario | undefined): Transport {
-	return async ({ method, payload, files }) => {
-		await appendFile(log, `${JSON.stringify({ at: Date.now(), method, payload, ...(files ? { files: files.map((file) => file.path) } : {}) })}\n`);
+function recorder(log: string, store: Store, scenario: Scenario | undefined, command: string | undefined): Transport {
+	const answer = async ({ method, payload }: Call): Promise<CallResponse> => {
 		if (scenario === 'token') return { ok: false, status: 401, description: 'Unauthorized' };
 		if (CHANGES.has(method) && scenario === 'refused') return { ok: false, status: 400, description: 'Bad Request: chat not found' };
 		if (CHANGES.has(method) && scenario === 'uncertain') return { noAnswer: true };
@@ -83,8 +89,13 @@ function recorder(log: string, store: Store, scenario: Scenario | undefined): Tr
 			const first = await reserve(store, payload.media.length);
 			return { ok: true, result: payload.media.map((_, index) => message(first + index)) };
 		}
-		const answer: CallResponse = method === 'editMessageText' ? { ok: true, result: message(Number(payload.message_id)) } : { ok: true, result: true };
-		return answer;
+		return method === 'editMessageText' ? { ok: true, result: message(Number(payload.message_id)) } : { ok: true, result: true };
+	};
+	return async (call) => {
+		const { method, payload, files } = call;
+		const response = await answer(call);
+		await appendFile(log, `${JSON.stringify({ at: Date.now(), method, payload, ...(files ? { files: files.map((file) => file.path) } : {}), response, ...(command !== undefined ? { command } : {}) })}\n`);
+		return response;
 	};
 }
 
@@ -111,7 +122,7 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 	const store = fileStore(join(dir, 'store'));
 	// The fake listener beats with every command, and stops for the `no-listener` scenario. The stored baselines stay.
 	await writeListener(store, { heartbeat: Date.now(), ...(scenario === 'no-listener' ? { stopped: 'fake mode: no-listener' } : {}) });
-	const call = recorder(join(dir, 'calls.jsonl'), store, scenario);
+	const call = recorder(join(dir, 'calls.jsonl'), store, scenario, context.command);
 	const chat = createChat({ call, store, chat: FAKE_CONFIG.chat, allow: FAKE_CONFIG.users, ...(onAnswer ? { onAnswer } : {}) });
 	return {
 		config: FAKE_CONFIG,
@@ -132,12 +143,27 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 }
 
 /**
- * The directories files may be read from: the working directory, plus `publishRoots` of the
- * config. Fake mode has the working directory alone. Throws `no-config` without a config.
+ * The directories files may be read from: the caller's roots, plus `publishRoots` of the
+ * config. Fake mode has the caller's roots alone. Throws `no-config` without a config.
  */
-export async function rootsOf(context: Pick<Context, 'env' | 'cwd'>): Promise<string[]> {
-	if (context.env.TELEGRAM_AGENT_UI_FAKE) return [context.cwd];
-	return [context.cwd, ...(await readConfig(context.env)).publishRoots];
+export async function rootsOf(context: Pick<Context, 'env' | 'roots'>): Promise<string[]> {
+	if (context.env.TELEGRAM_AGENT_UI_FAKE) return [...context.roots];
+	return [...context.roots, ...(await readConfig(context.env)).publishRoots];
+}
+
+// A body has at most 32,768 characters, and a character at most 4 bytes of UTF-8.
+const BODY_BYTES = LIMITS.body * 4;
+
+/**
+ * The text of a body file, read under `roots` and the refusals of 4.7 before anything is sent,
+ * or the refusal as a failure. `cwd` resolves a relative path.
+ *
+ *   const read = await readBodyFile('question.md', { roots: await rootsOf({ env, roots: [cwd] }), cwd, env });
+ */
+export async function readBodyFile(path: string, options: { roots: readonly string[]; cwd: string; env: Env }): Promise<{ ok: true; text: string } | { ok: false; failure: Failure }> {
+	const { roots, cwd, env } = options;
+	const read = await readTextInRoots(path, { roots, cwd, home: env.HOME || homedir(), limit: BODY_BYTES });
+	return read.kind === 'ok' ? { ok: true, text: read.text } : { ok: false, failure: { error: 'refused', code: read.code, message: read.reason } };
 }
 
 /**
@@ -146,7 +172,7 @@ export async function rootsOf(context: Pick<Context, 'env' | 'cwd'>): Promise<st
  * token. `onAnswer` goes to the chat, for the listener.
  */
 export async function openSession(context: Context, options: { onAnswer?: (answer: Delivered) => Promise<void> } = {}): Promise<Session> {
-	const { env, cwd } = context;
+	const { env } = context;
 	if (env.TELEGRAM_AGENT_UI_FAKE) return fakeSession(context, env.TELEGRAM_AGENT_UI_FAKE, options.onAnswer);
 	const config = await readConfig(env);
 	const token = await findToken(env);
@@ -165,5 +191,5 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 		fileLimit: apiUrl !== undefined ? FILE_LIMITS.local : FILE_LIMITS.cloud,
 		...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
 	});
-	return { config, where, store, call, chat, roots: [cwd, ...config.publishRoots] };
+	return { config, where, store, call, chat, roots: [...context.roots, ...config.publishRoots] };
 }

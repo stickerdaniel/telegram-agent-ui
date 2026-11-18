@@ -324,7 +324,7 @@ test('a Chat reused by two listeners in a row stops at the budget info reports a
 	expect(attempts).toBe(10);
 
 	const info = commands.find((command) => command.name === 'info');
-	const result = await info?.invoke({}, { env: { TELEGRAM_AGENT_UI_FAKE: dir, HOME: dir }, cwd: dir, log: () => {}, signal: new AbortController().signal });
+	const result = await info?.invoke({}, { env: { TELEGRAM_AGENT_UI_FAKE: dir, HOME: dir }, roots: [dir], log: () => {}, signal: new AbortController().signal });
 	expect(result).toMatchObject({ ok: true, output: { questions: { undelivered: [{ ref: 'reuse', seq: 1, attempts: 5, error: 'consumer down' }] } } });
 });
 

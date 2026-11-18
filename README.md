@@ -50,7 +50,7 @@ await chat.flush(); // onAnswer gets { ref, seq, answer, by, meta, delivery: 'k7
 await chat.wait('k7q2m4xa', { seconds: 10 }); // { status: 'answered', answer: { kind: 'choice', index: 0, label: 'Yes', value: 'yes' }, ... }
 ```
 
-Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them, imports all 7 entries with `node` and runs the bin.
+Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them, imports all 8 entries with `node` and runs the bin and its MCP server.
 
 ## CLI
 
@@ -84,3 +84,22 @@ A body comes from a file or from `-` for stdin. A file must lie below the workin
 Every command prints one JSON object on stdout and exits 0, or prints `{ error, code?, message, ref? }` and exits 1 (refused), 2 (usage), 3 (no listener), 4 (uncertain), 5 (listener stopped), 6 (no config or a rejected token) or 7 (no view host). `send`, `edit`, `close` and `info --json` complete the set. `TELEGRAM_AGENT_UI_API_URL` points every command at another Bot API server, and `TELEGRAM_AGENT_UI_FAKE=<dir>` records every call in `<dir>/calls.jsonl` instead of sending it. `telegram-agent-ui/commands` holds the command table, and `telegram-agent-ui/telegram` holds `fetchCall` and `listen` for a program of its own. A bot on grammY uses `telegram-agent-ui/grammy` instead: `grammyCall(bot.api)` as the transport and `bot.use(grammyHandler(chat))` in its own loop.
 
 `telegram-agent-ui/store/memory` holds `memoryStore`, a store in memory with a lock per key. `telegram-agent-ui/store/file` holds `fileStore(dir)`, one JSON file per key in a directory of mode 0700, for Node and Bun on macOS and Linux, with a lock that several processes share. `telegram-agent-ui/testing` holds `fakeCall`, a transport that records calls and answers from a script, and `faultyStore`, a store that fails one chosen call before or after it runs.
+
+## MCP
+
+`telegram-agent-ui mcp` serves the tools `get_status`, `send_message`, `edit_message`, `ask_question`, `get_answer` and `close_question` over stdio, one per command above. A tool takes its command's input and returns the command's JSON as text and as `structuredContent`, with `isError` on a failure. `ask_question` refuses without a live listener, and `get_answer` waits 10 s by default, at most 50 s. A body file is an absolute path in `bodyFile`, below a root the client reports or a directory of `publishRoots`.
+
+`mcp init --client <claude|cursor|vscode|codex|opencode>` writes the entry `npx telegram-agent-ui@latest mcp` into the client's user config and installs nothing. A config that cannot take the entry with every other setting kept is refused with `client-config` and left as it was. A second run changes nothing.
+
+```sh
+telegram-agent-ui mcp init --client claude
+# {"client":"claude","path":"/Users/you/.claude.json","entry":{"type":"stdio","command":"npx","args":["telegram-agent-ui@latest","mcp"]},"changed":true}
+```
+
+| Client | File |
+| --- | --- |
+| `claude` | `~/.claude.json`, or `.claude.json` in `$CLAUDE_CONFIG_DIR` |
+| `cursor` | `~/.cursor/mcp.json` |
+| `vscode` | `mcp-config.json` in `$COPILOT_HOME`, default `~/.copilot` |
+| `codex` | `config.toml` in `$CODEX_HOME`, default `~/.codex` |
+| `opencode` | `opencode/opencode.json` in `$XDG_CONFIG_HOME`, default `~/.config` |
