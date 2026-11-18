@@ -1,5 +1,6 @@
-// The entry `.` runs on any runtime with the Fetch API: the core and createChat import only
-// their own files and the types of @grammyjs/types, and name no Node global.
+// The entries `.`, `./view/handler` and `./worker` run on any runtime with the Fetch API: the
+// core and createChat import only their own files and the types of @grammyjs/types, the view
+// host only the core and its own files, and none names a Node global.
 import { expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,6 +45,16 @@ test('the matcher finds every form of import', () => {
 		{ specifier: 'node:util', typeOnly: false },
 	]);
 	expect(imports(sample).filter(allowed).map((found) => found.specifier)).toEqual(['./a.ts', '@grammyjs/types']);
+});
+
+test('./view/handler and ./worker import nothing but their own files, the core and the view host', () => {
+	const view = ['view/handler.ts', 'view/launch.ts', 'view/media.ts', 'view/shell.ts', 'view/stored.ts', 'view/theme.ts', 'worker/index.ts'];
+	const host = ({ specifier }: { specifier: string }) => specifier.startsWith('./') || specifier.startsWith('../core/') || specifier.startsWith('../view/');
+	for (const path of view) {
+		const source = readFileSync(join(root, path), 'utf8');
+		expect(imports(source).filter((found) => !host(found)).map((found) => `${path}: ${found.specifier}`)).toEqual([]);
+		expect(source).not.toMatch(/\b(?:process\.|Buffer\b|__dirname|import\.meta\.(?:dir|path|url))/);
+	}
 });
 
 test('the core, createChat and memoryStore import nothing but their own files and grammY types', () => {

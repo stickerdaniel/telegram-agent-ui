@@ -1,0 +1,23 @@
+# The view host of telegram-agent-ui: ./worker on one KV namespace. `telegram-agent-ui view
+# deploy` fills each field in double braces from the config and deploys it with the secrets
+# UPLOAD_KEY and MEDIA_KEY of the config's .env. A deploy by hand fills the fields itself, as
+# TOML values, and sets both secrets with `wrangler secret put`. LABELS and THEME hold JSON, or
+# "" for none.
+name = {{name}}
+main = {{main}}
+compatibility_date = "2026-10-27"
+# request.signal aborts when the client goes, which ends a media wait early.
+compatibility_flags = ["enable_request_signal"]
+workers_dev = {{workersDev}}
+{{account}}
+{{routes}}
+
+[[kv_namespaces]]
+binding = "VIEWS"
+id = {{kv}}
+
+[vars]
+BOT_ID = {{botId}}
+ALLOWED_USERS = {{allowedUsers}}
+LABELS = {{labels}}
+THEME = {{theme}}

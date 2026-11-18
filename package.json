@@ -29,6 +29,16 @@
 			"types": "./dist/grammy/index.d.ts",
 			"default": "./dist/grammy/index.js"
 		},
+		"./view/handler": {
+			"bun": "./src/view/handler.ts",
+			"types": "./dist/view/handler.d.ts",
+			"default": "./dist/view/handler.js"
+		},
+		"./worker": {
+			"bun": "./src/worker/index.ts",
+			"types": "./dist/worker/index.d.ts",
+			"default": "./dist/worker/index.js"
+		},
 		"./commands": {
 			"bun": "./src/commands/index.ts",
 			"types": "./dist/commands/index.d.ts",
@@ -74,6 +84,7 @@
 		"@types/node": "26.6.6",
 		"fast-check": "4.10.2",
 		"grammy": "1.46.0",
+		"happy-dom": "21.0.4",
 		"typescript": "7.0.2"
 	}
 }

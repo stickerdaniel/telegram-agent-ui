@@ -13,6 +13,7 @@ import type { Outcome, Question, Warning } from '../core/types.ts';
 import { listen } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
 import { apiUrlOf } from './config.ts';
+import { viewDeploy } from './deploy.ts';
 import { init } from './init.ts';
 import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
 import { type InputOf, inputIssue, isInput, type Param, usage } from './params.ts';
@@ -287,6 +288,19 @@ const listenCommand = command({
 	},
 });
 
+const viewDeployCommand = command({
+	name: 'view deploy',
+	description: 'Deploys the view host to your Cloudflare account with your wrangler login, and stores its origin in the config.',
+	params: [
+		{ name: 'theme', type: 'string', description: 'A shadcn cssVars theme as JSON, below the roots. It stays for later deploys.', cli: { label: 'file' } },
+		{ name: 'noTheme', type: 'boolean', description: 'Drops the stored theme.' },
+		{ name: 'route', type: 'string', description: 'A whole host of your own domain, such as views.example.com/*, in place of workers.dev. It stays for later deploys.', cli: { label: 'pattern' } },
+		{ name: 'account', type: 'string', description: 'The Cloudflare account id, for a login with several accounts; CLOUDFLARE_ACCOUNT_ID by default. It stays for later deploys.', cli: { label: 'id' } },
+		{ name: 'rotateKeys', type: 'boolean', description: 'Replaces the upload key and the media key: every media URL signed before ends.' },
+	],
+	run: (input, context) => viewDeploy(input, context),
+});
+
 const mcpInitCommand = command({
 	name: 'mcp init',
 	description: 'Writes the MCP server entry npx telegram-agent-ui@latest mcp into the user config of an MCP client. Installs nothing.',
@@ -303,6 +317,7 @@ export const commands: readonly Command[] = [
 	ask,
 	wait,
 	close,
+	viewDeployCommand,
 	listenCommand,
 	mcpInitCommand,
 ];

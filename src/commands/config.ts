@@ -1,18 +1,23 @@
 // The configuration of 5.1, on disk. The token comes from TELEGRAM_BOT_TOKEN, else from
-// `$XDG_CONFIG_HOME/telegram-agent-ui/.env`, written with mode 0600. `config.json` beside it holds
-// the bot, the chat and its users. The store of a bot is `$XDG_DATA_HOME/telegram-agent-ui/<bot id>/`.
+// `$XDG_CONFIG_HOME/telegram-agent-ui/.env`, written with mode 0600; the keys of the view host
+// that `view deploy` makes sit in the same file. `config.json` beside it holds the bot, the chat,
+// its users and the view host. The store of a bot is `$XDG_DATA_HOME/telegram-agent-ui/<bot id>/`.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { arrayOf, isInt, isRecord, isString } from '../core/check.ts';
-import { labelIssue } from '../core/labels.ts';
+import { parseLabels } from '../core/labels.ts';
 import { isOrigin } from '../core/shape.ts';
-import { defaultLabels, type Labels } from '../core/types.ts';
+import type { Labels } from '../core/types.ts';
+import { type CssVars, parseTheme } from '../view/theme.ts';
 import { Failed } from './result.ts';
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
-/** `config.json`. `views.origin` is set once a view host is deployed. */
+/**
+ * `config.json`. `view deploy` writes `views`: the origin of the host, the Cloudflare account
+ * and the route it was deployed with, and the theme it carries, so a later deploy keeps them.
+ */
 export type Config = {
 	v: 1;
 	bot: { id: number; username: string };
@@ -21,8 +26,40 @@ export type Config = {
 	labels: Partial<Labels>;
 	publishRoots: string[];
 	apiUrl?: string;
-	views: { origin?: string };
+	views: Views;
 };
+export type Views = { origin?: string; account?: string; route?: string; theme?: CssVars };
+
+/** A Cloudflare account id: 32 hex digits. */
+export const isAccount = (value: string) => /^[0-9a-f]{32}$/.test(value);
+
+/**
+ * The origin a Worker route serves, `https://<host>`, or undefined for any other route. A route
+ * is `<host>/*`, such as `views.example.com/*`: one host without a wildcard, all of its paths,
+ * since the shell, the API and the media URLs sit at the root of the host.
+ */
+export function routeOrigin(route: string): string | undefined {
+	const match = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/\*$/i.exec(route);
+	const host = match?.[1]?.toLowerCase();
+	return host === undefined ? undefined : `https://${host}`;
+}
+
+/** The `views` of a config, or undefined when a field breaks its type. */
+function parseViews(value: unknown): Views | undefined {
+	if (!isRecord(value)) return undefined;
+	const { origin, account, route, theme } = value;
+	if (origin !== undefined && !(isString(origin) && isOrigin(origin))) return undefined;
+	if (account !== undefined && !(isString(account) && isAccount(account))) return undefined;
+	if (route !== undefined && !(isString(route) && routeOrigin(route) !== undefined)) return undefined;
+	const parsedTheme = theme === undefined ? undefined : parseTheme(theme);
+	if (theme !== undefined && parsedTheme === undefined) return undefined;
+	return {
+		...(isString(origin) ? { origin } : {}),
+		...(isString(account) ? { account } : {}),
+		...(isString(route) ? { route } : {}),
+		...(parsedTheme ? { theme: parsedTheme } : {}),
+	};
+}
 
 /** A file a non-photo upload may have: the cloud Bot API's limit and a local server's. */
 export const FILE_LIMITS = { cloud: 50_000_000, local: 2_000_000_000 } as const;
@@ -37,29 +74,15 @@ export function paths(env: Env) {
 
 const isHttpUrl = (value: unknown): value is string => isString(value) && URL.canParse(value) && /^https?:$/.test(new URL(value).protocol);
 
-/** A consumer's labels: known keys only, merged with the defaults without a refusal. */
-function parseLabels(value: unknown): Partial<Labels> | undefined {
-	if (!isRecord(value) || Object.keys(value).some((key) => !(key in defaultLabels))) return undefined;
-	if (labelIssue({ ...defaultLabels, ...value }) !== undefined) return undefined;
-	const labels: Partial<Labels> = {};
-	for (const key of Object.keys(defaultLabels) as (keyof Labels)[]) {
-		const label = value[key];
-		if (key === 'hintWords') {
-			if (arrayOf(isString)(label)) labels.hintWords = [...label];
-		} else if (isString(label)) labels[key] = label;
-	}
-	return labels;
-}
-
 /** The stored value of `config.json`, or undefined when any field breaks its type. */
 export function parseConfig(value: unknown): Config | undefined {
 	if (!isRecord(value) || value.v !== 1) return undefined;
 	const { bot, chat, users, publishRoots, apiUrl, views } = value;
 	if (!isRecord(bot) || !isInt(bot.id) || !isString(bot.username) || !isInt(chat) || !arrayOf(isInt)(users) || !arrayOf(isString)(publishRoots)) return undefined;
 	if (apiUrl !== undefined && !isHttpUrl(apiUrl)) return undefined;
-	if (!isRecord(views) || (views.origin !== undefined && !(isString(views.origin) && isOrigin(views.origin)))) return undefined;
+	const parsedViews = parseViews(views);
 	const labels = parseLabels(value.labels);
-	if (!labels) return undefined;
+	if (!labels || !parsedViews) return undefined;
 	return {
 		v: 1,
 		bot: { id: bot.id, username: bot.username },
@@ -68,7 +91,7 @@ export function parseConfig(value: unknown): Config | undefined {
 		labels,
 		publishRoots: [...publishRoots],
 		...(apiUrl !== undefined ? { apiUrl } : {}),
-		views: views.origin !== undefined ? { origin: views.origin } : {},
+		views: parsedViews,
 	};
 }
 
@@ -98,22 +121,27 @@ export async function readConfig(env: Env): Promise<Config> {
 	return config;
 }
 
-/** `TELEGRAM_BOT_TOKEN=<token>` of a .env file, with or without `export` and quotes. */
-function tokenIn(text: string): string | undefined {
+/** The line of a .env file that sets `name`, with or without `export`. */
+const lineOf = (name: string) => new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*?)\\s*$`);
+
+/** `<name>=<value>` of a .env file, with or without `export` and quotes. */
+function valueIn(text: string, name: string): string | undefined {
 	for (const line of text.split('\n')) {
-		const match = /^\s*(?:export\s+)?TELEGRAM_BOT_TOKEN\s*=\s*(.*?)\s*$/.exec(line);
-		const token = match?.[1]?.replace(/^(['"])(.*)\1$/, '$2');
-		if (token) return token;
+		const value = lineOf(name).exec(line)?.[1]?.replace(/^(['"])(.*)\1$/, '$2');
+		if (value) return value;
 	}
 	return undefined;
 }
 
-/** The token from the environment, then from the config's `.env`, or undefined. */
-export async function findToken(env: Env): Promise<string | undefined> {
-	if (env.TELEGRAM_BOT_TOKEN) return env.TELEGRAM_BOT_TOKEN;
+/** The value of `name` from the environment, then from the config's `.env`, or undefined. */
+export async function findSecret(env: Env, name: string): Promise<string | undefined> {
+	if (env[name]) return env[name];
 	const text = await readText(paths(env).envFile);
-	return text === undefined ? undefined : tokenIn(text);
+	return text === undefined ? undefined : valueIn(text, name);
 }
+
+/** The token from the environment, then from the config's `.env`, or undefined. */
+export const findToken = (env: Env) => findSecret(env, 'TELEGRAM_BOT_TOKEN');
 
 /** The Bot API root of every call: TELEGRAM_AGENT_UI_API_URL, then the config's `apiUrl`. Throws `no-config` for one that is no http or https URL. */
 export function apiUrlOf(env: Env, config?: Pick<Config, 'apiUrl'>): string | undefined {
@@ -135,11 +163,28 @@ async function writeAtomic(path: string, text: string, mode: number): Promise<vo
 	}
 }
 
-/** Writes the token to `.env` with mode 0600 and the config to `config.json`, in a directory of mode 0700. */
-export async function writeConfig(env: Env, config: Config, token: string): Promise<void> {
+/**
+ * Sets each `name=value` line of `.env`, mode 0600, in a directory of mode 0700. Every other
+ * line stays, so `init` keeps the keys of `view deploy` and `view deploy` keeps the token.
+ */
+export async function writeSecrets(env: Env, values: Record<string, string>): Promise<void> {
 	const where = paths(env);
 	await mkdir(where.config, { recursive: true, mode: 0o700 });
 	await chmod(where.config, 0o700);
-	await writeAtomic(where.envFile, `TELEGRAM_BOT_TOKEN=${token}\n`, 0o600);
+	const kept = ((await readText(where.envFile)) ?? '').split('\n').filter((line) => line.trim() !== '' && !Object.keys(values).some((name) => lineOf(name).test(line)));
+	await writeAtomic(where.envFile, [...kept, ...Object.entries(values).map(([name, value]) => `${name}=${value}`)].map((line) => `${line}\n`).join(''), 0o600);
+}
+
+/** Writes the config to `config.json`, mode 0600, in a directory of mode 0700. */
+export async function writeConfigFile(env: Env, config: Config): Promise<void> {
+	const where = paths(env);
+	await mkdir(where.config, { recursive: true, mode: 0o700 });
+	await chmod(where.config, 0o700);
 	await writeAtomic(where.configFile, `${JSON.stringify(config, null, '\t')}\n`, 0o600);
+}
+
+/** Writes the token to `.env` and the config to `config.json`, both mode 0600, in a directory of mode 0700. */
+export async function writeConfig(env: Env, config: Config, token: string): Promise<void> {
+	await writeSecrets(env, { TELEGRAM_BOT_TOKEN: token });
+	await writeConfigFile(env, config);
 }

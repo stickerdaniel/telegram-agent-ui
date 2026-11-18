@@ -50,7 +50,7 @@ await chat.flush(); // onAnswer gets { ref, seq, answer, by, meta, delivery: 'k7
 await chat.wait('k7q2m4xa', { seconds: 10 }); // { status: 'answered', answer: { kind: 'choice', index: 0, label: 'Yes', value: 'yes' }, ... }
 ```
 
-Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them, imports all 8 entries with `node` and runs the bin and its MCP server.
+Bun imports the TypeScript sources. Node 20 and newer import the JavaScript and declarations in `dist/`, which `bun run build` writes; `bun run test:node` builds them, imports all 10 entries with `node` and runs the bin and its MCP server.
 
 ## CLI
 
@@ -84,6 +84,19 @@ A body comes from a file or from `-` for stdin. A file must lie below the workin
 Every command prints one JSON object on stdout and exits 0, or prints `{ error, code?, message, ref? }` and exits 1 (refused), 2 (usage), 3 (no listener), 4 (uncertain), 5 (listener stopped), 6 (no config or a rejected token) or 7 (no view host). `send`, `edit`, `close` and `info --json` complete the set. `TELEGRAM_AGENT_UI_API_URL` points every command at another Bot API server, and `TELEGRAM_AGENT_UI_FAKE=<dir>` records every call in `<dir>/calls.jsonl` instead of sending it. `telegram-agent-ui/commands` holds the command table, and `telegram-agent-ui/telegram` holds `fetchCall` and `listen` for a program of its own. A bot on grammY uses `telegram-agent-ui/grammy` instead: `grammyCall(bot.api)` as the transport and `bot.use(grammyHandler(chat))` in its own loop.
 
 `telegram-agent-ui/store/memory` holds `memoryStore`, a store in memory with a lock per key. `telegram-agent-ui/store/file` holds `fileStore(dir)`, one JSON file per key in a directory of mode 0700, for Node and Bun on macOS and Linux, with a lock that several processes share. `telegram-agent-ui/testing` holds `fakeCall`, a transport that records calls and answers from a script, and `faultyStore`, a store that fails one chosen call before or after it runs.
+
+## Views
+
+A view is content a message cannot show, opened from the message as a Telegram Mini App: Markdown, a diff, or a page of your own HTML. It lives on a view host in your own Cloudflare account, which holds no bot token and calls nobody. `view deploy` deploys it with your `wrangler login`:
+
+```sh
+telegram-agent-ui view deploy
+# {"origin":"https://telegram-agent-ui-222.you.workers.dev","worker":"telegram-agent-ui-222","kv":"9f2c...","theme":false,"rotated":false}
+```
+
+It deploys the Worker of the installed package as `telegram-agent-ui-<bot id>` with wrangler 4.164.0 through npx, creates its KV namespace once, and sets the bot id, the allowed users and the view labels of the config. The upload key and the media key are made once and kept in the config's `.env`; `--rotate-keys` replaces both, and every media URL signed before ends. `TELEGRAM_AGENT_UI_UPLOAD_KEY` and `TELEGRAM_AGENT_UI_MEDIA_KEY` in the environment win over `.env`: such keys are deployed as they are, rotated in the environment, and refused by `--rotate-keys`. `--route views.example.com/*` serves it on a whole host of your own domain, `--account <id>` or `CLOUDFLARE_ACCOUNT_ID` picks one of several accounts, and `--theme <file>` takes a shadcn `cssVars` theme as JSON; `--no-theme` drops it. The origin, account, route and theme go into the config, and a later `view deploy` reuses them, so a sent button keeps its address.
+
+A view opens only for launch data that Telegram signed for an allowed user within the last 600 s. A page shows in a frame with an empty `sandbox`: it runs no script and loads nothing from another host. `telegram-agent-ui/view/handler` holds `createViewHandler`, the host as a function from a `Request` to a `Response` over a storage of `get`, `put` and `delete`, for any runtime with the Fetch API; `telegram-agent-ui/worker` is that function on Cloudflare KV.
 
 ## MCP
 

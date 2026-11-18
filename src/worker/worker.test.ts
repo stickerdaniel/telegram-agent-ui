@@ -1,0 +1,72 @@
+// The Cloudflare entry on a KV stand-in that answers as Workers KV does: values as ArrayBuffer
+// with their metadata, and an expiration in seconds that KV refuses under 60 s ahead.
+import { expect, test } from 'bun:test';
+import { BOT, ID, launchKey, MEDIA, MEDIA_KEY, ORIGIN, UPLOAD_KEY, USER } from '../view/fixtures.ts';
+import worker, { type Env } from './index.ts';
+
+type Stored = { value: Uint8Array; expiration: number; metadata?: { type: string } };
+
+/** Workers KV over a Map. A put with an expiration under 60 s ahead throws, as KV answers 400. */
+function fakeKv() {
+	const map = new Map<string, Stored>();
+	const kv: Env['VIEWS'] = {
+		async getWithMetadata(key) {
+			const stored = map.get(key);
+			if (!stored) return { value: null, metadata: null };
+			return { value: stored.value.slice().buffer, metadata: stored.metadata ?? null };
+		},
+		async put(key, value, { expiration, metadata }) {
+			if (expiration < Math.floor(Date.now() / 1000) + 60) throw new Error('KV PUT failed: 400 Invalid expiration');
+			map.set(key, { value: value.slice(), expiration, ...(metadata ? { metadata } : {}) });
+		},
+		async delete(key) {
+			map.delete(key);
+		},
+	};
+	return { kv, map };
+}
+
+const { hex, launch } = await launchKey();
+
+function envOf(overrides: Partial<Env> = {}) {
+	const { kv, map } = fakeKv();
+	const env: Env = { VIEWS: kv, BOT_ID: BOT, ALLOWED_USERS: JSON.stringify([USER]), UPLOAD_KEY, MEDIA_KEY, LABELS: JSON.stringify({ viewClose: 'Schließen' }), THEME: '', PUBLIC_KEY: hex, ...overrides };
+	return { env, map };
+}
+
+const call = (env: Env, path: string, init: RequestInit = {}) => worker.fetch(new Request(`${ORIGIN}${path}`, init), env);
+
+test('a view published through the Worker opens with its media, stored in KV with type and expiration', async () => {
+	const { env, map } = envOf();
+	const expiresAt = Date.now() + 30_000;
+	const auth = { Authorization: `Bearer ${UPLOAD_KEY}` };
+	expect((await call(env, `/api/media/${ID}/g1/0?e=${expiresAt}`, { method: 'PUT', headers: { ...auth, 'Content-Type': 'image/png' }, body: MEDIA.png })).status).toBe(200);
+	const upload = { generation: 'g1', expiresAt, media: [{ type: 'image/png', size: MEDIA.png.byteLength }], view: { v: 1, tabs: [{ label: 'A', content: { markdown: '![a](media:0)' } }] } };
+	expect((await call(env, `/api/view/${ID}`, { method: 'PUT', headers: auth, body: JSON.stringify(upload) })).status).toBe(200);
+	// An expiry 30 s ahead is stored 60 s ahead, the least KV takes.
+	expect(map.get(`m:${ID}:g1:0`)?.metadata).toEqual({ type: 'image/png' });
+	expect(map.get(`v:${ID}`)?.expiration).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + 59);
+
+	const opened = await call(env, `/api/view?v=${ID}`, { headers: { Authorization: `tma ${await launch()}` } });
+	expect(opened.status).toBe(200);
+	const { media } = (await opened.json()) as { media: string[] };
+	const served = await worker.fetch(new Request(media[0] ?? '', { headers: { Range: 'bytes=0-3' } }), env);
+	expect(served.status).toBe(206);
+	expect(new Uint8Array(await served.arrayBuffer())).toEqual(MEDIA.png.slice(0, 4));
+
+	const shell = await (await call(env, '/')).text();
+	expect(shell).toContain('"viewClose":"Schließen"');
+});
+
+test('a variable that breaks its format answers every request with 500 and names it', async () => {
+	const broken: Partial<Env>[] = [{ ALLOWED_USERS: '[1.5]' }, { ALLOWED_USERS: 'x' }, { LABELS: '{"viewGone":""}' }, { THEME: '{"light":{"background":"x;y"}}' }, { BOT_ID: '' }, { UPLOAD_KEY: '' }];
+	for (const overrides of broken) {
+		const { env } = envOf(overrides);
+		const response = await call(env, '/api/version');
+		expect(response.status, JSON.stringify(overrides)).toBe(500);
+		expect(await response.text()).toContain('the view host is misconfigured');
+		expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+	}
+	const { env } = envOf({ THEME: JSON.stringify({ dark: { background: '#000' } }) });
+	expect((await call(env, '/api/version')).status).toBe(200);
+});

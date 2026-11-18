@@ -21,6 +21,20 @@ export function labelIssue(labels: unknown): string | undefined {
 	return undefined;
 }
 
+/** A consumer's labels as stored JSON: known keys only, each valid once merged with the defaults. Undefined for anything else. */
+export function parseLabels(value: unknown): Partial<Labels> | undefined {
+	if (!isRecord(value) || Object.keys(value).some((key) => !(key in defaultLabels))) return undefined;
+	if (labelIssue({ ...defaultLabels, ...value }) !== undefined) return undefined;
+	const labels: Partial<Labels> = {};
+	for (const key of Object.keys(defaultLabels) as (keyof Labels)[]) {
+		const label = value[key];
+		if (key === 'hintWords') {
+			if (arrayOf(isString)(label)) labels.hintWords = [...label];
+		} else if (isString(label)) labels[key] = label;
+	}
+	return labels;
+}
+
 /** Throws ShapeError for labels that break `labelIssue`. */
 export function checkLabels(labels: Labels): Labels {
 	const issue = labelIssue(labels);

@@ -1,4 +1,4 @@
-// Imports the 8 package entries by name with plain Node, as a Node 20 consumer would, runs one
+// Imports the 10 package entries by name with plain Node, as a Node 20 consumer would, runs one
 // small call through each, and runs the bin. Run after the build: `bun run test:node`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -16,6 +16,8 @@ const { fakeCall, faultyStore } = await import('telegram-agent-ui/testing');
 const { fetchCall, listen } = await import('telegram-agent-ui/telegram');
 const { grammyCall, grammyHandler } = await import('telegram-agent-ui/grammy');
 const { commands, EXIT } = await import('telegram-agent-ui/commands');
+const { createViewHandler, verifyLaunchData } = await import('telegram-agent-ui/view/handler');
+const { default: worker } = await import('telegram-agent-ui/worker');
 const mcp = await import('telegram-agent-ui/mcp');
 const { Client, InMemoryTransport } = await import('@modelcontextprotocol/client');
 const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
@@ -87,10 +89,34 @@ await bot.handleUpdate(tap('node3', asked.sent.message));
 assert.equal((await hosted.get('node3')).status, 'answered');
 server.close();
 
+// ./view/handler: launch data signed with a generated Ed25519 key opens a view stored in a Map.
+const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+const publicKey = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('hex');
+const authDate = Math.floor(Date.now() / 1000);
+const user = '{"id":111,"first_name":"Node"}';
+const signature = Buffer.from(await crypto.subtle.sign({ name: 'Ed25519' }, pair.privateKey, new TextEncoder().encode(`222:WebAppData\nauth_date=${authDate}\nuser=${user}`))).toString('base64url');
+const initData = `user=${encodeURIComponent(user)}&auth_date=${authDate}&signature=${signature}`;
+assert.deepEqual(await verifyLaunchData(initData, { botId: '222', publicKey, allowedUsers: [111], now: Date.now() }), { ok: true, user: { id: 111, name: 'Node' } });
+const entries = new Map();
+const storage = { get: async (key) => entries.get(key), put: async (key, value, { type }) => void entries.set(key, { value, ...(type ? { type } : {}) }), delete: async (key) => void entries.delete(key) };
+const viewHost = createViewHandler({ storage, botId: '222', allowedUsers: [111], uploadKey: 'upload-key-0123456789', mediaKey: 'media-key-0123456789', publicKey });
+const viewId = 'Zr8kQ2vT0mN4xW6yB1cD3e';
+const published = { generation: 'g1', expiresAt: Date.now() + 60_000, media: [], view: { v: 1, tabs: [{ label: 'A', content: { markdown: '# A' } }] } };
+const stored = await viewHost(new Request(`https://views.example.com/api/view/${viewId}`, { method: 'PUT', headers: { Authorization: 'Bearer upload-key-0123456789' }, body: JSON.stringify(published) }));
+assert.equal(stored.status, 200);
+const opened = await viewHost(new Request(`https://views.example.com/api/view?v=${viewId}`, { headers: { Authorization: `tma ${initData}` } }));
+assert.deepEqual((await opened.json()).view, published.view);
+assert.match((await viewHost(new Request('https://views.example.com/'))).headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/]{43}=' https:\/\/telegram\.org/);
+
+// ./worker: the Cloudflare entry answers from its variables, on a KV binding of its own.
+const kv = { getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {} };
+const version = await worker.fetch(new Request('https://views.example.com/api/version'), { VIEWS: kv, BOT_ID: '222', ALLOWED_USERS: '[111]', UPLOAD_KEY: 'upload-key-0123456789', MEDIA_KEY: 'media-key-0123456789' });
+assert.deepEqual((await version.json()).formats, [1]);
+
 // ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'listen', 'mcp init'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view deploy', 'listen', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');
@@ -139,4 +165,4 @@ assert.equal(waited.structuredContent.status, 'answered');
 await stdio.close();
 rmSync(root, { recursive: true, force: true });
 
-console.log(`node ${process.version}: 8 entries import and run, and so do the bin, its supervisor and its MCP server`);
+console.log(`node ${process.version}: 10 entries import and run, and so do the bin, its supervisor and its MCP server`);
