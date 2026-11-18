@@ -608,7 +608,7 @@ test('the shell carries one script, the policy with its sha256, and labels and t
 		const response = await host(overrides).handle(raw(`GET /?v=${ID}&q=ask1&t=Mock HTTP/1.1\nHost: views.example.com`));
 		return { response, html: await response.text() };
 	};
-	const { response, html } = await shellOf({ labels: { viewClose: 'Schließen </script><b>' }, theme: { light: { background: '#fff' } } });
+	const { response, html } = await shellOf({ labels: { choose: 'Wähle </script><b>' }, theme: { light: { background: '#fff' } } });
 	expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8');
 	const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
 	const executable = scripts.filter(([, attributes]) => !/type="application\/json"/.test(attributes ?? ''));
@@ -619,7 +619,7 @@ test('the shell carries one script, the policy with its sha256, and labels and t
 		`default-src 'none'; script-src 'sha256-${hash}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src ${ORIGIN}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`,
 	);
 	const blocks = Object.fromEntries(scripts.flatMap(([, attributes, body]) => (/id="(\w+)"/.exec(attributes ?? '')?.[1] ? [[/id="(\w+)"/.exec(attributes ?? '')?.[1], JSON.parse(body ?? '')]] : [])));
-	expect(blocks.labels.viewClose).toBe('Schließen </script><b>');
+	expect(blocks.labels.choose).toBe('Wähle </script><b>');
 	expect(blocks.labels.viewGone).toBe(mergeLabels().viewGone);
 	expect(blocks.theme).toEqual({ light: { background: '#fff' } });
 	expect(html).not.toContain('</script><b>');

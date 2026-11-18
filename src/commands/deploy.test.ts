@@ -15,7 +15,7 @@ import { commands } from './table.ts';
 setDefaultTimeout(120_000);
 
 const STANDIN = join(import.meta.dir, 'wrangler-standin.ts');
-const CONFIG: Config = { v: 1, bot: { id: 222, username: 'probe_bot' }, chat: 111, users: [111, 112], labels: { viewClose: 'Schließen' }, publishRoots: [], views: {} };
+const CONFIG: Config = { v: 1, bot: { id: 222, username: 'probe_bot' }, chat: 111, users: [111, 112], labels: { choose: 'Wähle' }, publishRoots: [], views: {} };
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
 
 const roots: string[] = [];
@@ -73,7 +73,7 @@ test('a first deploy creates the namespace, fills the template and keeps both se
 	expect(deployed?.config).not.toContain('{{');
 	const toml = parse(deployed?.config ?? '');
 	expect(toml).toMatchObject({ name: 'telegram-agent-ui-222', workers_dev: true, kv_namespaces: [{ binding: 'VIEWS', id: '00000000000000000000000000000001' }] });
-	expect(toml.vars).toEqual({ BOT_ID: '222', ALLOWED_USERS: '[111,112]', LABELS: '{"viewClose":"Schließen"}', THEME: '' });
+	expect(toml.vars).toEqual({ BOT_ID: '222', ALLOWED_USERS: '[111,112]', LABELS: '{"choose":"Wähle"}', THEME: '' });
 	expect(String(toml.main)).toBe(join(import.meta.dir, '..', 'worker', 'index.ts'));
 	expect(existsSync(String(toml.main))).toBe(true);
 

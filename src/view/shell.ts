@@ -7,12 +7,12 @@
 // `<iframe sandbox>` whose `srcdoc` starts with the page policy and the resolved theme. A gallery
 // tab arrives in a later release and shows `labels.viewError` until then.
 //
-// Telegram's bottom buttons: on a tab that the context's binding names, `MainButton` reads
-// `labels.choose` and the option's label and posts the choice to `/api/answer`, and
-// `SecondaryButton` closes. On any other tab, and while no binding is visible, `MainButton`
-// closes and `SecondaryButton` is hidden; a closed binding shows Close alone and `labels.closed`.
-// A tap disables the main button until the host answers;
-// its choice id of 128 random bits stays while the same option is tried again.
+// Telegram's main button: on a tab that the context's binding names, `MainButton` reads
+// `labels.choose` and the option's label, spans the bar alone and posts the choice to
+// `/api/answer`. On any other tab, while no binding is visible, and for a closed binding, which
+// shows `labels.closed`, it is hidden: Telegram's own control closes the view. A tap disables
+// the main button until the host answers; its choice id of 128 random bits stays while the same
+// option is tried again.
 //
 // The response header names the script by its SHA-256, so the script is the same text for every
 // deployment: labels and theme reach it in two JSON data blocks of the page. The script is plain
@@ -554,7 +554,6 @@ var done = false;
 var pending = null;
 var hint = null;
 var main = app && app.MainButton;
-var secondary = app && app.SecondaryButton;
 
 function element(tag, className, text) {
 	var node = document.createElement(tag);
@@ -571,7 +570,7 @@ function say(text) {
 	hint.textContent = text;
 	hint.hidden = !text;
 }
-// Calls one method of a bottom button that the client has: an older client lacks SecondaryButton.
+// Calls one method of the main button, if the client has it and the method.
 function invoke(button, method, value) {
 	try {
 		if (button && typeof button[method] === 'function') button[method](value);
@@ -584,13 +583,13 @@ function chosenOption() {
 }
 function bottom() {
 	var option = chosenOption();
-	invoke(main, 'setText', option ? labels.choose + ' ' + option.label : labels.viewClose);
+	if (!option) {
+		invoke(main, 'hide');
+		return;
+	}
+	invoke(main, 'setText', labels.choose + ' ' + option.label);
 	invoke(main, sending ? 'disable' : 'enable');
 	invoke(main, 'show');
-	if (option) {
-		invoke(secondary, 'setText', labels.viewClose);
-		invoke(secondary, 'show');
-	} else invoke(secondary, 'hide');
 }
 // Posts the choice of option with the launch data. A 2xx means the host stored it: the shell
 // says so and closes. Old launch data ends the choice until the view opens again, and a closed
@@ -758,7 +757,7 @@ function draw(answer) {
 		parts.push(drawContext(answer.context));
 	} else if (ref) {
 		// The view of a question that shows no context yet: its slot fills once the context shows,
-		// with the binding that comes with it. Until then the main button closes.
+		// with the binding that comes with it. Until then the main button stays hidden.
 		var slot = element('div');
 		slot.hidden = true;
 		parts.push(slot);
@@ -832,9 +831,7 @@ if (app) {
 	invoke(main, 'onClick', function () {
 		var option = chosenOption();
 		if (option) choose(option);
-		else app.close();
 	});
-	invoke(secondary, 'onClick', function () { app.close(); });
 	bottom();
 	app.onEvent('themeChanged', function () { applyTheme(); frames.forEach(drawFrame); });
 	app.onEvent('activated', check);
@@ -877,13 +874,12 @@ const dataBlock = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u
  * The shell page with the labels it shows and the theme of the deployment. Neither changes the
  * script, so its hash stays the same.
  *
- *   const html = shellPage({ labels: mergeLabels({ viewClose: 'Schließen' }) });
+ *   const html = shellPage({ labels: mergeLabels({ choose: 'Wähle' }) });
  */
 export function shellPage(options: { labels: Labels; theme?: CssVars | undefined }): string {
 	const { labels } = options;
 	const shown = {
 		viewHint: labels.viewHint,
-		viewClose: labels.viewClose,
 		viewGone: labels.viewGone,
 		viewExpired: labels.viewExpired,
 		viewError: labels.viewError,

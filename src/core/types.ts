@@ -226,7 +226,6 @@ export type Labels = {
 	missed: string;
 	view: string;
 	viewHint: string;
-	viewClose: string;
 	viewGone: string;
 	viewExpired: string;
 	viewError: string;
@@ -253,7 +252,6 @@ export const defaultLabels: Readonly<Labels> = Object.freeze({
 	missed: 'The listener was away for more than 150 s. Taps from that time are lost, tap again.',
 	view: 'Open view',
 	viewHint: 'Close the view to answer in the chat.',
-	viewClose: 'Close',
 	viewGone: 'This view is gone.',
 	viewExpired: 'This view expired. Open it again from the chat.',
 	viewError: 'This view could not load.',

@@ -38,11 +38,10 @@ const BINDING = { options: [{ index: 0, label: 'Keep notes', tab: 'Notes' }, { i
 /**
  * A published view of a Markdown tab and a page tab with one image each, the context of `ask1`
  * hidden from its first read, and the shell opened at `path` with launch data. With `binding`
- * the context carries it, with `diff` the view ends with a diff tab no option names, and with
- * `secondary: false` the client has no SecondaryButton. `answer(status)` makes the next POST
- * of a choice get that status before the host sees it.
+ * the context carries it, and with `diff` the view ends with a diff tab no option names.
+ * `answer(status)` makes the next POST of a choice get that status before the host sees it.
  */
-async function openShell(path: string, hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1, options: { binding?: unknown; diff?: boolean; secondary?: boolean } = {}) {
+async function openShell(path: string, hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1, options: { binding?: unknown; diff?: boolean } = {}) {
 	const memory = memoryStorage({ hidden });
 	const handle = createViewHandler({ storage: memory.storage, botId: BOT, allowedUsers: [USER], uploadKey: UPLOAD_KEY, mediaKey: MEDIA_KEY, publicKey: hex });
 	const expiresAt = Date.now() + 86_400_000;
@@ -84,10 +83,8 @@ async function openShell(path: string, hidden = (key: string, read: number) => k
 		openLink: (url: string) => void app.calls.push(`openLink ${url}`),
 		openTelegramLink: (url: string) => void app.calls.push(`openTelegramLink ${url}`),
 		onEvent: (name: string, handler: () => void) => void app.handlers.set(name, handler),
-		/** What the bottom buttons show now. */
+		/** What the main button shows now. */
 		main: { text: '', shown: false, enabled: true },
-		secondary: { text: '', shown: false },
-		secondaryButton: () => {},
 		MainButton: {
 			setText: (text: string) => {
 				app.calls.push(`MainButton ${text}`);
@@ -100,6 +97,9 @@ async function openShell(path: string, hidden = (key: string, read: number) => k
 				app.calls.push('MainButton show');
 				app.main.shown = true;
 			},
+			hide: () => {
+				app.main.shown = false;
+			},
 			enable: () => {
 				app.main.enabled = true;
 			},
@@ -107,23 +107,6 @@ async function openShell(path: string, hidden = (key: string, read: number) => k
 				app.main.enabled = false;
 			},
 		},
-		SecondaryButton:
-			options.secondary === false
-				? undefined
-				: {
-						setText: (text: string) => {
-							app.secondary.text = text;
-						},
-						onClick: (handler: () => void) => {
-							app.secondaryButton = handler;
-						},
-						show: () => {
-							app.secondary.shown = true;
-						},
-						hide: () => {
-							app.secondary.shown = false;
-						},
-					},
 	};
 	Object.assign(window, { Telegram: { WebApp: app } });
 	const requests: string[] = [];
@@ -198,12 +181,11 @@ test('a context that shows after the view is added to the open view', async () =
 	expect(shell.memory.reads.get(`c:${ID}:ask1`)).toBe(2);
 });
 
-test("Telegram's main button closes the view, a theme change rebuilds the frame, and after 2 hours the view expires", async () => {
+test("a view without a choice shows no main button and closes through Telegram's own control, a theme change rebuilds the frame, and after 2 hours the view expires", async () => {
 	const shell = await openShell(`/?v=${ID}&q=ask1`);
 	const frame = await until(() => shell.document.querySelector('iframe'));
-	expect(shell.app.calls).toEqual(expect.arrayContaining(['ready', 'expand', 'disableVerticalSwipes', 'MainButton Close', 'MainButton show']));
-	shell.app.mainButton();
-	expect(shell.app.calls.at(-1)).toBe('close');
+	expect(shell.app.calls).toEqual(expect.arrayContaining(['ready', 'expand', 'disableVerticalSwipes']));
+	expect(shell.app.main.shown).toBe(false);
 
 	expect(frame.getAttribute('srcdoc')).toContain('color-scheme: light;');
 	shell.app.colorScheme = 'dark';
@@ -228,26 +210,24 @@ const hintOf = (document: Window['document']) => {
 const posts = (requests: string[]) => requests.filter((url) => url.startsWith('/api/answer'));
 const labels = mergeLabels();
 
-test('on a bound tab the main button chooses its option and the secondary button closes; an unbound tab and a view without q show Close alone', async () => {
+test('on a bound tab the main button alone chooses its option; an unbound tab and a view without q show no main button', async () => {
 	const bound = await openShell(`/?v=${ID}&q=ask1&t=Mock`, () => false, { binding: BINDING, diff: true });
 	await until(() => bound.app.main.text === 'Choose Use mock');
-	expect(bound.app.secondary).toEqual({ text: 'Close', shown: true });
+	expect(bound.app.main).toEqual({ text: 'Choose Use mock', shown: true, enabled: true });
 	expect(hintOf(bound.document)).toBeNull();
-	bound.app.secondaryButton();
-	expect(bound.app.calls.at(-1)).toBe('close');
 
 	const unbound = await openShell(`/?v=${ID}&q=ask1&t=Diff`, () => false, { binding: BINDING, diff: true });
 	await until(() => unbound.document.querySelector('.diff'));
-	expect(unbound.app.main).toEqual({ text: 'Close', shown: true, enabled: true });
-	expect(unbound.app.secondary.shown).toBe(false);
+	await until(() => unbound.document.querySelector('.context'));
+	expect(unbound.app.main.shown).toBe(false);
+	// A stray tap, such as a late event of a hidden button, neither posts nor closes.
 	unbound.app.mainButton();
-	expect(unbound.app.calls.at(-1)).toBe('close');
 	expect(posts(unbound.requests)).toEqual([]);
+	expect(unbound.app.calls).not.toContain('close');
 
 	const plain = await openShell(`/?v=${ID}&t=Mock`, () => false, { binding: BINDING });
 	await until(() => plain.document.querySelector('iframe'));
-	expect(plain.app.main.text).toBe('Close');
-	expect(plain.app.secondary.shown).toBe(false);
+	expect(plain.app.main.shown).toBe(false);
 	expect(hintOf(plain.document)).toBe(labels.viewHint);
 });
 
@@ -262,7 +242,7 @@ test('a tap on the main button posts the choice with the launch data, shows labe
 	expect(url).toMatch(new RegExp(`^/api/answer\\?v=${ID}&q=ask1&n=1&c=[A-Za-z0-9_-]{22}$`));
 	const key = `a:${ID}:ask1:${new URL(url ?? '', ORIGIN).searchParams.get('c')}`;
 	expect([...shell.memory.entries.keys()]).toContain(key);
-	expect(shell.app.main.text).toBe('Close');
+	expect(shell.app.main.shown).toBe(false);
 });
 
 test('a failed POST keeps the view open and sends the same choice id again, and old launch data asks to open the view again', async () => {
@@ -285,15 +265,8 @@ test('a failed POST keeps the view open and sends the same choice id again, and 
 	stale.app.mainButton();
 	await until(() => hintOf(stale.document) === labels.viewExpired);
 	setSystemTime();
-	expect(stale.app.main.text).toBe('Close');
+	expect(stale.app.main.shown).toBe(false);
 	expect([...stale.memory.entries.keys()].some((key) => key.startsWith('a:'))).toBe(false);
-});
-
-test('a client without SecondaryButton keeps the choose button', async () => {
-	const shell = await openShell(`/?v=${ID}&q=ask1&t=Notes`, () => false, { binding: BINDING, secondary: false });
-	await until(() => shell.app.main.text === 'Choose Keep notes');
-	shell.app.mainButton();
-	await until(() => hintOf(shell.document) === labels.chosen);
 });
 
 test('a binding that shows late turns the main button into Choose, and one still missing after 10 s shows labels.viewLate', async () => {
@@ -307,16 +280,14 @@ test('a binding that shows late turns the main button into Choose, and one still
 	// The shell's pauses run at once here; its 10 s of asking end once the clock passes them.
 	setSystemTime(new Date(Date.now() + 11_000));
 	await until(() => hintOf(missing.document) === labels.viewLate);
-	expect(missing.app.main.text).toBe('Close');
-	expect(missing.app.secondary.shown).toBe(false);
+	expect(missing.app.main.shown).toBe(false);
 });
 
-test('a closed binding shows Close alone with labels.closed, and the main button closes without a POST', async () => {
+test('a closed binding shows labels.closed and no main button, and a stray tap neither posts nor closes', async () => {
 	const shell = await openShell(`/?v=${ID}&q=ask1&t=Mock`, () => false, { binding: { ...BINDING, closed: true } });
 	await until(() => hintOf(shell.document) === labels.closed);
-	expect(shell.app.main).toEqual({ text: 'Close', shown: true, enabled: true });
-	expect(shell.app.secondary.shown).toBe(false);
+	expect(shell.app.main.shown).toBe(false);
 	shell.app.mainButton();
-	expect(shell.app.calls.at(-1)).toBe('close');
 	expect(posts(shell.requests)).toEqual([]);
+	expect(shell.app.calls).not.toContain('close');
 });

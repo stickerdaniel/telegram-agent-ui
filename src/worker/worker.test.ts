@@ -39,7 +39,7 @@ const { hex, launch } = await launchKey();
 
 function envOf(overrides: Partial<Env> = {}) {
 	const { kv, map } = fakeKv();
-	const env: Env = { VIEWS: kv, BOT_ID: BOT, ALLOWED_USERS: JSON.stringify([USER]), UPLOAD_KEY, MEDIA_KEY, LABELS: JSON.stringify({ viewClose: 'Schließen' }), THEME: '', PUBLIC_KEY: hex, ...overrides };
+	const env: Env = { VIEWS: kv, BOT_ID: BOT, ALLOWED_USERS: JSON.stringify([USER]), UPLOAD_KEY, MEDIA_KEY, LABELS: JSON.stringify({ choose: 'Wähle' }), THEME: '', PUBLIC_KEY: hex, ...overrides };
 	return { env, map };
 }
 
@@ -64,7 +64,7 @@ test('a view published through the Worker opens with its media, stored in KV wit
 	expect(new Uint8Array(await served.arrayBuffer())).toEqual(MEDIA.png.slice(0, 4));
 
 	const shell = await (await call(env, '/')).text();
-	expect(shell).toContain('"viewClose":"Schließen"');
+	expect(shell).toContain('"choose":"Wähle"');
 });
 
 test('choices posted through the Worker are listed across every page of KV and removed one by one', async () => {
