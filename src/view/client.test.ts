@@ -260,7 +260,7 @@ test('put writes every media object before the view object, under a new id of 22
 	const opened = await server.open(first.id);
 	expect(opened.view).toEqual({ v: 1, tabs: [{ label: 'Shots', content: { gallery: [{ media: 0, type: 'image/png' }, { media: 1, type: 'image/jpeg', caption: 'B' }] } }] });
 	expect((await fetch(opened.media[1] ?? '')).headers.get('Content-Type')).toBe('image/jpeg');
-	expect(await client.has(first.id)).toEqual({ kind: 'present', tabs: ['Shots'] });
+	expect(await client.has(first.id)).toEqual({ kind: 'present', tabs: ['Shots'], expiresAt: again.expiresAt });
 });
 
 test('a publish that fails after its media leaves the earlier view readable with its media', async () => {

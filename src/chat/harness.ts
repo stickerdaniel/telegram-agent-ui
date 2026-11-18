@@ -157,16 +157,19 @@ export function setup(io: Partial<ChatIO> = {}) {
 	return { server, store, inner: checked.store, breaches: checked.breaches, clock, chat };
 }
 
-/** A view client whose `context` records each write and fails the writes `failing` names by their 0-based index. */
+/** A view client whose `context` records each write and fails the writes `failing` names by their 0-based index. It holds no view and no choice. */
 export function fakeViews(failing: number[] = []) {
-	const writes: { id: string; ref: string; body: unknown }[] = [];
+	const writes: { id: string; ref: string; body: unknown; choice?: unknown }[] = [];
 	const views: ViewClient = {
 		put: async () => ({ kind: 'refused', reason: 'not in this stage' }),
 		has: async () => ({ kind: 'missing' }),
 		delete: async () => ({ kind: 'missing' }),
-		async context(id, ref, body) {
+		version: async () => ({ kind: 'ok', formats: ['1', 'answers'] }),
+		choices: async () => ({ kind: 'ok', choices: [] }),
+		removeChoice: async () => ({ kind: 'ok' }),
+		async context(id, ref, body, choice) {
 			const index = writes.length;
-			writes.push({ id, ref, body });
+			writes.push({ id, ref, body, ...(choice !== undefined ? { choice } : {}) });
 			if (failing.includes(index)) throw new Error('the view host did not answer');
 			return { kind: 'ok' };
 		},

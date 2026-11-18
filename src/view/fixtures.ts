@@ -17,14 +17,21 @@ type Entry = { value: Uint8Array; type?: string; expiresAt: number };
 /**
  * A storage in memory. It keeps every value past its expiry, so a test sees the handler's own
  * expiry checks. A read that `hidden(key, read)` names returns undefined, where `read` counts the
- * reads of that key from 1, as a storage that shows a key late, or misses it once, does. Each
- * read takes `latency` ms. `writes` lists every put and delete.
+ * reads of that key from 1, as a storage that shows a key late, or misses it once, does. A list
+ * leaves out each key that `unlisted(key, list)` names, where `list` counts the lists from 1, so
+ * keys show in another order than they were written. Each read takes `latency` ms. `writes`
+ * lists every put and delete.
  */
-export function memoryStorage(options: { hidden?: (key: string, read: number) => boolean; latency?: number } = {}) {
+export function memoryStorage(options: { hidden?: (key: string, read: number) => boolean; unlisted?: (key: string, list: number) => boolean; latency?: number } = {}) {
 	const entries = new Map<string, Entry>();
 	const reads = new Map<string, number>();
 	const writes: string[] = [];
+	let lists = 0;
 	const storage: ViewStorage = {
+		async list(prefix) {
+			const count = ++lists;
+			return [...entries.keys()].filter((key) => key.startsWith(prefix) && !options.unlisted?.(key, count)).sort();
+		},
 		async get(key) {
 			const count = (reads.get(key) ?? 0) + 1;
 			reads.set(key, count);

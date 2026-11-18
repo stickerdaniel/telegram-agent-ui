@@ -16,7 +16,7 @@ function convert(param: Param, text: string): { ok: true; value: unknown } | { o
 		const value = Number(text);
 		return /^-?\d+$/.test(text) && Number.isSafeInteger(value) ? { ok: true, value } : { ok: false, message: `${flagOf(param)} needs an integer, not "${text}"` };
 	}
-	if (type === 'json') {
+	if (type === 'json' && !param.cli?.text) {
 		try {
 			return { ok: true, value: JSON.parse(text) };
 		} catch {

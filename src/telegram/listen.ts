@@ -4,15 +4,16 @@
 // message for `onMessage`, and only then moves the cursor, so a crash in between fetches the
 // update again, and the question's replay check makes the second `handle` a no-op. Answers
 // reach the consumer through `chat.flush` and messages through the courier of messages.ts, both
-// at the start with `restart`, every 30 s and after each new one. Every write the listener starts
-// ends before it gives up the lock.
+// at the start with `restart`, every 30 s and after each new one. With a view client, it applies
+// the choices its view host stored at the start and every 3 s, see `applyChoices`. Every write
+// the listener starts ends before it gives up the lock.
 import type { Message } from '@grammyjs/types';
 import { message } from '../core/builders.ts';
 import { arrayOf, isInt, isNat, isRecord, isString } from '../core/check.ts';
 import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
-import { bodyLike } from '../core/render.ts';
-import { type Call, type CallResponse, type Handled, type Labels, LockTimeout, ShapeError, type Store, TokenRefused, type Update } from '../core/types.ts';
+import { bindingOf, bodyLike } from '../core/render.ts';
+import { type Call, type CallResponse, type Handled, type Labels, LockTimeout, type Question, ShapeError, type Store, type StoredChoice, TokenRefused, type Update, type ViewClient } from '../core/types.ts';
 import { NO_ANSWER } from '../chat/calls.ts';
 import { type Chat, indexKey, tombstoneKey } from '../chat/create.ts';
 import { LISTENER_KEY, parseListener, writeListener } from '../chat/listener.ts';
@@ -23,9 +24,10 @@ export type { Inbound };
 
 /**
  * Timing of the listener in ms: `beat` is how often it writes its heartbeat and flushes, `pause`
- * how long it waits after a poll that failed. The tests of this package shorten both.
+ * how long it waits after a poll that failed, `choices` how often it reads the choices of its
+ * view host. The tests of this package shorten them.
  */
-export const LISTEN = { beat: 30_000, pause: 5_000 };
+export const LISTEN = { beat: 30_000, pause: 5_000, choices: 3_000 };
 /** The `timeout` of every long poll, in seconds. */
 export const POLL_TIMEOUT = 50;
 /** Telegram drops a tap that no poll fetched within this many ms. */
@@ -33,6 +35,15 @@ export const MISSED_AFTER = 150_000;
 /** A closed question is deleted this many ms after its creation. */
 export const KEEP_CLOSED = 30 * 86_400_000;
 const CLEAN_EVERY = 3_600_000;
+
+/**
+ * Whether the view host may still take choices for a closed question answered in its view: its
+ * closed binding is unpaid, or a recheck is due because an earlier context write got no answer
+ * and may still land over the closed one. Either ends at the question's `expiresAt`, from which
+ * on the host refuses every choice by the binding's own expiry.
+ */
+const owesHost = (question: Question, at: number): boolean =>
+	question.bindingOwed === true || (bindingOf(question) !== undefined && question.shown.recheckAt !== undefined && question.expiresAt !== undefined && at < question.expiresAt);
 // Telegram picks the next update id at random after a week without updates. An offset from
 // before such a week could lie above the new ids and confirm them unread, so a cursor older
 // than 6 days is not sent.
@@ -55,6 +66,8 @@ export type ListenOptions = {
 	labels?: Partial<Labels>;
 	/** The meta keys an answer command needs. With it, the `listener` key tells an asker that answers are pushed. */
 	push?: { metaKeys: string[] };
+	/** The client of the view host of `chat`. With it, the listener applies the choices made in views. */
+	views?: ViewClient;
 	/** Default Date.now. */
 	now?: () => number;
 	/** Progress lines: failed polls, failed flushes, skipped updates. */
@@ -67,6 +80,63 @@ const parseCursor = (value: unknown): Cursor | undefined => (isRecord(value) && 
 const describe = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300);
 /** An update as JSON delivers it. Only its id is checked here: `handle` checks every field it reads and rejects the rest with ShapeError. */
 export const isUpdate = (value: unknown): value is Update => isRecord(value) && isNat(value.update_id);
+
+/** What one pass of `applyChoices` did: answers it applied, choices it removed from the host, and choices it left for the next pass. */
+export type ChoicePass = { answered: number; removed: number; left: number };
+
+/** Choices in the order they are applied: by the host's time, then by choice id. */
+const byTime = (a: StoredChoice, b: StoredChoice) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/**
+ * One pass over the choices the view host stored. It lists them through `views.choices()`,
+ * which changes nothing, and applies each in the order of `at`, then choice id, with
+ * `chat.choose`. A choice is removed from the host only after its result is stored, so a pass
+ * that dies between the two applies it again later as a repeat, which changes nothing. A choice
+ * whose store failed stays for the next pass, and so do the later choices of its ref, which keeps
+ * their order. A failed removal leaves the choice too. Rejects when the host gives no list, and
+ * with TokenRefused when an edit meets a rejected token.
+ *
+ *   const pass = await applyChoices({ chat, views });
+ *   if (pass.answered > 0) await chat.flush();
+ */
+export async function applyChoices(options: { chat: Chat; views: ViewClient; log?: (line: string) => void; stopped?: () => boolean }): Promise<ChoicePass> {
+	const { chat, views } = options;
+	const log = options.log ?? (() => {});
+	const read = await views.choices();
+	if (read.kind !== 'ok') throw new Error(`the view host refused to list its choices: ${read.reason}`);
+	const pass: ChoicePass = { answered: 0, removed: 0, left: 0 };
+	// The refs whose earlier choice stays for the next pass: their later choices wait with it.
+	const waiting = new Set<string>();
+	for (const choice of [...read.choices].sort(byTime)) {
+		if (options.stopped?.() || waiting.has(choice.ref)) {
+			pass.left++;
+			continue;
+		}
+		let handled: Handled;
+		try {
+			handled = await chat.choose(choice);
+		} catch (error) {
+			if (error instanceof TokenRefused) throw error;
+			if (!(error instanceof ShapeError)) {
+				waiting.add(choice.ref);
+				pass.left++;
+				log(`choice ${choice.key} was not applied and stays for the next pass: ${describe(error)}`);
+				continue;
+			}
+			// A choice that breaks its type can never apply: it is removed like a refused one.
+			log(`choice ${choice.key} breaks its type: ${error.message}`);
+			handled = { kind: 'ignored' };
+		}
+		if (handled.kind === 'answered') pass.answered++;
+		const removed = await views.removeChoice(choice.key).catch((error: unknown) => ({ kind: 'refused' as const, reason: describe(error) }));
+		if (removed.kind === 'ok') pass.removed++;
+		else {
+			pass.left++;
+			log(`choice ${choice.key} was applied and stays on the view host for the next pass: ${removed.reason}`);
+		}
+	}
+	return pass;
+}
 
 /** Why a getUpdates answer stops the listener, or undefined: a 409 for a second poll or a webhook, a 401 for the token. */
 function stopFor(response: CallResponse): Exclude<Stopped, { reason: 'signal' | 'lease' }> | undefined {
@@ -90,7 +160,10 @@ function stopFor(response: CallResponse): Exclude<Stopped, { reason: 'signal' | 
  * this run or since the previous one, the next poll asks with `timeout: 0`, and once it answers
  * the listener sends `labels.missed` while a question takes answers. Every 30 s it writes its
  * heartbeat and delivers what is owed, and once an hour it deletes closed questions older than
- * 30 days whose newest answer was delivered, leaving a tombstone.
+ * 30 days whose newest answer was delivered and for which the view host takes no choice,
+ * leaving a tombstone. With `views`, it runs
+ * `applyChoices` at the start and every 3 s, one pass at a time, and flushes after a pass that
+ * applied an answer.
  *
  * It stops on a 409, which means a newer poll on the token or a webhook, and on a rejected
  * token, and never polls again after either. Before it returns, every delivery and write it
@@ -174,9 +247,34 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 		if (messages) track(messages.deliver(restart ? { restart: true } : {}).catch((error: unknown) => log(`message delivery failed: ${describe(error)}`)));
 	};
 
+	// One pass over the view host's choices at a time; an answer it applied is delivered by a flush.
+	const { views } = options;
+	let picking = false;
+	const pick = () => {
+		if (!views || picking || stopped) return;
+		picking = true;
+		track(
+			applyChoices({ chat, views, log, stopped: () => stopped !== undefined })
+				.then(
+					(pass) => {
+						if (pass.answered > 0) flush();
+					},
+					(error: unknown) => {
+						if (error instanceof TokenRefused) halt(tokenStop(error));
+						else log(`the choices of the view host were not read: ${describe(error)}`);
+					},
+				)
+				.finally(() => {
+					picking = false;
+				}),
+		);
+	};
+
 	/**
-	 * Deletes every closed question older than KEEP_CLOSED whose newest answer was delivered: the
-	 * tombstone first, then the index entry, then the question. An answer still owed keeps its question.
+	 * Deletes every closed question older than KEEP_CLOSED whose newest answer was delivered and
+	 * whose view host holds its closed binding: the tombstone first, then the index entry, then
+	 * the question. An answer still owed keeps its question, and so does a host that may still
+	 * take choices for it (`owesHost`), until the question's `expiresAt` at the latest.
 	 */
 	async function clean(): Promise<void> {
 		for (const key of await store.list('q:')) {
@@ -184,7 +282,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 				await store.lock(key, async () => {
 					const question = parseQuestion(await store.get(key));
 					if (!question || question.status !== 'closed' || now() - question.createdAt < KEEP_CLOSED) return;
-					if (question.delivery.seq < question.seq) return;
+					if (question.delivery.seq < question.seq || owesHost(question, now())) return;
 					await store.set(tombstoneKey(question.ref), { v: 1, at: now() });
 					if (question.sent) await store.delete(indexKey(question.sent));
 					await store.delete(key);
@@ -263,6 +361,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 			cleaning();
 		}
 	}, LISTEN.beat);
+	const choiceTimer = views ? setInterval(pick, LISTEN.choices) : undefined;
 	try {
 		const hook = await unlessStopped(call({ method: 'getWebhookInfo', payload: {} }));
 		if (hook) {
@@ -274,6 +373,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 			flush(true);
 			deliverMessages(true);
 			cleaning();
+			pick();
 		}
 		let cursor = parseCursor(await store.get(CURSOR_KEY));
 		while (!stopped) {
@@ -318,6 +418,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 		}
 	} finally {
 		clearInterval(timer);
+		clearInterval(choiceTimer);
 		signal.removeEventListener('abort', onSignal);
 		// No timer starts new work any more; what runs can still start a pass of its own, so drain until nothing is left.
 		while (pending.size > 0) await Promise.allSettled([...pending]);

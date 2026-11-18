@@ -3,10 +3,11 @@
 // object last, whose write commits the generation: a publish that fails midway leaves the
 // earlier view readable and its own media to expire unread. A storage may show a new key late,
 // so `context` and `has` ask again while the host answers 404, for up to 10 s.
-import { isRecord, isString } from '../core/check.ts';
+import { arrayOf, isInt, isNat, isRecord, isString } from '../core/check.ts';
+import { isUser } from '../core/guards.ts';
 import { viewUrl } from '../core/render.ts';
-import { VIEW_ID } from '../core/shape.ts';
-import type { Body, HostRefusal, PreparedView, ViewClient } from '../core/types.ts';
+import { CHOICE_ID, REF, VIEW_ID } from '../core/shape.ts';
+import type { Body, ChoiceBinding, HostRefusal, PreparedView, StoredChoice, ViewClient } from '../core/types.ts';
 
 /** How long a view lives by default and at most, in days. */
 export const VIEW_TTL = { default: 7, most: 365 } as const;
@@ -61,6 +62,35 @@ function tabsOf(response: Response): string[] | undefined {
 	}
 }
 
+/** The expiry of a HEAD answer, or undefined when its header breaks its format. */
+function expiryOf(response: Response): number | undefined {
+	const text = response.headers.get('View-Expires-At') ?? '';
+	return /^\d{1,15}$/.test(text) ? Number(text) : undefined;
+}
+
+/** The JSON of an answer, or undefined for one that is no JSON. */
+async function jsonOf(response: Response): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch {
+		return undefined;
+	}
+}
+
+/** A choice as `GET /api/answers` lists it, checked field by field. */
+const isStoredChoice = (value: unknown): value is StoredChoice =>
+	isRecord(value) &&
+	isString(value.key) &&
+	isString(value.view) &&
+	VIEW_ID.test(value.view) &&
+	isString(value.ref) &&
+	REF.test(value.ref) &&
+	isString(value.id) &&
+	CHOICE_ID.test(value.id) &&
+	isNat(value.index) &&
+	isUser(value.user) &&
+	isNat(value.at);
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -71,11 +101,14 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  *   `ttlDays` days (7 by default, at most 365). Repeating it with the same id is safe: the last
  *   write that completes wins. `uncertain` means the view object may have been stored: put it
  *   again with that id.
- * - `context` stores a question's body under the view and its ref. `missing` means the view is
- *   not on the host after the late window.
- * - `has` returns the view's tab labels. `delete` removes the view and its media.
+ * - `context` stores a question's body under the view and its ref, with the binding `choice` of
+ *   a question answered in the view. `missing` means the view is not on the host after the late
+ *   window.
+ * - `has` returns the view's tab labels and its expiry. `delete` removes the view and its media.
+ * - `version` returns the formats the host lists: `answers` once it takes choices.
+ * - `choices` lists the stored choices and changes nothing. `removeChoice` deletes one by its key.
  *
- * `context`, `has` and `delete` reject when the host gives no answer or answers 5xx.
+ * Every method but `put` rejects when the host gives no answer or answers 5xx.
  *
  *   const views = viewClient({ origin: 'https://views.example.com', uploadKey });
  *   const put = await views.put(prepared, { ttlDays: 3 });
@@ -148,8 +181,10 @@ export function viewClient(config: ViewClientConfig): ViewClient {
 			return { kind: 'ok', id, url: viewUrl({ id, origin }), expiresAt };
 		},
 
-		async context(id: string, ref: string, body: Body) {
-			const response = await late(() => request('PUT', `${viewPath(id)}/context/${encodeURIComponent(ref)}`, { body: JSON.stringify(body), type: 'application/json' }));
+		async context(id: string, ref: string, body: Body, choice?: ChoiceBinding) {
+			// A body alone keeps the form a host of stage 5 takes.
+			const sent = JSON.stringify(choice ? { body, choice } : body);
+			const response = await late(() => request('PUT', `${viewPath(id)}/context/${encodeURIComponent(ref)}`, { body: sent, type: 'application/json' }));
 			if (response.status === 404) return { kind: 'missing' };
 			if (!response.ok) return refusal(response);
 			await response.body?.cancel();
@@ -161,7 +196,31 @@ export function viewClient(config: ViewClientConfig): ViewClient {
 			if (response.status === 404) return { kind: 'missing' };
 			if (!response.ok) return { kind: 'refused', reason: `the view host answered HTTP ${response.status}`, status: response.status };
 			const tabs = tabsOf(response);
-			return tabs ? { kind: 'present', tabs } : { kind: 'refused', reason: 'the view host named no tab labels', status: response.status };
+			const expiresAt = expiryOf(response);
+			return tabs && expiresAt !== undefined ? { kind: 'present', tabs, expiresAt } : { kind: 'refused', reason: 'the view host named no tab labels or no expiry', status: response.status };
+		},
+
+		async version() {
+			const response = await request('GET', '/api/version');
+			if (!response.ok) return refusal(response);
+			const value = await jsonOf(response);
+			const formats = isRecord(value) && Array.isArray(value.formats) ? value.formats.filter((format) => isString(format) || isInt(format)).map(String) : undefined;
+			return formats ? { kind: 'ok', formats } : { kind: 'refused', reason: 'the view host named no formats', status: response.status };
+		},
+
+		async choices() {
+			const response = await request('GET', '/api/answers');
+			if (!response.ok) return refusal(response);
+			const value = await jsonOf(response);
+			const choices = isRecord(value) && arrayOf(isStoredChoice)(value.choices) ? value.choices : undefined;
+			return choices ? { kind: 'ok', choices } : { kind: 'refused', reason: 'the view host listed no choices', status: response.status };
+		},
+
+		async removeChoice(key: string) {
+			const response = await request('DELETE', `/api/answer/${encodeURIComponent(key)}`);
+			if (!response.ok) return refusal(response);
+			await response.body?.cancel();
+			return { kind: 'ok' };
 		},
 
 		async delete(id: string) {

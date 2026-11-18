@@ -12,8 +12,9 @@ import { choice, text } from '../core/builders.ts';
 import { isRecord } from '../core/check.ts';
 import { parseQuestion } from '../core/parse.ts';
 import { reduce } from '../core/reduce.ts';
-import { defaultLabels, type Question, ShapeError, type Store } from '../core/types.ts';
-import { tap } from '../fixtures.ts';
+import { defaultLabels, type Question, ShapeError, type Store, type ViewClient } from '../core/types.ts';
+import { ORIGIN, tap, VIEW } from '../fixtures.ts';
+import { fakeViews } from '../chat/harness.ts';
 import { fileStore } from '../store/file.ts';
 import { memoryStore } from '../store/memory.ts';
 import { type FakeBotApi, fakeBotApi, TOKEN } from './fake-server.ts';
@@ -276,6 +277,113 @@ test('closed questions older than 30 days are deleted with a tombstone, all othe
 	expect(await store.get('t:old')).toMatchObject({ v: 1 });
 	expect(await store.get('m:111:7')).toBeUndefined();
 	expect(await store.list('q:')).toEqual(['q:fresh', 'q:open']);
+});
+
+test('a closed question older than 30 days that owes the view host its closed binding survives cleanup, and goes once it is stored', async () => {
+	const store = memoryStore();
+	const old = Date.now() - KEEP_CLOSED - 1_000;
+	const inView = choice({ markdown: 'Which layout should stay?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }], { view: VIEW, in: 'view' });
+	/** A question asked 30 days ago on message `message`, closed then; `expiresAt` lies a day ahead. */
+	const closedOld = (ref: string, message: number, spec: Question['spec']): Question => {
+		const events: Parameters<typeof reduce>[1][] = [{ type: 'sent', sent: { chat: 111, message, files: [], ref, view: { id: VIEW, origin: ORIGIN } } }, { type: 'close' }];
+		const first = reduce(undefined, { type: 'ask', spec, ref, chat: 111, allow: [111], viewOrigin: ORIGIN, expiresAt: Date.now() + 86_400_000 }, { now: old }).question;
+		const last = events.reduce<Question | undefined>((question, event) => question && reduce(question, event, { now: old }).question, first);
+		if (!last) throw new Error('unreachable');
+		return last;
+	};
+	await store.set('q:owing', closedOld('owing', 11, inView));
+	expect(parseQuestion(await store.get('q:owing'))).toMatchObject({ status: 'closed', bindingOwed: true });
+	// A closed question in the chat beside it shows that the cleanup ran.
+	await store.set('q:done', closedOld('done', 12, choice({ markdown: 'Merge?' }, [{ label: 'A' }, { label: 'B' }], { view: VIEW })));
+
+	// The view host takes no write until `up`.
+	let up = false;
+	const host = fakeViews();
+	const views: ViewClient = {
+		...host.views,
+		context: async (...args) => {
+			if (!up) throw new Error('the view host is down');
+			return host.views.context(...args);
+		},
+	};
+	const server = fakeBotApi();
+	cleanups.push(() => server.stop());
+	const call = fetchCall({ token: TOKEN, apiUrl: server.url });
+	const chat = createChat({ call, store, chat: 111, viewOrigin: ORIGIN, views });
+	const run = () => {
+		const controller = new AbortController();
+		const running = listen({ chat, call, store, signal: controller.signal });
+		cleanups.push(async () => {
+			controller.abort();
+			await running.catch(() => {});
+		});
+		return async () => {
+			controller.abort();
+			await running;
+		};
+	};
+	const stop = run();
+	await until(async () => (await store.get('q:done')) === undefined, 'the cleanup of the question that owes nothing');
+	await stop();
+	expect(parseQuestion(await store.get('q:owing'))).toMatchObject({ bindingOwed: true });
+	expect(await store.get('t:owing')).toBeUndefined();
+
+	up = true;
+	await chat.flush();
+	expect(host.writes.at(-1)).toMatchObject({ ref: 'owing', choice: { closed: true } });
+	expect(parseQuestion(await store.get('q:owing'))).not.toHaveProperty('bindingOwed');
+	run();
+	await until(async () => (await store.get('q:owing')) === undefined, 'the cleanup once the binding is stored');
+	expect(await store.get('t:owing')).toMatchObject({ v: 1 });
+});
+
+test('a closed question older than 30 days answered in its view survives cleanup while a recheck is due, since an earlier context write may still land over the closed one', async () => {
+	const store = memoryStore();
+	const old = Date.now() - KEEP_CLOSED - 1_000;
+	/** A question asked 30 days ago on message `message` and closed then, its closed binding stored, with a recheck a minute ahead. */
+	const rechecking = (ref: string, message: number, spec: Question['spec']): Question => {
+		const events: Parameters<typeof reduce>[1][] = [{ type: 'sent', sent: { chat: 111, message, files: [], ref, view: { id: VIEW, origin: ORIGIN } } }, { type: 'close' }];
+		const first = reduce(undefined, { type: 'ask', spec, ref, chat: 111, allow: [111], viewOrigin: ORIGIN, expiresAt: Date.now() + 86_400_000 }, { now: old }).question;
+		const last = events.reduce<Question | undefined>((question, event) => question && reduce(question, event, { now: old }).question, first);
+		if (!last) throw new Error('unreachable');
+		const { bindingOwed: _paid, ...closed } = last;
+		return { ...closed, shown: { ...closed.shown, done: closed.shown.want, recheckAt: Date.now() + 60_000 } };
+	};
+	const inView = rechecking('late', 11, choice({ markdown: 'Which layout should stay?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }], { view: VIEW, in: 'view' }));
+	await store.set('q:late', inView);
+	expect(parseQuestion(await store.get('q:late'))).toMatchObject({ status: 'closed', shown: { recheckAt: expect.any(Number) } });
+	expect(parseQuestion(await store.get('q:late'))).not.toHaveProperty('bindingOwed');
+	// A question answered in the chat with the same recheck goes: its host takes no choice for it.
+	await store.set('q:chat', rechecking('chat', 12, choice({ markdown: 'Merge?' }, [{ label: 'A' }, { label: 'B' }], { view: VIEW })));
+
+	const server = fakeBotApi();
+	cleanups.push(() => server.stop());
+	const call = fetchCall({ token: TOKEN, apiUrl: server.url });
+	const chat = createChat({ call, store, chat: 111, viewOrigin: ORIGIN, views: fakeViews().views });
+	const run = () => {
+		const controller = new AbortController();
+		const running = listen({ chat, call, store, signal: controller.signal });
+		cleanups.push(async () => {
+			controller.abort();
+			await running.catch(() => {});
+		});
+		return async () => {
+			controller.abort();
+			await running;
+		};
+	};
+	const stop = run();
+	await until(async () => (await store.get('q:chat')) === undefined, 'the cleanup of the question answered in the chat');
+	await stop();
+	expect(parseQuestion(await store.get('q:late'))).toMatchObject({ status: 'closed' });
+	expect(await store.get('t:late')).toBeUndefined();
+
+	// Once the recheck confirmed the message and its context, the question goes.
+	const { recheckAt: _done, ...shown } = inView.shown;
+	await store.set('q:late', { ...inView, shown });
+	run();
+	await until(async () => (await store.get('q:late')) === undefined, 'the cleanup once the recheck is done');
+	expect(await store.get('t:late')).toMatchObject({ v: 1 });
 });
 
 test('a Chat reused by two listeners in a row stops at the budget info reports as spent', async () => {

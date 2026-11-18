@@ -7,7 +7,7 @@ export { classify } from './core/classify.ts';
 export { mergeLabels } from './core/labels.ts';
 export { parseQuestion } from './core/parse.ts';
 export { locate, reduce } from './core/reduce.ts';
-export { render, renderEdit } from './core/render.ts';
+export { bindingOf, render, renderEdit } from './core/render.ts';
 export {
 	type Answer,
 	type AnswerSpec,
@@ -16,6 +16,7 @@ export {
 	type Call,
 	type CallClass,
 	type CallResponse,
+	type ChoiceBinding,
 	defaultLabels,
 	type Handled,
 	type HostRefusal,
@@ -34,6 +35,7 @@ export {
 	type Spec,
 	type Step,
 	type Store,
+	type StoredChoice,
 	type StoredContent,
 	type StoredView,
 	TokenRefused,

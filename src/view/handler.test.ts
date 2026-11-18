@@ -10,7 +10,7 @@ import type { StoredView } from '../core/types.ts';
 import { BOT, ID, launchKey, MEDIA, MEDIA_KEY, memoryStorage, ORIGIN, raw, UPLOAD_KEY, USER } from './fixtures.ts';
 import { createViewHandler, type ViewHandlerConfig } from './handler.ts';
 import { MEDIA_WAIT, mediaPath, PLACEHOLDER_SVG } from './media.ts';
-import { decode, parseContext, parseManifest, parseViewRecord, VERSION } from './stored.ts';
+import { decode, parseChoiceRecord, parseContext, parseManifest, parseViewRecord, VERSION } from './stored.ts';
 
 // A missing media object is asked for again over 200 ms here, in place of 10 s.
 MEDIA_WAIT.window = 200;
@@ -91,7 +91,23 @@ async function publish(at: Host, generation = 'g1', expiresAt = Date.now() + 7 *
 	expect((await putView(at, { generation, expiresAt, media, view: VIEW }, UPLOAD_KEY, id)).status).toBe(200);
 }
 
-type Opened = { view: StoredView; context?: unknown; media: string[]; expiresAt: number };
+type Opened = { view: StoredView; context?: unknown; choice?: unknown; media: string[]; expiresAt: number };
+
+/** The binding of a question answered in the view of VIEW: one option per tab. */
+const BINDING = { options: [{ index: 0, label: 'Keep notes', tab: 'Notes' }, { index: 1, label: 'Use mock', tab: 'Mock' }], once: false };
+const CHOICE = 'c'.repeat(22);
+
+/** The shell's POST of a choice, with launch data unless it is undefined, and an empty body unless `body` is given. */
+const postAnswer = (at: Host, query: string, initData?: string, body?: string) =>
+	at.handle(
+		raw(
+			`POST /api/answer?${query} HTTP/1.1
+			Host: views.example.com
+			${initData === undefined ? 'Accept: application/json' : `Authorization: tma ${initData}`}${body === undefined ? '' : `\n\n${body}`}`,
+		),
+	);
+const answersOf = (at: Host, key = UPLOAD_KEY) => at.handle(raw(`GET /api/answers HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${key}`));
+const deleteAnswer = (at: Host, key: string, uploadKey = UPLOAD_KEY) => at.handle(raw(`DELETE /api/answer/${encodeURIComponent(key)} HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${uploadKey}`));
 async function open(at: Host, query = `v=${ID}`): Promise<Opened> {
 	const response = await getView(at, query, await launch());
 	expect(response.status).toBe(200);
@@ -113,11 +129,11 @@ async function expectPlaceholder(response: Response) {
 	expect(await response.text()).toBe(PLACEHOLDER_SVG);
 }
 
-test('GET /api/version names this version and the view formats, with the headers of every answer', async () => {
+test('GET /api/version names this version, the view formats and answers, with the headers of every answer', async () => {
 	const at = host();
 	const response = await at.handle(raw('GET /api/version HTTP/1.1\nHost: views.example.com'));
 	expect(response.status).toBe(200);
-	expect(await response.json()).toEqual({ version: VERSION, formats: [1] });
+	expect(await response.json()).toEqual({ version: VERSION, formats: [1, 'answers'] });
 	const manifest: unknown = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8'));
 	expect(VERSION).toBe((manifest as { version: string }).version);
 	for (const answer of [response, await at.handle(raw('GET /nothing HTTP/1.1\nHost: views.example.com'))]) {
@@ -256,6 +272,116 @@ test('one ref on two views comes back with each view its own context', async () 
 	expect((await putContext(at, 'ask1', { markdown: 'Ship the mock?' }, OTHER)).status).toBe(200);
 	expect((await open(at, `v=${ID}&q=ask1`)).context).toEqual({ markdown: 'Ship the release notes?' });
 	expect((await open(at, `v=${OTHER}&q=ask1`)).context).toEqual({ markdown: 'Ship the mock?' });
+});
+
+test('a choice is stored only for a bound option of a registered question, with fresh launch data of an allowed user', async () => {
+	const now = 1_800_000_000;
+	setSystemTime(new Date(now * 1000 + 999));
+	const at = host();
+	await publish(at);
+	expect((await putContext(at, 'ask1', { body: { markdown: 'Which one stays?' }, choice: BINDING })).status).toBe(200);
+	expect((await putContext(at, 'chat1', { markdown: 'Ship it?' })).status).toBe(200);
+	expect(await open(at, `v=${ID}&q=ask1`)).toMatchObject({ context: { markdown: 'Which one stays?' }, choice: BINDING });
+	expect((await open(at, `v=${ID}&q=chat1`)).choice).toBeUndefined();
+	const before = at.snapshot();
+	const old = await launch({ authDate: now - 601 });
+	const refused: [string, Promise<Response>, number][] = [
+		['no launch data', postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`), 401],
+		['another user', postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, await launch({ userId: 42 })), 401],
+		['launch data 601 s old', postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, old), 401],
+		['an unregistered ref', postAnswer(at, `v=${ID}&q=nosuch&n=1&c=${CHOICE}`, await launch()), 404],
+		['a question answered in the chat', postAnswer(at, `v=${ID}&q=chat1&n=1&c=${CHOICE}`, await launch()), 404],
+		['an index the binding does not list', postAnswer(at, `v=${ID}&q=ask1&n=2&c=${CHOICE}`, await launch()), 400],
+		['an index above 7', postAnswer(at, `v=${ID}&q=ask1&n=8&c=${CHOICE}`, await launch()), 400],
+		['a choice id of 21 characters', postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE.slice(1)}`, await launch()), 400],
+		['a view the host lacks', postAnswer(at, `v=${OTHER}&q=ask1&n=1&c=${CHOICE}`, await launch()), 404],
+		['a body', postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, await launch(), '{"n":0}'), 413],
+	];
+	for (const [name, response, status] of refused) expect((await response).status, name).toBe(status);
+	expect(at.snapshot()).toBe(before);
+
+	// Reopened, the view has fresh launch data, and the same tap goes through.
+	const stored = await postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, await launch());
+	expect(stored.status).toBe(200);
+	expect(stored.headers.get('Cache-Control')).toBe('no-store');
+	expect(stored.headers.get('X-Content-Type-Options')).toBe('nosniff');
+	expect(await stored.json()).toEqual({ view: ID, ref: 'ask1', choice: CHOICE, stored: true });
+	const entry = at.entries.get(`a:${ID}:ask1:${CHOICE}`);
+	expect(entry && decode(entry.value)).toEqual({ v: 1, expiresAt: Date.now() + 7 * DAY, index: 1, user: { id: USER, name: 'Dana S' }, at: Date.now() });
+});
+
+test('a binding names distinct options and indexes, each with a tab of the view, or the context is refused', async () => {
+	const at = host();
+	await publish(at);
+	const [first, second] = BINDING.options;
+	const refused: [string, unknown][] = [
+		['a tab the view lacks', { ...BINDING, options: [first, { ...second, tab: 'Gone' }] }],
+		['one tab twice', { ...BINDING, options: [first, { ...second, tab: 'Notes' }] }],
+		['one index twice', { ...BINDING, options: [first, { ...second, index: 0 }] }],
+		['one option', { ...BINDING, options: [first] }],
+		['a label of 47 characters', { ...BINDING, options: [first, { ...second, label: 'x'.repeat(47) }] }],
+		['no once', { options: BINDING.options }],
+		['a key of its own', { ...BINDING, more: 1 }],
+	];
+	for (const [name, choice] of refused) expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice })).status, name).toBe(400);
+	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: BINDING, more: 1 })).status).toBe(400);
+	expect([...at.entries.keys()].some((key) => key.startsWith('c:'))).toBe(false);
+	// A closed binding enables no choice: a tab the view lost since is no refusal, its structure still is.
+	const gone = { ...BINDING, options: [first, { ...second, tab: 'Gone' }] };
+	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: gone })).status).toBe(400);
+	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: { ...gone, options: [first, { ...second, tab: 'Notes' }], closed: true } })).status).toBe(400);
+	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: { ...gone, closed: true } })).status).toBe(200);
+	expect((await open(at, `v=${ID}&q=ask1`)).choice).toEqual({ ...gone, closed: true });
+});
+
+test('a binding past its expiry takes no choice, a listed choice id is answered without a write, and a ref takes 32 choices', async () => {
+	const at = host();
+	await publish(at);
+	expect((await putContext(at, 'timed', { body: { markdown: 'Which?' }, choice: { ...BINDING, expiresAt: Date.now() + 1_000 } })).status).toBe(200);
+	expect((await putContext(at, 'many', { body: { markdown: 'Which?' }, choice: BINDING })).status).toBe(200);
+	expect((await postAnswer(at, `v=${ID}&q=timed&n=0&c=${CHOICE}`, await launch())).status).toBe(200);
+	setSystemTime(new Date(Date.now() + 1_000));
+	expect((await postAnswer(at, `v=${ID}&q=timed&n=0&c=${'d'.repeat(22)}`, await launch())).status).toBe(410);
+	expect((await putContext(at, 'closed', { body: { markdown: 'Which?' }, choice: { ...BINDING, closed: true } })).status).toBe(200);
+	expect((await open(at, `v=${ID}&q=closed`)).choice).toEqual({ ...BINDING, closed: true });
+	const before = at.writes.length;
+	expect((await postAnswer(at, `v=${ID}&q=closed&n=0&c=${'e'.repeat(22)}`, await launch())).status).toBe(410);
+	expect(at.writes.length).toBe(before);
+	expect((await putContext(at, 'closed', { body: { markdown: 'Which?' }, choice: { ...BINDING, closed: 'yes' } })).status).toBe(400);
+
+	const id = (n: number) => `m${String(n).padStart(21, '0')}`;
+	for (let n = 0; n < 32; n++) expect((await postAnswer(at, `v=${ID}&q=many&n=${n % 2}&c=${id(n)}`, await launch())).status).toBe(200);
+	const writes = at.writes.length;
+	expect((await postAnswer(at, `v=${ID}&q=many&n=1&c=${id(32)}`, await launch())).status).toBe(429);
+	expect((await postAnswer(at, `v=${ID}&q=many&n=0&c=${id(0)}`, await launch())).status).toBe(200);
+	expect(at.writes.length).toBe(writes);
+});
+
+test('the answers routes need the upload key: GET lists every live choice and writes nothing, DELETE removes one', async () => {
+	// The clock stands still, so the time of the choice is the time the test reads.
+	setSystemTime(new Date(1_800_000_000_000));
+	const at = host();
+	await publish(at, 'g1', Date.now() + DAY);
+	await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: BINDING });
+	expect((await postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, await launch({ userId: 112 }))).status).toBe(200);
+	const key = `a:${ID}:ask1:${CHOICE}`;
+	expect((await answersOf(at, 'wrong-key-0123456789abcdef')).status).toBe(401);
+	expect((await deleteAnswer(at, key, 'wrong-key-0123456789abcdef')).status).toBe(401);
+	const listed = await answersOf(at);
+	expect(listed.headers.get('Cache-Control')).toBe('no-store');
+	expect(await listed.json()).toEqual({ choices: [{ key, view: ID, ref: 'ask1', id: CHOICE, index: 1, user: { id: 112, name: 'Dana S' }, at: Date.now() }] });
+	// The choice outlives its view by a day at most from its time, and then is listed no more,
+	// and the list leaves it to the storage's own expiry.
+	setSystemTime(new Date(Date.now() + DAY + 1));
+	const writes = at.writes.length;
+	expect(await (await answersOf(at)).json()).toEqual({ choices: [] });
+	expect(at.writes.length).toBe(writes);
+	expect(at.entries.has(key)).toBe(true);
+	setSystemTime();
+	expect((await deleteAnswer(at, 'c:not-a-choice')).status).toBe(400);
+	expect((await deleteAnswer(at, key)).status).toBe(200);
+	expect(at.entries.has(key)).toBe(false);
+	expect((await deleteAnswer(at, key)).status).toBe(200);
 });
 
 test('the load of a media object waits out a read that misses it after the probe found it', async () => {
@@ -400,7 +526,8 @@ test('Range returns 206 with Content-Range, and a range past the end 416', async
 test('every GET and HEAD route leaves the storage unchanged', async () => {
 	const at = host();
 	await publish(at);
-	await putContext(at, 'ask1', { markdown: 'Ship it?' });
+	await putContext(at, 'ask1', { body: { markdown: 'Ship it?' }, choice: BINDING });
+	expect((await postAnswer(at, `v=${ID}&q=ask1&n=0&c=${CHOICE}`, await launch())).status).toBe(200);
 	const before = at.snapshot();
 	const writes = at.writes.length;
 	const { media } = await open(at, `v=${ID}&q=ask1`);
@@ -417,6 +544,10 @@ test('every GET and HEAD route leaves the storage unchanged', async () => {
 		raw(`GET /api/media/${ID}/g1/0 HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${UPLOAD_KEY}`),
 		raw(`HEAD /api/view/${ID} HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${UPLOAD_KEY}`),
 		raw(`HEAD /api/view/${ID} HTTP/1.1\nHost: views.example.com`),
+		raw(`GET /api/answers HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${UPLOAD_KEY}`),
+		raw(`GET /api/answers HTTP/1.1\nHost: views.example.com`),
+		raw(`GET /api/answer?v=${ID}&q=ask1&n=1&c=${CHOICE.replace('c', 'd')} HTTP/1.1\nHost: views.example.com\nAuthorization: tma ${await launch()}`),
+		raw(`GET /api/answer/${encodeURIComponent(`a:${ID}:ask1:${CHOICE}`)} HTTP/1.1\nHost: views.example.com\nAuthorization: Bearer ${UPLOAD_KEY}`),
 	];
 	for (const request of requests) await at.handle(request);
 	expect(at.writes.length).toBe(writes);
@@ -458,7 +589,9 @@ test('every stored value is JSON that parses back through its own parse function
 	const at = host();
 	await publish(at);
 	await putContext(at, 'ask1', { blocks: [{ type: 'paragraph', text: 'Ship it?' }] });
-	const parsers: Record<string, (value: unknown) => unknown> = { v: parseViewRecord, g: parseManifest, c: parseContext };
+	await putContext(at, 'ask2', { body: { markdown: 'Which one?' }, choice: { ...BINDING, expiresAt: Date.now() + DAY } });
+	expect((await postAnswer(at, `v=${ID}&q=ask2&n=1&c=${CHOICE}`, await launch())).status).toBe(200);
+	const parsers: Record<string, (value: unknown) => unknown> = { v: parseViewRecord, g: parseManifest, c: parseContext, a: parseChoiceRecord };
 	let records = 0;
 	for (const [key, entry] of at.entries) {
 		const parse = parsers[key.slice(0, 1)];
@@ -467,7 +600,7 @@ test('every stored value is JSON that parses back through its own parse function
 		expect(parse(value), key).toEqual(value);
 		records++;
 	}
-	expect(records).toBe(3);
+	expect(records).toBe(5);
 });
 
 test('the shell carries one script, the policy with its sha256, and labels and theme in data blocks', async () => {
@@ -529,6 +662,7 @@ test('a storage read that starts before the media deadline and rejects after it 
 			},
 			put: async () => {},
 			delete: async () => {},
+			list: async () => [],
 		};
 		const handler = createViewHandler({ storage, botId: BOT, allowedUsers: [USER], uploadKey: UPLOAD_KEY, mediaKey: MEDIA_KEY });
 		const path = await mediaPath(MEDIA_KEY, { id: ID, generation: 'g1', index: 0, expires: Date.now() + 40 });

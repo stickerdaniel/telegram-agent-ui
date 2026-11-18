@@ -100,7 +100,12 @@ const signature = Buffer.from(await crypto.subtle.sign({ name: 'Ed25519' }, pair
 const initData = `user=${encodeURIComponent(user)}&auth_date=${authDate}&signature=${signature}`;
 assert.deepEqual(await verifyLaunchData(initData, { botId: '222', publicKey, allowedUsers: [111], now: Date.now() }), { ok: true, user: { id: 111, name: 'Node' } });
 const entries = new Map();
-const storage = { get: async (key) => entries.get(key), put: async (key, value, { type }) => void entries.set(key, { value, ...(type ? { type } : {}) }), delete: async (key) => void entries.delete(key) };
+const storage = {
+	get: async (key) => entries.get(key),
+	put: async (key, value, { type }) => void entries.set(key, { value, ...(type ? { type } : {}) }),
+	delete: async (key) => void entries.delete(key),
+	list: async (prefix) => [...entries.keys()].filter((key) => key.startsWith(prefix)),
+};
 const viewHost = createViewHandler({ storage, botId: '222', allowedUsers: [111], uploadKey: 'upload-key-0123456789', mediaKey: 'media-key-0123456789', publicKey });
 const viewId = 'Zr8kQ2vT0mN4xW6yB1cD3e';
 const published = { generation: 'g1', expiresAt: Date.now() + 60_000, media: [], view: { v: 1, tabs: [{ label: 'A', content: { markdown: '# A' } }] } };
@@ -135,16 +140,18 @@ await new Promise((resolve) => hostServer.listen(0, '127.0.0.1', resolve));
 const views = viewClient({ origin: `http://127.0.0.1:${hostServer.address().port}`, uploadKey: 'upload-key-0123456789' });
 const put = await views.put(ready.prepared);
 assert.equal(put.kind, 'ok');
-assert.deepEqual(await views.has(put.id), { kind: 'present', tabs: ['Notes'] });
+assert.deepEqual(await views.has(put.id), { kind: 'present', tabs: ['Notes'], expiresAt: put.expiresAt });
+assert.deepEqual(await views.version(), { kind: 'ok', formats: ['1', 'answers'] });
+assert.deepEqual(await views.choices(), { kind: 'ok', choices: [] });
 assert.deepEqual(await views.context(put.id, 'node4', { markdown: 'Ship it?' }), { kind: 'ok' });
 const shown = await viewHost(new Request(`https://views.example.com/api/view?v=${put.id}&q=node4`, { headers: { Authorization: `tma ${initData}` } }));
 assert.deepEqual((await shown.json()).context, { markdown: 'Ship it?' });
 hostServer.close();
 
 // ./worker: the Cloudflare entry answers from its variables, on a KV binding of its own.
-const kv = { getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {} };
+const kv = { getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {}, list: async () => ({ keys: [], list_complete: true }) };
 const version = await worker.fetch(new Request('https://views.example.com/api/version'), { VIEWS: kv, BOT_ID: '222', ALLOWED_USERS: '[111]', UPLOAD_KEY: 'upload-key-0123456789', MEDIA_KEY: 'media-key-0123456789' });
-assert.deepEqual((await version.json()).formats, [1]);
+assert.deepEqual((await version.json()).formats, [1, 'answers']);
 
 // ./commands and the bin, in fake mode.
 assert.deepEqual(

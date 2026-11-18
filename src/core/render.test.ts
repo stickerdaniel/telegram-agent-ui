@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { asked, CHAT, NOW, ORIGIN, REF, sentFor, step, VIEW } from '../fixtures.ts';
 import { choice, message, text, yesNo } from './builders.ts';
-import { render, renderEdit } from './render.ts';
+import { bindingOf, render, renderEdit } from './render.ts';
 import { type Attachment, type Body, defaultLabels, ShapeError, type Spec } from './types.ts';
 
 const at = { chat: CHAT, ref: REF };
@@ -35,6 +35,37 @@ describe('render', () => {
 		expect(plain.steps[0]?.call.payload.reply_markup).toEqual({ inline_keyboard: [[{ text: defaultLabels.view, web_app: { url: `${ORIGIN}/?v=${VIEW}` } }]] });
 		const asked = render(text({ markdown: 'What next?' }, { view: VIEW }), { ...at, viewOrigin: ORIGIN });
 		expect(asked.steps[0]?.call.payload.reply_markup).toEqual({ inline_keyboard: [[{ text: defaultLabels.view, web_app: { url: `${ORIGIN}/?v=${VIEW}&q=${REF}` } }]] });
+	});
+
+	describe('a choice answered in its view', () => {
+		const options = [{ label: 'Compact', tab: 'Compact' }, { label: 'Wide', tab: 'Wide' }];
+		const spec = choice({ markdown: 'Which layout should stay?' }, options, { view: VIEW, in: 'view', once: true });
+		const row = (text: string, tab?: string) => ({ inline_keyboard: [[{ text, web_app: { url: `${ORIGIN}/?v=${VIEW}&q=${REF}${tab ? `&t=${tab}` : ''}` } }]] });
+
+		test('its message carries the view row alone, on send and on every edit, with the mark on the view button', () => {
+			expect(render(spec, { ...at, viewOrigin: ORIGIN }).steps[0]?.call.payload.reply_markup).toEqual(row(defaultLabels.view));
+			const sending = asked(spec);
+			const open = step(sending, { type: 'sent', sent: sentFor(sending) });
+			expect(renderEdit(open).payload.reply_markup).toEqual(row(defaultLabels.view));
+			const answered = step(open, { type: 'choice', id: 'v'.repeat(22), user: { id: CHAT }, index: 1, at: NOW });
+			expect(renderEdit(answered).payload.reply_markup).toEqual(row('✓ Wide', 'Wide'));
+			expect(renderEdit(step(answered, { type: 'close' })).payload.reply_markup).toEqual(row('✓ Wide', 'Wide'));
+			expect(renderEdit(step(answered, { type: 'close', body: { markdown: 'Wide stays.' } })).payload.reply_markup).toEqual(row('✓ Wide', 'Wide'));
+			expect(renderEdit(step(open, { type: 'close' })).payload.reply_markup).toEqual(row(defaultLabels.view));
+		});
+
+		test('bindingOf names each option with its tab, once and the expiry, and nothing for any other question', () => {
+			expect(bindingOf(asked(spec, { expiresAt: NOW + 1 }))).toEqual({
+				options: [
+					{ index: 0, label: 'Compact', tab: 'Compact' },
+					{ index: 1, label: 'Wide', tab: 'Wide' },
+				],
+				once: true,
+				expiresAt: NOW + 1,
+			});
+			expect(bindingOf(asked(choice({ markdown: 'Which?' }, options, { view: VIEW })))).toBeUndefined();
+			expect(bindingOf(step(asked(spec), { type: 'close' }))).toMatchObject({ closed: true });
+		});
 	});
 
 	test('a message without buttons has no reply_markup', () => {
@@ -101,6 +132,12 @@ describe('the shape checks of section 8', () => {
 		['attach with 11 files', message({ markdown: 'Files.' }, { attach: Array.from({ length: 11 }, (_, n) => ({ path: `/p/${n}.png` })) })],
 		['a caption of 1,025 characters', message({ markdown: 'Files.' }, { attach: [{ path: '/p/a.png', caption: 'x'.repeat(1_025) }] })],
 		['a tab without a view', choice({ markdown: 'Which?' }, [{ label: 'A', tab: 'A' }, { label: 'B' }])],
+		['an answer in the view without a view', choice({ markdown: 'Which?' }, [{ label: 'A' }, { label: 'B' }], { in: 'view' })],
+		// The types refuse both; a caller in plain JavaScript reaches the check.
+		['a text question answered in the view', { body: { markdown: 'Why?' }, view: VIEW, answer: { type: 'text', in: 'view' } } as unknown as Spec, { ...at, viewOrigin: ORIGIN }],
+		['a yes or no question answered in the view', yesNo({ markdown: 'Ship it?' }, { view: VIEW, in: 'view' }), { ...at, viewOrigin: ORIGIN }],
+		['an answer in the view with an option that names no tab', choice({ markdown: 'Which?' }, [{ label: 'A', tab: 'A' }, { label: 'B' }], { view: VIEW, in: 'view' }), { ...at, viewOrigin: ORIGIN }],
+		['an answer in the view with a tab named twice', choice({ markdown: 'Which?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'A' }], { view: VIEW, in: 'view' }), { ...at, viewOrigin: ORIGIN }],
 		['a ref outside its pattern', choice({ markdown: 'Which?' }, options), { chat: CHAT, ref: 'no spaces' }],
 		['a question without a ref', choice({ markdown: 'Which?' }, options), { chat: CHAT }],
 		['a view id outside its pattern', message({ markdown: 'Diff.' }, { view: 'short' }), { chat: CHAT, viewOrigin: ORIGIN }],

@@ -91,7 +91,7 @@ test('a context that a storage shows after its view is asked for again, for up t
 	const late = await published((key, read) => key === `c:${ID}:ask1` && read === 1);
 	const first = await lib.fetchRetry(late.url, late.init, late.io);
 	expect(((await first.json()) as { context?: unknown }).context).toBeUndefined();
-	expect(await lib.fetchContext(late.url, late.init, late.io)).toEqual({ markdown: 'Ship it?' });
+	expect(await lib.fetchContext(late.url, late.init, late.io)).toMatchObject({ context: { markdown: 'Ship it?' } });
 	expect(late.clock).toEqual({ now: 1_000, asks: 2 });
 	// A context that never shows ends the asking after 10 s.
 	const never = await published((key) => key === `c:${ID}:ask1`);

@@ -4,10 +4,10 @@
 // `shown.done` owes an edit, `seq` above `delivery.seq` owes a delivery.
 import type { CallbackQuery, InlineKeyboardMarkup, Message, Update } from '@grammyjs/types';
 import { arrayOf, isInt, isNat, isRecord, isString, optional, storable } from './check.ts';
-import { isBody, isCallClass, isSent, isSpec } from './guards.ts';
+import { isBody, isCallClass, isSent, isSpec, isUser } from './guards.ts';
 import { checkLabels } from './labels.ts';
-import { bodyLike } from './render.ts';
-import { checkQuestionBody, checkSpec, metaIssue, sameForm } from './shape.ts';
+import { bodyLike, inView } from './render.ts';
+import { CHOICE_ID, checkQuestionBody, checkSpec, metaIssue, sameForm } from './shape.ts';
 import { type Answer, type Body, type Call, type CallClass, defaultLabels, type Handled, type Labels, type Question, type QuestionEvent, type Sent, ShapeError, type User } from './types.ts';
 
 /** How many input keys a question keeps to find replays. */
@@ -80,9 +80,12 @@ function reveal(question: Question, message: number): Question {
 	return question;
 }
 
-/** The question closed, with `resolved` as the body it shows. Closing raises `shown.want`. */
+/**
+ * The question closed, with `resolved` as the body it shows. Closing raises `shown.want`, and a
+ * question answered in its view owes the view host its closed binding.
+ */
 function close(question: Question, resolved: Body | undefined): Question {
-	return { ...question, status: 'closed', ...(resolved ? { resolved } : {}), shown: raise(question.shown) };
+	return { ...question, status: 'closed', ...(resolved ? { resolved } : {}), shown: raise(question.shown), ...(inView(question.spec.answer) ? { bindingOwed: true as const } : {}) };
 }
 
 /** Closes a question whose `expiresAt` has come, with `labels.expired` as its resolved body. */
@@ -173,6 +176,28 @@ function reply(question: Question, message: Message, now: number, labels: Labels
 	const next = answered(current, { kind: 'text', text }, userOf(message.from), now, key);
 	const reaction: Call = { method: 'setMessageReaction', payload: { chat_id: message.chat.id, message_id: message.message_id, reaction: [{ type: 'emoji', emoji: labels.ack }] } };
 	return { question: next, calls: [reaction], handled: handledAnswer(next) };
+}
+
+/**
+ * A choice stored on the view host, applied like a tap on button `index` without a toast. It
+ * counts only on a question answered in its view, on an option that exists. The first failing
+ * check wins: unknown, forbidden, closed, repeat. A closed question takes no choice, whenever the
+ * host stored it, and a `sending` question takes none either: its message is unknown, and no tap
+ * on its view row can reveal it. A choice id among the last 32 applied keys is a repeat.
+ */
+function choose(question: Question, event: Extract<QuestionEvent, { type: 'choice' }>, now: number): Result {
+	const { answer } = question.spec;
+	const option = answer.type === 'choice' && answer.in === 'view' ? answer.options[event.index] : undefined;
+	if (!option) return stale(question, 'unknown', []);
+	if (!question.allow.includes(event.user.id)) return stale(question, 'forbidden', []);
+	if (question.status === 'closed' || question.status === 'sending') return stale(question, 'closed', []);
+	const key = `view:${event.id}`;
+	if (question.applied.includes(key)) return stale(question, 'repeat', []);
+	if (question.status === 'answered' && (answer.once || (question.answer.kind === 'choice' && question.answer.index === event.index))) return stale(question, 'repeat', []);
+	const picked: Answer = { kind: 'choice', index: event.index, label: option.label, ...(option.value !== undefined ? { value: option.value } : {}) };
+	const user: User = { id: event.user.id, ...(event.user.name !== undefined ? { name: event.user.name } : {}) };
+	const next = { ...answered(question, picked, user, now, key), shown: raise(question.shown) };
+	return { question: next, calls: [], handled: handledAnswer(next) };
 }
 
 /** An input for a ref the store lacks: a tap gets the toast `labels.unknown`, anything else is ignored. */
@@ -319,6 +344,10 @@ function checkEvent(event: QuestionEvent): void {
 		case 'delivered':
 			if (!isNat(event.seq) || !optional(isString)(event.error)) refuse('the delivered event breaks its type');
 			return;
+		case 'choice':
+			if (!isString(event.id) || !CHOICE_ID.test(event.id)) refuse('a choice id is 22 base64url characters');
+			if (!isUser(event.user) || !isNat(event.index) || !isNat(event.at)) refuse('the choice event breaks its type');
+			return;
 	}
 }
 
@@ -359,7 +388,10 @@ export function reduce(question: Question | undefined, event: QuestionEvent, ctx
 		};
 		return { question: expire(asked, ctx.now, labels), calls: [] };
 	}
-	if (!question) return event.type === 'input' ? orphan(event.update, labels) : { calls: [] };
+	if (!question) {
+		if (event.type === 'input') return orphan(event.update, labels);
+		return event.type === 'choice' ? stale(undefined, 'unknown', []) : { calls: [] };
+	}
 	const current = expire(question, ctx.now, labels);
 	switch (event.type) {
 		case 'sent':
@@ -386,5 +418,7 @@ export function reduce(question: Question | undefined, event: QuestionEvent, ctx
 			return { question: shown(current, event, ctx.now), calls: [] };
 		case 'delivered':
 			return { question: delivered(current, event), calls: [] };
+		case 'choice':
+			return choose(current, event, ctx.now);
 	}
 }

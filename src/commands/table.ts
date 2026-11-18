@@ -4,13 +4,14 @@
 import { isAbsolute, resolve } from 'node:path';
 import { deliveryKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
-import { choice, message, text, yesNo } from '../core/builders.ts';
-import { isRecord, isString } from '../core/check.ts';
+import { choice, message, text } from '../core/builders.ts';
+import { isRecord, isString, optional } from '../core/check.ts';
 import { isSent } from '../core/guards.ts';
 import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
+import { bindingOf } from '../core/render.ts';
 import { REF, VIEW_ID } from '../core/shape.ts';
-import type { Outcome, Question, ViewClient, Warning } from '../core/types.ts';
+import type { Option, Outcome, Question, ViewClient, Warning } from '../core/types.ts';
 import { listen } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
 import { VIEW_TTL } from '../view/client.ts';
@@ -61,6 +62,12 @@ const VIEW = {
 	type: 'string',
 	description: 'The id that view put printed: the message gets a button that opens the view. An option whose label equals a tab label opens that tab once it is picked.',
 } as const;
+const ANSWER_IN = {
+	name: 'answerIn',
+	type: ['chat', 'view'],
+	description: 'Where the user picks: chat, by buttons on the message (the default), or view, by the button at the bottom of the view, on the tab whose label equals the option. view needs --view and a tab for each option.',
+	cli: { label: 'chat|view' },
+} as const;
 const TABS = {
 	name: 'tabs',
 	type: 'json',
@@ -72,6 +79,8 @@ const TABS = {
 } as const;
 const STRICT = { name: 'strict', type: 'boolean', description: 'Turns every warning into a refusal before anything is sent.' } as const;
 const DRY_RUN = { name: 'dryRun', type: 'boolean', description: 'Prints what would be sent and the roots files would come from, and sends nothing.' } as const;
+
+const DAY = 86_400_000;
 
 /** Writes each warning as a line of progress. */
 const report = (context: Context, warnings: Warning[]) => {
@@ -100,6 +109,27 @@ async function tabsOf(views: ViewClient, view: string): Promise<string[]> {
 
 /** The labels of a stored question's options that `ask` bound to the tab of the same label. */
 const boundTabs = (question: Question): string[] => (question.spec.answer.type === 'choice' ? question.spec.answer.options.flatMap((option) => (option.tab === option.label ? [option.label] : [])) : []);
+
+/**
+ * The questions answered in view `id` that are not closed, each with the tabs it binds and its
+ * `expiresAt`. A replacement that drops one of those tabs, or expires before that time, leaves
+ * the question without a way to be answered while it is open.
+ */
+async function openBindings(store: Session['store'], id: string): Promise<{ ref: string; tabs: string[]; expiresAt?: number }[]> {
+	const found: { ref: string; tabs: string[]; expiresAt?: number }[] = [];
+	for (const key of await store.list('q:')) {
+		const question = parseQuestion(await store.get(key));
+		const binding = question && question.status !== 'closed' && question.spec.view === id ? bindingOf(question) : undefined;
+		if (!question || !binding) continue;
+		found.push({ ref: question.ref, tabs: binding.options.map((option) => option.tab), ...(question.expiresAt !== undefined ? { expiresAt: question.expiresAt } : {}) });
+	}
+	return found;
+}
+
+/** An option of `ask` as the input names it: a label, or a label with the tab it binds. */
+type OptionInput = string | { label: string; tab?: string };
+const isOptionInput = (value: unknown): value is OptionInput =>
+	isString(value) || (isRecord(value) && Object.keys(value).every((key) => key === 'label' || key === 'tab') && isString(value.label) && optional(isString)(value.tab));
 
 /** A tab of `view put`: the label and the file as the input names them. */
 const isTab = (value: unknown): value is { label: string; file: string } => isRecord(value) && Object.keys(value).length === 2 && isString(value.label) && isString(value.file);
@@ -221,9 +251,17 @@ const ask = command({
 	tool: 'ask_question',
 	params: [
 		{ name: 'answer', type: ['choice', 'yesNo', 'text'], description: 'How the question is answered: a tap on an option, a tap on yes or no, or a reply.', cli: { switches: { 'yes-no': 'yesNo', text: 'text' } } },
-		{ name: 'options', type: 'string', many: true, description: 'The labels of 2 to 8 options, each 1 to 46 characters.', cli: { short: 'o', flag: 'option', label: 'option' } },
+		{
+			name: 'options',
+			type: 'json',
+			many: true,
+			description: 'The 2 to 8 options: each a label of 1 to 46 characters, or { label, tab } to bind the option to the tab of that label, as a pick in the view needs when the two differ. On the CLI each -o is a label.',
+			schema: { anyOf: [{ type: 'string' }, { type: 'object', properties: { label: { type: 'string' }, tab: { type: 'string' } }, required: ['label'], additionalProperties: false }] },
+			cli: { short: 'o', flag: 'option', label: 'option', text: true },
+		},
 		{ name: 'once', type: 'boolean', description: 'Forbids a correction after the first answer.' },
 		VIEW,
+		ANSWER_IN,
 		{ name: 'meta', type: 'json', description: 'JSON that comes back with the answer, such as the session that asked.' },
 		{ name: 'ref', type: 'string', description: 'The question id: 1 to 32 characters of [A-Za-z0-9_-]. Asking again with it sends nothing.' },
 		STRICT,
@@ -234,28 +272,40 @@ const ask = command({
 		const kind = input.answer ?? (input.options ? 'choice' : undefined);
 		if (kind === undefined) return failed({ error: 'usage', message: 'ask needs -o <option> for each option, --yes-no or --text' });
 		if (kind !== 'choice' && input.options) return failed({ error: 'usage', message: `options belong to a choice, and this question is ${kind}` });
+		const given = input.options ?? [];
+		if (!given.every(isOptionInput)) return failed({ error: 'usage', message: 'each option is a label, or { label, tab }' });
+		const inView = input.answerIn === 'view';
+		if (inView && kind === 'text') return failed({ error: 'refused', code: 'shape', message: 'a text question is answered by a reply in the chat, never in a view' });
+		if (inView && input.view === undefined) return failed({ error: 'refused', code: 'shape', message: '--answer-in view needs --view with the view whose tabs the options name' });
 		const session = await openSession(context);
 		const body = { markdown: input.body };
 		const extras = { ...viewHost(session, input.view), ...(input.once ? { once: true } : {}) };
 		// An option named like a tab of the view opens that tab once picked. A held ref keeps the tabs
 		// its first ask bound, so an identical retry equals the stored spec whatever the view holds
 		// now. Only a new question reads the view's tabs; a dry run makes no request, so it reads none.
+		// A question answered in the view binds every option to the tab of its label, and the send
+		// checks those tabs on the view host. An option given with its own tab keeps that tab.
 		const held = input.ref !== undefined ? await session.chat.get(input.ref) : undefined;
+		const labels = kind === 'yesNo' ? mergeLabels(session.config.labels) : undefined;
+		const entries: Option[] = labels
+			? [
+					{ label: labels.yes, value: 'yes' },
+					{ label: labels.no, value: 'no' },
+				]
+			: given.filter(isOptionInput).map((item) => (isString(item) ? { label: item } : { label: item.label, ...(item.tab !== undefined ? { tab: item.tab } : {}) }));
+		const named = entries.map((entry) => entry.label);
 		const tabs = held
 			? boundTabs(held)
-			: kind === 'choice' && input.view !== undefined && !input.dryRun
-				? await tabsOf(viewsOf(session), input.view)
-				: [];
+			: inView
+				? named
+				: kind === 'choice' && input.view !== undefined && !input.dryRun
+					? await tabsOf(viewsOf(session), input.view)
+					: [];
+		const options = entries.map((entry) => (entry.tab === undefined && tabs.includes(entry.label) ? { ...entry, tab: entry.label } : entry));
 		const spec =
-			kind === 'yesNo'
-				? yesNo(body, { ...extras, labels: mergeLabels(session.config.labels) })
-				: kind === 'text'
-					? text(body, extras)
-					: choice(
-							body,
-							(input.options ?? []).map((label) => ({ label, ...(tabs.includes(label) ? { tab: label } : {}) })),
-							extras,
-						);
+			kind === 'text'
+				? text(body, extras)
+				: choice(body, options, { ...extras, ...(labels ? { layout: 'row' as const } : {}), ...(inView ? { in: 'view' as const } : {}) });
 		const outcome = await session.chat.send(spec, {
 			needsListener: true,
 			...(input.ref !== undefined ? { ref: input.ref } : {}),
@@ -326,7 +376,7 @@ const listenCommand = command({
 		};
 		const messages = onMessage === undefined ? {} : { allow: config.users, onMessage: (inbound: unknown) => runShell(onMessage, inbound) };
 		context.log(`listening for @${config.bot.username}`);
-		const stopped = await listen({ ...base, ...messages });
+		const stopped = await listen({ ...base, ...(session.views ? { views: session.views } : {}), ...messages });
 		if (stopped.reason === 'signal') return done({ stopped: 'signal' });
 		return failed({ error: 'stopped', code: stopped.reason, message: stopped.message });
 	},
@@ -365,6 +415,22 @@ const viewPut = command({
 		if (input.ttl !== undefined && (input.ttl < 1 || input.ttl > VIEW_TTL.most)) return failed({ error: 'usage', message: `--ttl takes 1 to ${VIEW_TTL.most} days` });
 		if (input.replace !== undefined && !VIEW_ID.test(input.replace)) return failed({ error: 'usage', message: `the view id "${input.replace}" is not 22 base64url characters` });
 		const session = await openSession(context);
+		if (input.replace !== undefined) {
+			// The store holds the questions answered in this view: a tab one of them binds stays, and
+			// the view lives at least as long as each of them. The put takes its expiry a moment
+			// later than this one, so a check that passes here holds for it too.
+			const labels = new Set(files.map((tab) => tab.label));
+			const bound = await openBindings(session.store, input.replace);
+			const dropped = bound.flatMap(({ ref, tabs }) => tabs.filter((tab) => !labels.has(tab)).map((tab) => `"${tab}" of question ${ref}`));
+			if (dropped.length > 0) {
+				return failed({ error: 'refused', code: 'shape', message: `the view ${input.replace} keeps every tab that an open question answered in it binds, and this one lacks ${dropped.join(', ')}: keep those tabs, or close the questions first` });
+			}
+			const expiresAt = Date.now() + (input.ttl ?? VIEW_TTL.default) * DAY;
+			const outlived = bound.filter((question) => question.expiresAt === undefined || question.expiresAt > expiresAt).map((question) => question.ref);
+			if (outlived.length > 0) {
+				return failed({ error: 'refused', code: 'shape', message: `the view ${input.replace} would expire before the open questions ${outlived.join(', ')} answered in it: give it a longer --ttl, or close those questions first` });
+			}
+		}
 		// A dry run makes no request and needs no view host.
 		const views = input.dryRun ? undefined : viewsOf(session);
 		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: files.map(({ label, file }) => ({ label, content: { file } })) }, { roots: session.roots });

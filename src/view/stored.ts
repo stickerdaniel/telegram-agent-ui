@@ -5,16 +5,21 @@
 //   v:<view id>                       the view, its committed generation, its media and its expiry
 //   g:<view id>:<generation>          the media of one generation, which a media URL is served against
 //   m:<view id>:<generation>:<index>  one media object, as bytes with its type
-//   c:<view id>:<ref>                 the context of one question on the view: its body
-import { arrayOf, isInt, isNat, isRecord, isString, optional, storable } from '../core/check.ts';
-import { isBody } from '../core/guards.ts';
-import { questionBodyIssue, REF, VIEW_ID } from '../core/shape.ts';
-import type { Body, StoredView } from '../core/types.ts';
+//   c:<view id>:<ref>                 the context of one question on the view: its body, and the binding of a question answered in it
+//   a:<view id>:<ref>:<choice id>     one choice posted from the view: the option, the user and the host's time
+import { arrayOf, isBool, isInt, isNat, isRecord, isString, optional, storable } from '../core/check.ts';
+import { isBody, isUser } from '../core/guards.ts';
+import { CHOICE_ID, LIMITS, questionBodyIssue, REF, VIEW_ID } from '../core/shape.ts';
+import type { Body, ChoiceBinding, StoredView, User } from '../core/types.ts';
 
 /** The version of this package, which `GET /api/version` reports. A test keeps it equal to package.json. */
 export const VERSION = '0.0.0';
 /** The view formats `v` this host accepts. */
 export const VIEW_FORMATS: readonly number[] = [1];
+/** What `GET /api/version` lists as `formats`: the view formats, and `answers` for the choices of 4.10. */
+export const HOST_FORMATS: readonly (number | string)[] = [...VIEW_FORMATS, 'answers'];
+/** How many choices the host stores for one ref before it answers 429, and how long a choice lives at least after its time. */
+export const CHOICE_LIMITS = { perRef: 32, life: 86_400_000 } as const;
 
 const MIB = 1024 * 1024;
 const DAY = 86_400_000;
@@ -37,15 +42,27 @@ export const keys = {
 	manifest: (id: string, generation: string) => `g:${id}:${generation}`,
 	media: (id: string, generation: string, index: number) => `m:${id}:${generation}:${index}`,
 	context: (id: string, ref: string) => `c:${id}:${ref}`,
+	choice: (id: string, ref: string, choice: string) => `a:${id}:${ref}:${choice}`,
+	/** The prefix of every choice of a ref, or of every choice at all. */
+	choices: (id?: string, ref?: string) => (id !== undefined && ref !== undefined ? `a:${id}:${ref}:` : 'a:'),
 };
+
+/** The view id, ref and choice id of a choice key, or undefined for any other key. */
+export function parseChoiceKey(key: string): { view: string; ref: string; id: string } | undefined {
+	const [prefix, view, ref, id, ...rest] = key.split(':');
+	if (prefix !== 'a' || rest.length > 0 || view === undefined || ref === undefined || id === undefined) return undefined;
+	return VIEW_ID.test(view) && REF.test(ref) && CHOICE_ID.test(id) ? { view, ref, id } : undefined;
+}
 
 export type MediaEntry = { type: MediaType; size: number };
 /** `v:<id>`: what `PUT /api/view/<id>` stored. Its write commits `generation`. */
 export type ViewRecord = { v: 1; generation: string; expiresAt: number; media: MediaEntry[]; view: StoredView };
 /** `g:<id>:<generation>`: the media of a committed generation. A replaced view keeps it until it expires. */
 export type ManifestRecord = { v: 1; expiresAt: number; media: MediaEntry[] };
-/** `c:<id>:<ref>`: the body of a question, shown above the view's tabs. */
-export type ContextRecord = { v: 1; expiresAt: number; body: Body };
+/** `c:<id>:<ref>`: the body of a question, shown above the view's tabs, and the binding of a question answered in the view. */
+export type ContextRecord = { v: 1; expiresAt: number; body: Body; choice?: ChoiceBinding };
+/** `a:<id>:<ref>:<choice id>`: one choice, kept until `expiresAt`. */
+export type ChoiceRecord = { v: 1; expiresAt: number; index: number; user: User; at: number };
 
 /**
  * The type of a media file by its leading bytes: PNG, JPEG, WebP, GIF or an MP4 `ftyp` box.
@@ -169,10 +186,52 @@ export function contextIssue(body: unknown): string | undefined {
 	return questionBodyIssue(body);
 }
 
-/** A stored `c:<id>:<ref>` record, or undefined. */
+const isBound = (value: unknown): value is ChoiceBinding['options'][number] =>
+	isRecord(value) && Object.keys(value).length === 3 && isNat(value.index) && isString(value.label) && isString(value.tab);
+
+/**
+ * Why a binding is refused against the tab labels of its view, or undefined: 2 to 8 options of
+ * distinct indexes below 8, each with a label of 1 to 46 characters and its own tab of the view,
+ * `once`, an optional expiry and an optional `closed`.
+ */
+export function bindingIssue(binding: unknown, tabs: readonly string[]): string | undefined {
+	if (!isRecord(binding) || Object.keys(binding).some((key) => key !== 'options' && key !== 'once' && key !== 'expiresAt' && key !== 'closed')) return 'a binding is { options, once, expiresAt?, closed? }';
+	const { options } = binding;
+	if (!isBool(binding.once) || !optional(isNat)(binding.expiresAt) || !optional(isBool)(binding.closed) || !arrayOf(isBound)(options)) return 'a binding is { options: [{ index, label, tab }], once, expiresAt?, closed? }';
+	const [least, most] = LIMITS.options;
+	if (options.length < least || options.length > most) return `a binding has ${least} to ${most} options, this one ${options.length}`;
+	const seen = { indexes: new Set<number>(), tabs: new Set<string>() };
+	for (const option of options) {
+		if (option.index >= most || seen.indexes.has(option.index)) return `the option index ${option.index} is above ${most - 1} or named twice`;
+		if (option.label.length < 1 || option.label.length > LIMITS.label) return `an option label has 1 to ${LIMITS.label} characters: "${option.label}"`;
+		if (!tabs.includes(option.tab)) return `the view has no tab "${option.tab}"`;
+		if (seen.tabs.has(option.tab)) return `the tab "${option.tab}" is bound twice`;
+		seen.indexes.add(option.index);
+		seen.tabs.add(option.tab);
+	}
+	return undefined;
+}
+
+/** True for a binding that `bindingIssue` finds sound against `tabs`. */
+export const isBinding = (value: unknown, tabs: readonly string[]): value is ChoiceBinding => bindingIssue(value, tabs) === undefined;
+
+/** The tabs a binding names, as far as its options have the type. */
+export const boundTabs = (value: unknown) => (isRecord(value) && arrayOf(isBound)(value.options) ? value.options.map((option) => option.tab) : []);
+
+/** A stored `c:<id>:<ref>` record, or undefined. Its binding was checked against the view's tabs when it was stored. */
 export function parseContext(value: unknown): ContextRecord | undefined {
 	if (!isRecord(value) || value.v !== 1 || !isNat(value.expiresAt) || contextIssue(value.body) !== undefined || !isBody(value.body)) return undefined;
-	return { v: 1, expiresAt: value.expiresAt, body: value.body };
+	const { choice } = value;
+	const binding = choice === undefined ? undefined : isBinding(choice, boundTabs(choice)) ? choice : null;
+	if (binding === null) return undefined;
+	return { v: 1, expiresAt: value.expiresAt, body: value.body, ...(binding !== undefined ? { choice: binding } : {}) };
+}
+
+/** A stored `a:<id>:<ref>:<choice id>` record, or undefined. */
+export function parseChoiceRecord(value: unknown): ChoiceRecord | undefined {
+	if (!isRecord(value) || value.v !== 1 || !isNat(value.expiresAt) || !isNat(value.index) || !isUser(value.user) || !isNat(value.at)) return undefined;
+	const { user } = value;
+	return { v: 1, expiresAt: value.expiresAt, index: value.index, user: { id: user.id, ...(user.name !== undefined ? { name: user.name } : {}) }, at: value.at };
 }
 
 /** The upload of `PUT /api/view/<id>`: the view, the generation it commits, that generation's media and the expiry. */

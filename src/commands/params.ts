@@ -31,6 +31,8 @@ export type Param = {
 		readonly label?: string;
 		/** The flag takes one argument per name, and the value is an object of them: `--tab <label> <file>` gives `{ label, file }`. */
 		readonly pair?: readonly [string, string];
+		/** A `json` parameter whose CLI argument is the text itself, never parsed: `-o Merge` gives `"Merge"`. */
+		readonly text?: boolean;
 	};
 };
 

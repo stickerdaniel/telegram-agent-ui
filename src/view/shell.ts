@@ -2,10 +2,17 @@
 // ref `q` and the tab `t` from its URL and the launch data from Telegram's SDK, removes the
 // fragment, fetches `/api/view`, asking again for 10 s after a 404, and draws the title, the
 // question's context, the tab row and one panel per tab. A view opened with `q` that shows no
-// context yet asks again for 10 s and adds the context once it shows. The panels draw Markdown
-// and diff as text nodes, and a page in an `<iframe sandbox>` whose `srcdoc` starts with the page
-// policy and the resolved theme. A gallery tab arrives in a later release and shows
-// `labels.viewError` until then.
+// context yet asks again for 10 s and adds the context once it shows, else shows
+// `labels.viewLate`. The panels draw Markdown and diff as text nodes, and a page in an
+// `<iframe sandbox>` whose `srcdoc` starts with the page policy and the resolved theme. A gallery
+// tab arrives in a later release and shows `labels.viewError` until then.
+//
+// Telegram's bottom buttons: on a tab that the context's binding names, `MainButton` reads
+// `labels.choose` and the option's label and posts the choice to `/api/answer`, and
+// `SecondaryButton` closes. On any other tab, and while no binding is visible, `MainButton`
+// closes and `SecondaryButton` is hidden; a closed binding shows Close alone and `labels.closed`.
+// A tap disables the main button until the host answers;
+// its choice id of 128 random bits stays while the same option is tried again.
 //
 // The response header names the script by its SHA-256, so the script is the same text for every
 // deployment: labels and theme reach it in two JSON data blocks of the page. The script is plain
@@ -17,6 +24,8 @@ import type { CssVars } from './theme.ts';
 
 /** How long the shell asks again after a 404 on the view or for a context that is not there yet, and the pause between two asks, in ms. */
 export const LATE_KEY = { window: 10_000, pause: 1_000 } as const;
+/** How long the shell shows `labels.chosen` before it closes, in ms. */
+export const CHOSEN_CLOSE = 1_500;
 
 // The variables of shadcn's theming.mdx, each with the Telegram theme parameter it falls back to
 // and the fixed light and dark values of shadcn's neutral theme behind that.
@@ -96,6 +105,7 @@ pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .hunk { color: var(--muted-foreground); background: var(--muted); }
 .meta { font-weight: 600; }
 .hint { flex: none; margin: 0; padding: 8px 16px 12px; color: var(--muted-foreground); font-size: 13px; text-align: center; }
+.hint[hidden] { display: none; }
 .state { margin: auto; padding: 24px; color: var(--muted-foreground); text-align: center; }
 `;
 
@@ -103,6 +113,7 @@ pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 export const SHELL_LIB = String.raw`
 var RETRY = { window: ${LATE_KEY.window}, pause: ${LATE_KEY.pause} };
 var LIFE = ${MEDIA_URL_LIFE};
+var CLOSE_DELAY = ${CHOSEN_CLOSE};
 var PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent(${JSON.stringify(PLACEHOLDER_SVG)});
 
 // Fetches url and asks again every RETRY.pause ms while the answer is 404, until RETRY.window ms
@@ -118,7 +129,8 @@ async function fetchRetry(url, init, io) {
 
 // Asks for the view again every RETRY.pause ms until an answer carries a context, for up to
 // RETRY.window ms: a view opened from a question may show before that question's context does.
-// Resolves to the context, or to null once the window passed.
+// Resolves to that answer, whose context comes with the binding of a question answered in the
+// view, or to null once the window passed.
 async function fetchContext(url, init, io) {
 	var start = io.now();
 	for (;;) {
@@ -128,10 +140,24 @@ async function fetchContext(url, init, io) {
 			var response = await io.fetch(url, init);
 			if (response.ok) {
 				var answer = await response.json();
-				if (answer.context) return answer.context;
+				if (answer.context) return answer;
 			}
 		} catch (error) {}
 	}
+}
+
+// The option of a binding whose tab has this label, else null.
+function boundOption(binding, label) {
+	var options = binding && Array.isArray(binding.options) ? binding.options : [];
+	for (var i = 0; i < options.length; i++) if (options[i] && options[i].tab === label) return options[i];
+	return null;
+}
+
+// Random bytes as base64url without padding: 16 bytes make the 22 characters of a choice id.
+function choiceId(bytes) {
+	var text = '';
+	for (var i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+	return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 // The policy of a page, as the meta element in front of its markup states it.
@@ -517,6 +543,18 @@ var timer = 0;
 var themed = [];
 var frames = [];
 var probes = {};
+// The tabs and the open one, the binding of the question once visible, and the state of a choice:
+// sending while the host has not answered, done once it stored one, and the option and choice id
+// of the last tap, which a second tap on the same option sends again.
+var tabs = [];
+var current = 0;
+var binding = null;
+var sending = false;
+var done = false;
+var pending = null;
+var hint = null;
+var main = app && app.MainButton;
+var secondary = app && app.SecondaryButton;
 
 function element(tag, className, text) {
 	var node = document.createElement(tag);
@@ -527,11 +565,67 @@ function element(tag, className, text) {
 function state(text) {
 	view.replaceChildren(element('p', 'state', text));
 }
+// The line below the content: a hint, a late question, or what became of a choice. Empty hides it.
+function say(text) {
+	if (!hint) return;
+	hint.textContent = text;
+	hint.hidden = !text;
+}
+// Calls one method of a bottom button that the client has: an older client lacks SecondaryButton.
+function invoke(button, method, value) {
+	try {
+		if (button && typeof button[method] === 'function') button[method](value);
+	} catch (error) {}
+}
+// The option bound to the open tab, while a choice can still be made.
+function chosenOption() {
+	if (!binding || binding.closed || done || expired || !tabs[current]) return null;
+	return boundOption(binding, tabs[current].label);
+}
+function bottom() {
+	var option = chosenOption();
+	invoke(main, 'setText', option ? labels.choose + ' ' + option.label : labels.viewClose);
+	invoke(main, sending ? 'disable' : 'enable');
+	invoke(main, 'show');
+	if (option) {
+		invoke(secondary, 'setText', labels.viewClose);
+		invoke(secondary, 'show');
+	} else invoke(secondary, 'hide');
+}
+// Posts the choice of option with the launch data. A 2xx means the host stored it: the shell
+// says so and closes. Old launch data ends the choice until the view opens again, and a closed
+// question ends it too; any other failure keeps the view open for another tap.
+function choose(option) {
+	if (sending) return;
+	if (!pending || pending.index !== option.index) pending = { index: option.index, id: choiceId(crypto.getRandomValues(new Uint8Array(16))) };
+	sending = true;
+	bottom();
+	var url = '/api/answer?v=' + encodeURIComponent(viewId) + '&q=' + encodeURIComponent(ref) + '&n=' + option.index + '&c=' + pending.id;
+	io.fetch(url, { method: 'POST', headers: { Authorization: 'tma ' + initData } }).then(function (response) {
+		sending = false;
+		if (response.ok) {
+			pending = null;
+			done = true;
+			say(labels.chosen);
+			bottom();
+			setTimeout(function () { app.close(); }, CLOSE_DELAY);
+			return;
+		}
+		if (response.status === 401 || response.status === 410) binding = null;
+		say(response.status === 401 ? labels.viewExpired : response.status === 410 ? labels.closed : labels.viewError);
+		bottom();
+	}, function () {
+		sending = false;
+		say(labels.viewError);
+		bottom();
+	});
+}
 function check() {
 	if (expired || Date.now() < expiresAt) return;
 	expired = true;
 	frames = [];
 	state(labels.viewExpired);
+	bottom();
 }
 function arm() {
 	clearTimeout(timer);
@@ -652,7 +746,8 @@ function fill(panel, content, media) {
 function draw(answer) {
 	if (expired) return;
 	if (answer.expiresAt < expiresAt) { expiresAt = answer.expiresAt; arm(); }
-	var tabs = answer.view.tabs;
+	tabs = answer.view.tabs;
+	binding = answer.choice || null;
 	var parts = [];
 	if (answer.view.title) {
 		document.title = answer.view.title;
@@ -662,21 +757,28 @@ function draw(answer) {
 	if (answer.context) {
 		parts.push(drawContext(answer.context));
 	} else if (ref) {
-		// The view of a question that shows no context yet: its slot fills once the context shows.
+		// The view of a question that shows no context yet: its slot fills once the context shows,
+		// with the binding that comes with it. Until then the main button closes.
 		var slot = element('div');
 		slot.hidden = true;
 		parts.push(slot);
-		fetchContext(viewUrl, viewInit, io).then(function (context) {
-			if (context && !expired && slot.isConnected) slot.replaceWith(drawContext(context));
+		fetchContext(viewUrl, viewInit, io).then(function (late) {
+			if (expired || !slot.isConnected) return;
+			if (!late) return say(labels.viewLate);
+			slot.replaceWith(drawContext(late.context));
+			binding = late.choice || null;
+			if (binding) say(binding.closed ? labels.closed : '');
+			bottom();
 		});
 	}
 	var buttons = [];
-	var current = Math.max(0, tabs.findIndex(function (tab) { return tab.label === wanted; }));
+	current = Math.max(0, tabs.findIndex(function (tab) { return tab.label === wanted; }));
 	var strip = element('div');
 	strip.id = 'panels';
 	function mark(index) {
 		buttons.forEach(function (button, position) { button.setAttribute('aria-selected', String(position === index)); });
 		if (buttons[index]) buttons[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+		bottom();
 	}
 	function select(index) {
 		if (index < 0 || index >= tabs.length) return;
@@ -701,7 +803,11 @@ function draw(answer) {
 		strip.append(panel);
 		fill(panel, tab.content, answer.media);
 	});
-	parts.push(strip, element('p', 'hint', labels.viewHint));
+	// A question answered in the view needs no hint: its bottom button names the pick, and a
+	// closed one says that it is closed.
+	hint = element('p', 'hint');
+	parts.push(strip, hint);
+	say(binding ? (binding.closed ? labels.closed : '') : labels.viewHint);
 	view.replaceChildren.apply(view, parts);
 	strip.scrollLeft = current * strip.clientWidth;
 	mark(current);
@@ -723,11 +829,13 @@ document.addEventListener('visibilitychange', check);
 if (app) {
 	try { app.ready(); app.expand(); } catch (error) {}
 	try { app.disableVerticalSwipes(); } catch (error) {}
-	try {
-		app.MainButton.setText(labels.viewClose);
-		app.MainButton.onClick(function () { app.close(); });
-		app.MainButton.show();
-	} catch (error) {}
+	invoke(main, 'onClick', function () {
+		var option = chosenOption();
+		if (option) choose(option);
+		else app.close();
+	});
+	invoke(secondary, 'onClick', function () { app.close(); });
+	bottom();
 	app.onEvent('themeChanged', function () { applyTheme(); frames.forEach(drawFrame); });
 	app.onEvent('activated', check);
 }
@@ -773,7 +881,17 @@ const dataBlock = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u
  */
 export function shellPage(options: { labels: Labels; theme?: CssVars | undefined }): string {
 	const { labels } = options;
-	const shown = { viewHint: labels.viewHint, viewClose: labels.viewClose, viewGone: labels.viewGone, viewExpired: labels.viewExpired, viewError: labels.viewError };
+	const shown = {
+		viewHint: labels.viewHint,
+		viewClose: labels.viewClose,
+		viewGone: labels.viewGone,
+		viewExpired: labels.viewExpired,
+		viewError: labels.viewError,
+		viewLate: labels.viewLate,
+		choose: labels.choose,
+		chosen: labels.chosen,
+		closed: labels.closed,
+	};
 	return `<!doctype html>
 <html>
 <head>

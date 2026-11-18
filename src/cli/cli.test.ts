@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Config, paths, writeConfig } from '../commands/config.ts';
+import { commands } from '../commands/table.ts';
 import { EXIT } from '../commands/result.ts';
 import { isRecord } from '../core/check.ts';
 import { parseQuestion } from '../core/parse.ts';
@@ -386,6 +387,78 @@ test('view put --replace keeps the id and warns for each tab label of the earlie
 	// The same labels replace without a warning.
 	expect((await run(at, ['view', 'put', '--replace', id, '--tab', 'A: Compact', 'a.html', '--tab', 'C: Split', 'c.html'], { env })).err).not.toContain('warning');
 	expect(await run(at, ['view', 'put', '--tab', 'A'], { env })).toMatchObject({ code: EXIT.usage, out: { error: 'usage', message: expect.stringContaining('--tab needs <label> <file>') } });
+});
+
+test('ask --answer-in view binds each option to its tab, fake mode answers it, and view put --replace keeps the tabs an open question binds', async () => {
+	const at = await machine({ fresh: true });
+	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.work, 'fake') };
+	for (const name of ['a.html', 'b.html', 'c.html']) file(at, name, `<h1>${name}</h1>`);
+	const put = await run(at, ['view', 'put', '--tab', 'Compact', 'a.html', '--tab', 'Wide', 'b.html', '--tab', 'Notes', 'c.html'], { env });
+	const id = String(put.out.id);
+	const question = file(at, 'q.md', 'Which layout should stay?');
+	const ask = (...args: string[]) => run(at, ['ask', ...args, '--strict', question], { env });
+	expect(await ask('--view', id, '--answer-in', 'view', '--text')).toMatchObject({ code: EXIT.refused, out: { code: 'shape' } });
+	expect(await ask('--answer-in', 'view', '-o', 'Compact', '-o', 'Wide')).toMatchObject({ code: EXIT.refused, out: { code: 'shape' } });
+	expect(await ask('--view', id, '--answer-in', 'view', '-o', 'Compact', '-o', 'Compact')).toMatchObject({ code: EXIT.refused, out: { code: 'shape' } });
+	expect(await ask('--view', id, '--answer-in', 'view', '-o', 'Compact', '-o', 'Grid')).toMatchObject({ code: EXIT['no-view-host'], out: { error: 'no-view-host', message: expect.stringContaining('"Grid"') } });
+	const asked = await ask('--view', id, '--answer-in', 'view', '-o', 'Compact', '-o', 'Wide');
+	expect(asked).toMatchObject({ code: 0, out: { status: 'pending' } });
+	const ref = String(asked.out.ref);
+
+	// The open question binds Compact and Wide: a replacement without Wide is refused before any upload.
+	const replace = (tabs: string[], ttl?: number) =>
+		run(at, ['view', 'put', '--replace', id, ...(ttl !== undefined ? ['--ttl', String(ttl)] : []), ...tabs.flatMap((label) => ['--tab', label, { Compact: 'a.html', Wide: 'b.html', Notes: 'c.html' }[label] ?? ''])], { env });
+	const viewPuts = () => readFileSync(join(at.work, 'fake', 'views.jsonl'), 'utf8').split('\n').filter((line) => line.includes(`"PUT","path":"/api/view/${id}"`)).length;
+	expect(await replace(['Compact', 'Notes'])).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining(`"Wide" of question ${ref}`) } });
+	// The question lives as long as the first view, 7 days: a replacement of 1 day would end its only answer first.
+	const puts = viewPuts();
+	expect(await replace(['Compact', 'Wide'], 1)).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining(`open questions ${ref}`) } });
+	expect(viewPuts()).toBe(puts);
+	expect(await replace(['Compact', 'Wide'])).toMatchObject({ code: 0, out: { id } });
+	expect(await replace(['Compact', 'Wide'], 30)).toMatchObject({ code: 0, out: { id } });
+	expect(viewPuts()).toBe(puts + 2);
+	expect(await run(at, ['wait', ref], { env })).toMatchObject({ code: 0, out: { status: 'answered', answer: { kind: 'choice', index: 0, label: 'Compact' } } });
+	const calls = await lines(at, 'fake/calls.jsonl', 2);
+	const markup = (call: Record<string, unknown> | undefined) => (isRecord(call?.payload) ? call.payload.reply_markup : undefined);
+	expect(markup(calls[0])).toMatchObject({ inline_keyboard: [[{ text: 'Open view' }]] });
+	expect(markup(calls.at(-1))).toMatchObject({ inline_keyboard: [[{ text: '✓ Compact' }]] });
+	// A closed question binds nothing any more.
+	expect((await run(at, ['close', ref], { env })).code).toBe(0);
+	expect(await replace(['Compact', 'Notes'], 1)).toMatchObject({ code: 0, out: { id } });
+});
+
+test('view put --replace without --ttl refuses a view whose open question lives longer, and a stored question without expiresAt blocks every replacement', async () => {
+	// The command table in this process, in fake mode: no process start is needed for this check.
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tau-replace-')));
+	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	for (const name of ['a', 'b']) writeFileSync(join(dir, `${name}.html`), `<h1>${name}</h1>`);
+	const context = { env: { TELEGRAM_AGENT_UI_FAKE: join(dir, 'fake'), HOME: dir }, roots: [dir], cwd: dir, log: () => {}, signal: new AbortController().signal };
+	const invoke = (name: string, raw: Record<string, unknown>) => {
+		const command = commands.find((candidate) => candidate.name === name);
+		if (!command) throw new Error(`no command ${name}`);
+		return command.invoke(raw, context);
+	};
+	const tabs = [
+		{ label: 'A', file: 'a.html' },
+		{ label: 'B', file: 'b.html' },
+	];
+	const put = await invoke('view put', { tabs, ttl: 30 });
+	if (!put.ok) throw new Error(JSON.stringify(put.failure));
+	const id = String(put.output.id);
+	const asked = await invoke('ask', { view: id, answerIn: 'view', options: ['A', 'B'], body: 'Which one should stay?' });
+	if (!asked.ok) throw new Error(JSON.stringify(asked.failure));
+	const ref = String(asked.output.ref);
+	// The question lives as long as its view of 30 days, and a replacement takes 7 days by default.
+	expect(await invoke('view put', { replace: id, tabs })).toMatchObject({ ok: false, failure: { code: 'shape', message: expect.stringContaining(`open questions ${ref}`) } });
+	expect(await invoke('view put', { replace: id, tabs, ttl: 30 })).toMatchObject({ ok: true });
+	// ask never stores a question answered in its view without expiresAt; one written so by hand still blocks.
+	const store = fileStore(join(dir, 'fake', 'store'));
+	const question = parseQuestion(await store.get(`q:${ref}`));
+	if (!question) throw new Error('no question');
+	delete question.expiresAt;
+	await store.set(`q:${ref}`, question);
+	expect(parseQuestion(await store.get(`q:${ref}`))).not.toHaveProperty('expiresAt');
+	expect(await invoke('view put', { replace: id, tabs, ttl: 365 })).toMatchObject({ ok: false, failure: { code: 'shape', message: expect.stringContaining(ref) } });
 });
 
 test('an identical ask with its ref returns the stored question after its view lost the tab labels, and a changed body still conflicts', async () => {

@@ -21,8 +21,12 @@ export type Spec = {
 	silent?: boolean;
 };
 
-/** `choice`: 2 to 8 options, a tap is the answer. `text`: a reply is the answer. `once` forbids a correction. */
-export type AnswerSpec = { type: 'choice'; options: Option[]; layout?: 'rows' | 'row'; once?: boolean } | { type: 'text'; once?: boolean };
+/**
+ * `choice`: 2 to 8 options, a tap is the answer. `text`: a reply is the answer. `once` forbids a
+ * correction. `in: 'view'` answers a choice inside its view: every option names a distinct tab,
+ * the message carries only the view row, and the shell's bottom button picks the open tab's option.
+ */
+export type AnswerSpec = { type: 'choice'; options: Option[]; layout?: 'rows' | 'row'; once?: boolean; in?: 'chat' | 'view' } | { type: 'text'; once?: boolean };
 /** `tab` names the tab of the view that the button opens once this option is picked. */
 export type Option = { label: string; value?: string; style?: 'primary' | 'danger'; tab?: string };
 export type Attachment = { path: string; as?: 'photo' | 'video' | 'document'; caption?: string };
@@ -49,7 +53,7 @@ export type Question = {
 	expiresAt?: number;
 	/** Answers so far. */
 	seq: number;
-	/** Keys of the last 32 applied inputs: `cq:<callback query id>` or `msg:<message id>`. */
+	/** Keys of the last 32 applied inputs: `cq:<callback query id>`, `msg:<message id>` or `view:<choice id>`. */
 	applied: string[];
 	/**
 	 * The message against the state: an edit is owed while `done < want`. `recheckAt` is set by an
@@ -61,6 +65,12 @@ export type Question = {
 	delivery: { seq: number; attempts: number; error?: string };
 	/** Opaque JSON of the asker, returned with the answer. */
 	meta?: Json;
+	/**
+	 * Set on a question answered in its view when it closes: the view host still has to store its
+	 * binding with `closed: true`. Its own debt beside `shown`, since it needs no known message
+	 * and no edit that Telegram took. A host write that succeeds clears it.
+	 */
+	bindingOwed?: true;
 	createdAt: number;
 } & (
 	| { status: 'sending' }
@@ -81,7 +91,18 @@ export type QuestionEvent =
 	| { type: 'edit'; body: Body }
 	| { type: 'close'; body?: Body }
 	| { type: 'shown'; want: number; outcome: CallClass }
-	| { type: 'delivered'; seq: number; error?: string };
+	| { type: 'delivered'; seq: number; error?: string }
+	/** A pick stored on the view host: choice `id` of 128 random bits, option `index`, by `user` at the host's time `at`. */
+	| { type: 'choice'; id: string; user: User; index: number; at: number };
+
+/**
+ * What the view host learns of a question answered in its view, beside its body: each option
+ * with its tab, `once`, the time from which the host takes no choice for it, and `closed` once
+ * the question is closed, from which on the host takes none either.
+ */
+export type ChoiceBinding = { options: { index: number; label: string; tab: string }[]; once: boolean; expiresAt?: number; closed?: boolean };
+/** A choice the view host stored, as `ViewClient.choices` lists it. `key` is its storage key, which `removeChoice` takes. */
+export type StoredChoice = { key: string; view: string; ref: string; id: string; index: number; user: User; at: number };
 
 export type Handled =
 	| { kind: 'ignored' }
@@ -108,7 +129,9 @@ export type Warning = {
  * What `createChat` returns for `send`, `edit` and `close`. `refused` means that no message was
  * sent and no question exists. `partial` means that the body arrived and a files step did not:
  * `sent` holds the body and every file whose answer arrived. `uncertain` means that a request
- * may have arrived; a question then stays as the store holds it.
+ * may have arrived; a question then stays as the store holds it. `view-host` refuses a question
+ * answered in its view whose view host takes no answers, lacks a bound tab or did not store the
+ * binding.
  */
 export type Outcome =
 	| { kind: 'ok'; sent?: Sent; ref?: string; status?: 'pending' | 'answered' | 'closed'; warnings: Warning[] }
@@ -116,7 +139,7 @@ export type Outcome =
 	| { kind: 'partial'; sent: Sent; ref?: string; failed: { step: number; class: 'refused' | 'uncertain'; reason: string }; warnings: Warning[] }
 	| {
 			kind: 'refused';
-			code: 'shape' | 'guard' | 'unknown-ref' | 'ref-conflict' | 'closed' | 'origin' | 'chat' | 'no-listener' | 'busy' | 'server' | 'token' | 'outside-roots' | 'secret-file' | 'publish-root';
+			code: 'shape' | 'guard' | 'unknown-ref' | 'ref-conflict' | 'closed' | 'origin' | 'chat' | 'no-listener' | 'busy' | 'server' | 'token' | 'outside-roots' | 'secret-file' | 'publish-root' | 'view-host';
 			reason: string;
 	  }
 	| { kind: 'uncertain'; ref?: string; reason: string };
@@ -142,15 +165,21 @@ export type PreparedView = { view: StoredView; media: { type: string; bytes: Uin
 export type HostRefusal = { kind: 'refused'; reason: string; status?: number };
 
 /**
- * The client of a view host. `createChat` uses `context` and `has`: it stores a question's body
- * under the pair of view id and ref, so the view shows the question it was opened from, and it
- * reads the view's tab labels before it sends options that name a tab.
+ * The client of a view host. `createChat` uses `context`, `has` and `version`: it stores a
+ * question's body under the pair of view id and ref, so the view shows the question it was
+ * opened from, and it reads the view's tab labels and expiry before it sends options that name a
+ * tab. A question answered in its view also stores its `ChoiceBinding` with the body, once the
+ * host's `formats` list `answers`. The listener reads the stored choices with `choices` and
+ * removes each with `removeChoice` once its result is stored.
  */
 export type ViewClient = {
 	put(prepared: PreparedView, options?: { id?: string; ttlDays?: number }): Promise<{ kind: 'ok'; id: string; url: string; expiresAt: number } | HostRefusal | { kind: 'uncertain'; id: string; reason: string }>;
-	context(id: string, ref: string, body: Body): Promise<{ kind: 'ok' } | { kind: 'missing' } | HostRefusal>;
-	has(id: string): Promise<{ kind: 'present'; tabs: string[] } | { kind: 'missing' } | HostRefusal>;
+	context(id: string, ref: string, body: Body, choice?: ChoiceBinding): Promise<{ kind: 'ok' } | { kind: 'missing' } | HostRefusal>;
+	has(id: string): Promise<{ kind: 'present'; tabs: string[]; expiresAt: number } | { kind: 'missing' } | HostRefusal>;
 	delete(id: string): Promise<{ kind: 'ok' } | { kind: 'missing' } | HostRefusal>;
+	version(): Promise<{ kind: 'ok'; formats: string[] } | HostRefusal>;
+	choices(): Promise<{ kind: 'ok'; choices: StoredChoice[] } | HostRefusal>;
+	removeChoice(key: string): Promise<{ kind: 'ok' } | HostRefusal>;
 };
 
 /** A spec or body that breaks a shape check of section 8. Every caller refuses it with code `shape`. */
@@ -205,6 +234,9 @@ export type Labels = {
 	deny: string;
 	expired: string;
 	tooLong: string;
+	choose: string;
+	chosen: string;
+	viewLate: string;
 	hintWords: readonly string[];
 };
 
@@ -229,5 +261,8 @@ export const defaultLabels: Readonly<Labels> = Object.freeze({
 	deny: 'Deny',
 	expired: 'Expired without an answer.',
 	tooLong: 'This request is too long for Telegram. Answer it in the terminal.',
+	choose: 'Choose',
+	chosen: 'Sent. It shows on the message once applied.',
+	viewLate: 'This question is not on the view yet. Close the view and open it again in a moment.',
 	hintWords: Object.freeze(['tap', 'press', 'click', 'button', 'buttons', 'reply with']),
 });

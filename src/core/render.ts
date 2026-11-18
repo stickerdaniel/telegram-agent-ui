@@ -4,7 +4,7 @@
 import type { InlineKeyboardButton } from '@grammyjs/types';
 import { checkLabels } from './labels.ts';
 import { checkSpec, messageBodyIssue, specWarnings } from './shape.ts';
-import { type AnswerSpec, type Attachment, type Body, type Call, defaultLabels, type Labels, type Question, type Sent, ShapeError, type Spec, type Step, type Warning } from './types.ts';
+import { type AnswerSpec, type Attachment, type Body, type Call, type ChoiceBinding, defaultLabels, type Labels, type Question, type Sent, ShapeError, type Spec, type Step, type Warning } from './types.ts';
 
 /** The callback data of option `index` of question `ref`: at most 36 of Telegram's 64 bytes. */
 export const callbackData = (ref: string, index: number) => `q:${ref}:${index}`;
@@ -18,12 +18,34 @@ export function viewUrl(view: { id: string; origin: string }, ref?: string, tab?
 	return url.href;
 }
 
+/** True for a choice answered inside its view: its message carries no answer button. */
+export const inView = (answer: AnswerSpec | undefined) => answer?.type === 'choice' && answer.in === 'view';
+
+/**
+ * What the view host stores beside the body of a question answered in its view: each option
+ * with its tab, `once`, the question's `expiresAt`, and `closed: true` once it is closed.
+ * Undefined for any other question. Every context write of such a question carries it, so an
+ * edit or a repair never drops it, and the edit that shows a close or an expiry closes the view.
+ */
+export function bindingOf(question: Pick<Question, 'spec' | 'expiresAt' | 'status'>): ChoiceBinding | undefined {
+	const { answer } = question.spec;
+	if (answer.type !== 'choice' || answer.in !== 'view') return undefined;
+	const options = answer.options.flatMap((option, index) => (option.tab !== undefined ? [{ index, label: option.label, tab: option.tab }] : []));
+	return {
+		options,
+		once: answer.once === true,
+		...(question.expiresAt !== undefined ? { expiresAt: question.expiresAt } : {}),
+		...(question.status === 'closed' ? { closed: true } : {}),
+	};
+}
+
 /**
  * The answer buttons of a choice. `picked` gets the mark, "✓ " before its label. With
- * `onlyPicked`, the keyboard keeps the marked button alone, as a closed question shows it.
+ * `onlyPicked`, the keyboard keeps the marked button alone, as a closed question shows it. A
+ * choice answered in its view has none.
  */
 function answerRows(ref: string, answer: AnswerSpec, picked: number | undefined, onlyPicked: boolean): InlineKeyboardButton[][] {
-	if (answer.type !== 'choice') return [];
+	if (answer.type !== 'choice' || answer.in === 'view') return [];
 	const buttons = answer.options.flatMap((option, index): InlineKeyboardButton[] => {
 		if (onlyPicked && index !== picked) return [];
 		const text = index === picked ? `✓ ${option.label}` : option.label;
@@ -33,7 +55,8 @@ function answerRows(ref: string, answer: AnswerSpec, picked: number | undefined,
 	return answer.layout === 'row' ? [buttons] : buttons.map((button) => [button]);
 }
 
-const viewRow = (view: { id: string; origin: string }, labels: Labels, ref?: string, tab?: string): InlineKeyboardButton[] => [{ text: labels.view, web_app: { url: viewUrl(view, ref, tab) } }];
+/** The view button. `text` replaces `labels.view`, as the mark of a choice answered in its view does. */
+const viewRow = (view: { id: string; origin: string }, labels: Labels, ref?: string, tab?: string, text = labels.view): InlineKeyboardButton[] => [{ text, web_app: { url: viewUrl(view, ref, tab) } }];
 
 const markup = (rows: InlineKeyboardButton[][]) => (rows.length > 0 ? { reply_markup: { inline_keyboard: rows } } : {});
 
@@ -126,8 +149,10 @@ function resolvedBody(original: Body, resolved: Body, labels: Labels): Body {
  * state. It carries the full keyboard every time, since an edit without `reply_markup` removes
  * it. A question shows its answer buttons with the mark while it takes answers. Once closed it
  * shows its resolved form without answer buttons, or without a resolved body its body and its
- * marked button alone. The view row stays, with the picked option's tab. Throws ShapeError
- * for a body that cannot go out, and an Error for a question whose message is not known yet.
+ * marked button alone. The view row stays, with the picked option's tab. A choice answered in
+ * its view has the view row alone, in every status, and its view button carries the mark of the
+ * picked option. Throws ShapeError for a body that cannot go out, and an Error for a question
+ * whose message is not known yet.
  */
 export function renderEdit(target: { sent: Sent; body: Body } | Question, labels: Labels = defaultLabels): Call {
 	if (labels !== defaultLabels) checkLabels(labels);
@@ -144,12 +169,13 @@ export function renderEdit(target: { sent: Sent; body: Body } | Question, labels
 	const { spec } = question;
 	const answer = 'answer' in question ? question.answer : undefined;
 	const picked = answer?.kind === 'choice' ? answer.index : undefined;
-	const tab = picked !== undefined && spec.answer.type === 'choice' ? spec.answer.options[picked]?.tab : undefined;
+	const option = picked !== undefined && spec.answer.type === 'choice' ? spec.answer.options[picked] : undefined;
 	const closed = question.status === 'closed';
 	const resolved = question.status === 'closed' ? question.resolved : undefined;
+	const viewText = option && inView(spec.answer) ? `✓ ${option.label}` : labels.view;
 	const rows = [
 		...(resolved || (closed && picked === undefined) ? [] : answerRows(question.ref, spec.answer, picked, closed)),
-		...(sent.view ? [viewRow(sent.view, labels, question.ref, tab)] : []),
+		...(sent.view ? [viewRow(sent.view, labels, question.ref, option?.tab, viewText)] : []),
 	];
 	const body = resolved ? resolvedBody(spec.body, resolved, labels) : spec.body;
 	const issue = messageBodyIssue(body);

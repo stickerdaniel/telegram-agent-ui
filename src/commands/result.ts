@@ -57,8 +57,8 @@ export function failureOf(error: unknown): Failure {
 
 /**
  * An outcome of `createChat` as a result: `ok` and `dry` through `output`, a refusal with its
- * code (`no-listener` and a rejected token have exit codes of their own), and `uncertain` and
- * `partial` as uncertain with the way out.
+ * code (`no-listener`, a rejected token and `view-host` have exit codes of their own), and
+ * `uncertain` and `partial` as uncertain with the way out.
  */
 export function fromOutcome(outcome: Outcome, output: (outcome: Extract<Outcome, { kind: 'ok' | 'dry' }>) => Record<string, unknown>): Result {
 	switch (outcome.kind) {
@@ -68,6 +68,7 @@ export function fromOutcome(outcome: Outcome, output: (outcome: Extract<Outcome,
 		case 'refused':
 			if (outcome.code === 'no-listener') return failed({ error: 'no-listener', message: `${outcome.reason}. Nothing was sent: start telegram-agent-ui listen` });
 			if (outcome.code === 'token') return failed({ error: 'no-config', message: `the server refused the bot token: ${outcome.reason}. Run init with a new token` });
+			if (outcome.code === 'view-host') return failed({ error: 'no-view-host', message: `${outcome.reason}. Nothing was sent` });
 			return failed({ error: 'refused', code: outcome.code, message: outcome.reason });
 		case 'uncertain':
 			return failed({ error: 'uncertain', message: outcome.reason, ...(outcome.ref !== undefined ? { ref: outcome.ref } : {}) });

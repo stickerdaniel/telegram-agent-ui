@@ -12,6 +12,8 @@ const choiceSpec = choice({ markdown: 'Which way?' }, [{ label: 'Rebase', tab: '
 const { open, answered, closedAnswered } = states(choiceSpec);
 const corrected = step(answered, input(tap({ button: 1, id: 'b1' })));
 const blocksOpen = states(text({ blocks: [{ type: 'paragraph', text: 'Why?' }] })).open;
+const inViewSpec = choice({ markdown: 'Which tab?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }, { label: 'C', tab: 'C' }], { view: VIEW, in: 'view' });
+const inViewOpen = states(inViewSpec).open;
 
 /** A stored question with some fields replaced, as JSON. A field set to undefined is removed. */
 const stored = (question: Question, change: Record<string, unknown>): unknown =>
@@ -70,6 +72,11 @@ describe('parseQuestion', () => {
 		['a rich text node of an unknown type', stored(blocksOpen, { spec: { ...blocksOpen.spec, body: { blocks: [{ type: 'paragraph', text: { type: 'blink', text: 'Why?' } }] } } })],
 		['a url node without its url', stored(blocksOpen, { spec: { ...blocksOpen.spec, body: { blocks: [{ type: 'paragraph', text: [{ type: 'url', text: 'Why?' }] }] } } })],
 		['a resolved body of another form than the question body', stored(states(choiceSpec).closed, { resolved: { html: 'Done' } })],
+		['an answer in the view with an option that names no tab', stored(inViewOpen, { spec: { ...inViewSpec, answer: { ...inViewSpec.answer, options: [{ label: 'A', tab: 'A' }, { label: 'B' }] } } })],
+		['an answer in the view with a tab named twice', stored(inViewOpen, { spec: { ...inViewSpec, answer: { ...inViewSpec.answer, options: [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'A' }] } } })],
+		['an open question that owes its closed binding', stored(inViewOpen, { bindingOwed: true })],
+		['a debt of the closed binding that is not true', stored(states(inViewSpec).closed, { bindingOwed: false })],
+		['an answer in a place that is neither chat nor view', stored(inViewOpen, { spec: { ...inViewSpec, answer: { ...inViewSpec.answer, in: 'thread' } } })],
 	];
 	for (const [name, value] of fixtures) {
 		test(`rejects ${name}`, () => {
@@ -113,6 +120,7 @@ describe('every state reduce produces passes parseQuestion', () => {
 		text({ markdown: 'Why?' }),
 		text({ blocks: [{ type: 'paragraph', text: 'Why?' }] }, { once: true }),
 		choice({ html: '<b>Which?</b>' }, [{ label: 'A' }, { label: 'B' }]),
+		inViewSpec,
 	];
 	/** `usual` 4 times in 5, else `rare`: most inputs fit, so that answers and corrections happen. */
 	const mostly = <T>(usual: T, rare: T) => fc.oneof({ arbitrary: fc.constant(usual), weight: 4 }, { arbitrary: fc.constant(rare), weight: 1 });
@@ -132,6 +140,12 @@ describe('every state reduce produces passes parseQuestion', () => {
 			arbitrary: fc
 				.record({ id: fc.constantFrom(700, 701, 702, 703), replyTo: message, text: mostly<string | null>('yes', null), user, markupRef: fc.constantFrom(REF, null) })
 				.map((options): Make => () => ok(input(reply(options)))),
+			weight: 6,
+		},
+		{
+			arbitrary: fc
+				.record({ index: fc.nat(3), id: fc.constantFrom('v1', 'v2', 'v3', 'v4').map((id) => id.padEnd(22, '0')), user })
+				.map(({ index, id, user }): Make => () => ok({ type: 'choice', id, user: { id: user }, index, at: NOW })),
 			weight: 6,
 		},
 		{ arbitrary: fc.constantFrom(...bodies).map((body): Make => () => ok({ type: 'edit', body })), weight: 1 },
@@ -157,6 +171,7 @@ describe('every state reduce produces passes parseQuestion', () => {
 					(_, ask) => ({ event: { ...ask, type: 'ask', expiresAt: -1 } as QuestionEvent, valid: false }),
 					() => ({ event: { type: 'edit', body: { blocks: [{ type: 'paragraph', text: 5 as unknown as string }] } }, valid: false }),
 					() => ({ event: { type: 'delivered', seq: 0 }, valid: false, now: NOW + 0.5 }),
+					() => ({ event: { type: 'choice', id: 'short', user: { id: USER }, index: 0, at: NOW }, valid: false }),
 				),
 			weight: 1,
 		},

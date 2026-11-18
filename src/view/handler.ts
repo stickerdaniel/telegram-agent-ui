@@ -1,38 +1,51 @@
-// The view host: a function from a Request to a Response over a storage of 3 methods. It holds
+// The view host: a function from a Request to a Response over a storage of 4 methods. It holds
 // no bot token, calls nobody and runs on any runtime with the Fetch API and WebCrypto; `./worker`
 // is this function on Cloudflare KV.
 //
 //   GET    /?v=<id>&q=<ref>&t=<label>              the shell, no view content
-//   GET    /api/view?v=<id>&q=<ref>                launch data: the view, the context of ref, a signed URL per media
+//   GET    /api/view?v=<id>&q=<ref>                launch data: the view, the context of ref with its binding, a signed URL per media
 //   GET    /m/<id>/<generation>/<index>?e=&s=      the signature: one media object, with Range
 //   PUT    /api/view/<id>                          upload key: the view, which commits its generation
 //   PUT    /api/media/<id>/<generation>/<index>?e= upload key: one media object, expiring at e
-//   PUT    /api/view/<id>/context/<ref>            upload key: the body of question ref
-//   HEAD   /api/view/<id>                          upload key: 200 with the tab labels, or 404
+//   PUT    /api/view/<id>/context/<ref>            upload key: the body of question ref, or { body, choice } with its binding
+//   HEAD   /api/view/<id>                          upload key: 200 with the tab labels and the expiry, or 404
 //   DELETE /api/view/<id>                          upload key: the view and its committed media
-//   GET    /api/version                            nothing: { version, formats }
+//   POST   /api/answer?v=<id>&q=<ref>&n=<index>&c=<choice id>   launch data: stores one choice of a bound option
+//   GET    /api/answers                            upload key: every stored choice, read only
+//   DELETE /api/answer/<key>                       upload key: one stored choice
+//   GET    /api/version                            nothing: { version, formats }, with `answers` among the formats
 //
 // A storage may show a key late and keeps a value up to 60 s past its expiry, so every read
 // checks the stored expiry too. A media read of a committed view waits up to 10 s for a late
 // object, never past its signature's expiry, and then answers the placeholder image. No GET or
 // HEAD route writes, deletes or counts: a page may load images from this origin and so call any
-// of them.
-import { isInt } from '../core/check.ts';
+// of them. The one route that writes without the upload key is the POST of a choice, and it
+// needs launch data that Telegram signed for an allowed user.
+import { isInt, isRecord } from '../core/check.ts';
 import { mergeLabels } from '../core/labels.ts';
-import type { Body, Labels } from '../core/types.ts';
+import { CHOICE_ID } from '../core/shape.ts';
+import type { ChoiceBinding, Labels, StoredChoice, User } from '../core/types.ts';
 import { isPublicKey, verifyLaunchData } from './launch.ts';
 import { MEDIA_URL_LIFE, MEDIA_WAIT, mediaPath, mediaSigned, PLACEHOLDER_SVG, parseRange } from './media.ts';
 import { shellPage, shellPolicy, shellScriptHash } from './shell.ts';
 import {
+	bindingIssue,
+	boundTabs,
+	CHOICE_LIMITS,
+	type ChoiceRecord,
 	contextIssue,
 	decode,
 	encode,
 	GENERATION,
+	HOST_FORMATS,
 	INDEX,
+	isBinding,
 	isMediaType,
 	isRef,
 	isViewId,
 	keys,
+	parseChoiceKey,
+	parseChoiceRecord,
 	parseContext,
 	parseManifest,
 	parseUpload,
@@ -40,7 +53,6 @@ import {
 	sniff,
 	tabLabels,
 	VERSION,
-	VIEW_FORMATS,
 	VIEW_LIMITS,
 	type ViewRecord,
 } from './stored.ts';
@@ -51,14 +63,16 @@ export { SHELL_SCRIPT, shellScriptHash } from './shell.ts';
 export { type CssVars, parseTheme, themeIssue } from './theme.ts';
 
 /**
- * Where the host keeps views, media and contexts. A `put` replaces one key whole, a `get` may
- * miss a `put` that resolved less than 60 s ago, and a value is gone at the latest 60 s after
- * `expiresAt`. No listing and no transaction.
+ * Where the host keeps views, media, contexts and choices. A `put` replaces one key whole, a
+ * `get` or a `list` may miss a `put` that resolved less than 60 s ago, and a value is gone at the
+ * latest 60 s after `expiresAt`. `list` returns every key with the prefix, in any order. No
+ * transaction: two writes of one key both land, and the later wins.
  */
 export type ViewStorage = {
 	get(key: string): Promise<{ value: Uint8Array; type?: string } | undefined>;
 	put(key: string, value: Uint8Array, options: { expiresAt: number; type?: string }): Promise<void>;
 	delete(key: string): Promise<void>;
+	list(prefix: string): Promise<string[]>;
 };
 
 export type ViewHandlerConfig = {
@@ -67,7 +81,7 @@ export type ViewHandlerConfig = {
 	botId: string;
 	/** The Telegram user ids that may open a view. */
 	allowedUsers: number[];
-	/** The bearer secret of every PUT, HEAD and DELETE route. */
+	/** The bearer secret of every PUT, HEAD and DELETE route and of `GET /api/answers`. */
 	uploadKey: string;
 	/** The HMAC secret of media URLs. */
 	mediaKey: string;
@@ -78,7 +92,7 @@ export type ViewHandlerConfig = {
 };
 
 // A refusal is a status and its reason, answered as JSON `{ error }`.
-type Status = 400 | 401 | 403 | 404 | 409 | 413 | 415 | 416 | 500;
+type Status = 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 416 | 429 | 500;
 
 const SECURITY = { 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' } as const;
 const JSON_TYPE = 'application/json; charset=utf-8';
@@ -162,8 +176,10 @@ async function readCapped(request: Request, limit: number): Promise<Uint8Array |
 
 // The view upload: the view of at most 2 MiB plus its generation, expiry and 20 media entries.
 const UPLOAD_LIMIT = VIEW_LIMITS.viewBytes + 64 * 1024;
-// A context: a question body of 3,500 characters, as blocks with their JSON around them.
+// A context: a question body of 3,500 characters, as blocks with their JSON around them, and a binding of 8 options.
 const CONTEXT_LIMIT = 256 * 1024;
+// The index of a bound option in a choice's query: 0 to 7.
+const OPTION = /^[0-7]$/;
 
 /** Why the configuration cannot serve, or undefined. */
 function configIssue(config: ViewHandlerConfig): string | undefined {
@@ -235,11 +251,24 @@ export function createViewHandler(config: ViewHandlerConfig): (request: Request)
 		});
 	}
 
-	async function getView(request: Request, url: URL): Promise<Response> {
+	/** The user of a request's launch data, or the 401 that refuses it: `Authorization: tma <initData>`, checked as 4.9 says. */
+	async function launchUser(request: Request): Promise<User | Response> {
 		const header = request.headers.get('Authorization') ?? '';
 		if (!header.startsWith('tma ')) return refuse(401, 'Authorization is tma <initData>');
 		const verdict = await verifyLaunchData(header.slice(4), { ...launch, now: Date.now() });
-		if (!verdict.ok) return refuse(401, verdict.reason);
+		return verdict.ok ? verdict.user : refuse(401, verdict.reason);
+	}
+
+	/** The context of `ref` on view `id` while it lives, or undefined. */
+	async function contextOf(id: string, ref: string, now: number) {
+		const stored = await storage.get(keys.context(id, ref));
+		const found = stored ? parseContext(decode(stored.value)) : undefined;
+		return found && found.expiresAt > now ? found : undefined;
+	}
+
+	async function getView(request: Request, url: URL): Promise<Response> {
+		const user = await launchUser(request);
+		if (user instanceof Response) return user;
 		const id = url.searchParams.get('v') ?? '';
 		const ref = url.searchParams.get('q');
 		if (!isViewId(id)) return refuse(400, 'v is a view id of 22 base64url characters');
@@ -247,15 +276,11 @@ export function createViewHandler(config: ViewHandlerConfig): (request: Request)
 		const record = await viewOf(id);
 		if (!record) return refuse(404, 'no such view');
 		const now = Date.now();
-		let context: Body | undefined;
-		if (ref !== null) {
-			const stored = await storage.get(keys.context(id, ref));
-			const found = stored ? parseContext(decode(stored.value)) : undefined;
-			if (found && found.expiresAt > now) context = found.body;
-		}
+		const context = ref !== null ? await contextOf(id, ref, now) : undefined;
 		const expires = Math.min(now + MEDIA_URL_LIFE, record.expiresAt);
 		const media = await Promise.all(record.media.map(async (_entry, index) => `${url.origin}${await mediaPath(mediaKey, { id, generation: record.generation, index, expires })}`));
-		return json({ view: record.view, ...(context ? { context } : {}), media, expiresAt: record.expiresAt });
+		const shown = context ? { context: context.body, ...(context.choice ? { choice: context.choice } : {}) } : {};
+		return json({ view: record.view, ...shown, media, expiresAt: record.expiresAt });
 	}
 
 	async function getMedia(request: Request, url: URL, [id, generation, index]: string[]): Promise<Response> {
@@ -319,18 +344,93 @@ export function createViewHandler(config: ViewHandlerConfig): (request: Request)
 		return json({ size: bytes.byteLength, type: declared });
 	}
 
+	/**
+	 * A context: the body alone, or `{ body, choice }` for a question answered in the view. An open
+	 * binding names tabs of the view as it is now, so a choice can only pick a tab the view has. A
+	 * closed binding enables no choice, so it is checked for its structure alone: a view replaced
+	 * without one of its tabs still takes the close of a question that bound it.
+	 */
 	async function putContext(request: Request, id: string, ref: string): Promise<Response> {
 		if (!isRef(ref)) return refuse(400, 'a ref has 1 to 32 characters of [A-Za-z0-9_-]');
 		const bytes = await readCapped(request, CONTEXT_LIMIT);
 		if (!bytes) return refuse(413, `a context has at most ${CONTEXT_LIMIT} bytes`);
-		const body = decode(bytes);
+		const value = decode(bytes);
+		// A body never has a key `body`, so the two forms cannot be mistaken.
+		const wrapped = isRecord(value) && 'body' in value;
+		if (wrapped && Object.keys(value).some((key) => key !== 'body' && key !== 'choice')) return refuse(400, 'a context is a body, or { body, choice }');
+		const body = wrapped ? value.body : value;
+		const choice = wrapped ? value.choice : undefined;
 		const problem = contextIssue(body);
 		if (problem !== undefined) return refuse(400, problem);
 		// A context lives as long as its view, so a view that is gone takes none.
 		const record = await viewOf(id);
 		if (!record) return refuse(404, 'no such view');
-		await storage.put(keys.context(id, ref), encode({ v: 1, expiresAt: record.expiresAt, body }), { expiresAt: record.expiresAt });
+		const tabs = isRecord(choice) && choice.closed === true ? boundTabs(choice) : tabLabels(record.view);
+		if (choice !== undefined && !isBinding(choice, tabs)) return refuse(400, bindingIssue(choice, tabs) ?? 'the binding breaks its type');
+		await storage.put(keys.context(id, ref), encode({ v: 1, expiresAt: record.expiresAt, body, ...(choice !== undefined ? { choice } : {}) }), { expiresAt: record.expiresAt });
 		return json({ id, ref });
+	}
+
+	/**
+	 * One choice from the view, with launch data: the context of the ref holds a binding with
+	 * option `n` that is not closed, and the host's clock lies before the binding's expiry. A
+	 * closed or expired binding answers 410 without a write. The choice is stored under
+	 * its id until the later of its view's expiry and 1 day after now, so it outlasts a listener
+	 * that was down. A choice id that is already listed is answered as stored without a write. A
+	 * ref with 32 listed choices takes no more.
+	 */
+	async function postAnswer(request: Request, url: URL): Promise<Response> {
+		const user = await launchUser(request);
+		if (user instanceof Response) return user;
+		const query = (name: string) => url.searchParams.get(name) ?? '';
+		const [id, ref, n, c] = [query('v'), query('q'), query('n'), query('c')] as const;
+		if (!isViewId(id) || !isRef(ref) || !OPTION.test(n) || !CHOICE_ID.test(c)) {
+			return refuse(400, 'the query is v=<view id>&q=<ref>&n=<option index 0 to 7>&c=<choice id of 22 base64url characters>');
+		}
+		if (!(await readCapped(request, 0))) return refuse(413, 'a choice has an empty body');
+		const record = await viewOf(id);
+		if (!record) return refuse(404, 'no such view');
+		const now = Date.now();
+		const binding: ChoiceBinding | undefined = (await contextOf(id, ref, now))?.choice;
+		if (!binding) return refuse(404, `question ${ref} takes no answer in this view`);
+		const index = Number(n);
+		if (!binding.options.some((option) => option.index === index)) return refuse(400, `question ${ref} has no option ${index}`);
+		if (binding.closed === true || (binding.expiresAt !== undefined && now >= binding.expiresAt)) return refuse(410, `question ${ref} is closed`);
+		const key = keys.choice(id, ref, c);
+		const listed = await storage.list(keys.choices(id, ref));
+		const stored = { view: id, ref, choice: c, stored: true };
+		if (listed.includes(key)) return json(stored);
+		if (listed.length >= CHOICE_LIMITS.perRef) return refuse(429, `question ${ref} holds ${listed.length} choices that are not applied yet`);
+		const expiresAt = Math.max(record.expiresAt, now + CHOICE_LIMITS.life);
+		const choice: ChoiceRecord = { v: 1, expiresAt, index, user, at: now };
+		await storage.put(key, encode(choice), { expiresAt });
+		return json(stored);
+	}
+
+	/** Every stored choice that lives, with its key. Reads only. */
+	async function getAnswers(): Promise<Response> {
+		const now = Date.now();
+		const choices: StoredChoice[] = [];
+		for (const key of await storage.list(keys.choices())) {
+			const named = parseChoiceKey(key);
+			const stored = named ? await storage.get(key) : undefined;
+			const record = stored ? parseChoiceRecord(decode(stored.value)) : undefined;
+			if (named && record && record.expiresAt > now) choices.push({ key, ...named, index: record.index, user: record.user, at: record.at });
+		}
+		return json({ choices });
+	}
+
+	/** Deletes one stored choice. A choice that is gone already answers the same. */
+	async function deleteAnswer(encoded: string): Promise<Response> {
+		let key: string;
+		try {
+			key = decodeURIComponent(encoded);
+		} catch {
+			key = '';
+		}
+		if (!parseChoiceKey(key)) return refuse(400, 'the key is a:<view id>:<ref>:<choice id>');
+		await storage.delete(key);
+		return json({ key, deleted: true });
 	}
 
 	async function headView(id: string): Promise<Response> {
@@ -355,9 +455,16 @@ export function createViewHandler(config: ViewHandlerConfig): (request: Request)
 		const parts = url.pathname.split('/').slice(1);
 		const [first, second, third, fourth, fifth] = parts;
 		if (method === 'GET' && url.pathname === '/') return getShell(url);
-		if (method === 'GET' && url.pathname === '/api/version') return json({ version: VERSION, formats: VIEW_FORMATS });
+		if (method === 'GET' && url.pathname === '/api/version') return json({ version: VERSION, formats: HOST_FORMATS });
 		if (method === 'GET' && url.pathname === '/api/view') return getView(request, url);
 		if (method === 'GET' && first === 'm' && parts.length === 4) return getMedia(request, url, parts.slice(1));
+		if (method === 'POST' && url.pathname === '/api/answer') return postAnswer(request, url);
+		const answers = method === 'GET' && url.pathname === '/api/answers';
+		const answer = method === 'DELETE' && first === 'api' && second === 'answer' && parts.length === 3 && third !== undefined;
+		if (answers || answer) {
+			if (!(await uploader(request))) return refuse(401, 'Authorization is Bearer <upload key>');
+			return answers ? getAnswers() : deleteAnswer(third ?? '');
+		}
 
 		const viewPath = first === 'api' && second === 'view' && third !== undefined;
 		const mediaPathed = first === 'api' && second === 'media' && parts.length === 5;

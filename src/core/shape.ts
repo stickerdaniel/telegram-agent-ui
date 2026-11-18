@@ -8,6 +8,8 @@ import { type Body, type Labels, type Spec, ShapeError, type Warning } from './t
 export const REF = /^[A-Za-z0-9_-]{1,32}$/;
 /** A view id: 128 random bits as 22 base64url characters. */
 export const VIEW_ID = /^[A-Za-z0-9_-]{22}$/;
+/** A choice id: 128 random bits as 22 base64url characters, made by the shell for one tap. */
+export const CHOICE_ID = /^[A-Za-z0-9_-]{22}$/;
 
 // `levels`: objects and arrays on any path of a body or a meta, counted from the body or meta itself.
 export const LIMITS = { body: 32_768, blocks: 500, questionBody: 3_500, caption: 1_024, label: 46, options: [2, 8], files: 10, levels: 48 } as const;
@@ -140,12 +142,22 @@ export function questionBodyIssue(body: Body): string | undefined {
 export function specIssue(spec: Spec): string | undefined {
 	const issue = spec.answer ? questionBodyIssue(spec.body) : messageBodyIssue(spec.body);
 	if (issue) return issue;
+	// A reply answers a text question in the chat: only a choice is answered in a view.
+	if (spec.answer?.type === 'text' && 'in' in spec.answer) return 'a text question is answered by a reply in the chat, and takes no in';
 	if (spec.answer?.type === 'choice') {
 		const { options } = spec.answer;
 		if (options.length < LIMITS.options[0] || options.length > LIMITS.options[1]) return `a choice needs ${LIMITS.options[0]} to ${LIMITS.options[1]} options, it has ${options.length}`;
 		const long = options.find((option) => option.label.length < 1 || option.label.length > LIMITS.label);
 		if (long) return `an option label needs 1 to ${LIMITS.label} characters: "${long.label}"`;
 		if (options.some((option) => option.tab !== undefined) && spec.view === undefined) return 'an option names a tab, and the spec has no view';
+		if (spec.answer.in === 'view') {
+			if (spec.view === undefined) return 'a question answered in its view needs a view';
+			const tabs = options.map((option) => option.tab);
+			const unbound = options.find((option) => option.tab === undefined);
+			if (unbound) return `a question answered in its view binds every option to a tab, and "${unbound.label}" names none`;
+			const shared = tabs.find((tab, index) => tabs.indexOf(tab) !== index);
+			if (shared !== undefined) return `a question answered in its view binds each option to its own tab, and the tab "${shared}" is named twice`;
+		}
 	}
 	if (spec.attach) {
 		if (spec.attach.length < 1 || spec.attach.length > LIMITS.files) return `attach needs 1 to ${LIMITS.files} files, it has ${spec.attach.length}`;

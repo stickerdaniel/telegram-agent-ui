@@ -2,9 +2,10 @@
 // beside this file and deploys it: the binding VIEWS, the variables BOT_ID, ALLOWED_USERS,
 // LABELS and THEME (the last three as JSON) and the secrets UPLOAD_KEY and MEDIA_KEY. A value's
 // type rides in its KV metadata, and an expiry becomes KV's `expiration` in seconds, at least
-// the 60 s ahead that KV demands. A variable that breaks its format answers every request with
-// 500 and the reason. workerd takes every value this module exports as an entrypoint, so it
-// exports the handler alone.
+// the 60 s ahead that KV demands. A list reads every page of KV's listing, 1,000 keys each, and
+// may miss a key written in the last 60 s. A variable that breaks its format answers every
+// request with 500 and the reason. workerd takes every value this module exports as an
+// entrypoint, so it exports the handler alone.
 import { arrayOf, isInt, isRecord, isString } from '../core/check.ts';
 import { parseLabels } from '../core/labels.ts';
 import { createViewHandler, parseTheme, type ViewStorage } from '../view/handler.ts';
@@ -14,6 +15,7 @@ type Kv = {
 	getWithMetadata(key: string, type: 'arrayBuffer'): Promise<{ value: ArrayBuffer | null; metadata: unknown }>;
 	put(key: string, value: Uint8Array, options: { expiration: number; metadata?: { type: string } }): Promise<void>;
 	delete(key: string): Promise<void>;
+	list(options: { prefix: string; cursor?: string }): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }>;
 };
 
 export type Env = { VIEWS: Kv; BOT_ID: string; ALLOWED_USERS: string; UPLOAD_KEY: string; MEDIA_KEY: string; LABELS?: string; THEME?: string; PUBLIC_KEY?: string };
@@ -27,6 +29,16 @@ const kvStorage = (kv: Kv): ViewStorage => ({
 	},
 	put: (key, value, { expiresAt, type }) => kv.put(key, value, { expiration: Math.max(Math.ceil(expiresAt / 1000), Math.ceil(Date.now() / 1000) + 60), ...(type !== undefined ? { metadata: { type } } : {}) }),
 	delete: (key) => kv.delete(key),
+	async list(prefix) {
+		const names: string[] = [];
+		let cursor: string | undefined;
+		for (;;) {
+			const page = await kv.list({ prefix, ...(cursor !== undefined ? { cursor } : {}) });
+			names.push(...page.keys.map((key) => key.name));
+			if (page.list_complete || page.cursor === undefined) return names;
+			cursor = page.cursor;
+		}
+	},
 });
 
 /** A JSON variable read by `parse`, or a thrown TypeError that names it. Empty or unset reads as `fallback`. */

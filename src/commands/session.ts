@@ -3,7 +3,8 @@
 // that appends every call and its answer to `<dir>/calls.jsonl`, the view host with the package's
 // own handler over a store in `<dir>/views`, whose requests go to `<dir>/views.jsonl`, and the
 // config with a built-in one. Its store lives in `<dir>/store`, it reports a live listener
-// without an answer command, and the first `wait` on a question answers it.
+// without an answer command, and the first `wait` on a question answers it: a tap on the first
+// button, a reply, or for a question answered in its view a choice of the first option.
 // `TELEGRAM_AGENT_UI_FAKE_SCENARIO` picks a failure script for tests.
 import { appendFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -123,6 +124,7 @@ function storeStorage(store: Store): ViewStorage {
 		},
 		put: (key, value, { expiresAt, type }) => store.set(key, { value: Buffer.from(value).toString('base64'), expiresAt, ...(type !== undefined ? { type } : {}) }),
 		delete: (key) => store.delete(key),
+		list: (prefix) => store.list(prefix),
 	};
 }
 
@@ -193,6 +195,13 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 			async answer(ref) {
 				const question = await chat.get(ref);
 				if (question?.status !== 'open') return;
+				const view = question.spec.view;
+				if (view !== undefined && question.spec.answer.type === 'choice' && question.spec.answer.in === 'view') {
+					// A pick of the first option in the view, as the listener applies one the host stored.
+					const id = `fake${ref}`.padEnd(22, '0').slice(0, 22);
+					await chat.choose({ key: `a:${view}:${ref}:${id}`, view, ref, id, index: 0, user: { id: FAKE_CONFIG.chat, name: 'Fake' }, at: Date.now() });
+					return;
+				}
 				const answer = question.spec.answer.type === 'choice' ? { kind: 'choice' as const } : { kind: 'text' as const, reply: await reserve(store, 1) };
 				await chat.handle(personAnswer(ref, question.sent.message, answer));
 			},

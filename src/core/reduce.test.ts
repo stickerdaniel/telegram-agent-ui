@@ -166,6 +166,99 @@ describe('replays', () => {
 	});
 });
 
+describe('choices made in a view', () => {
+	const inView = choice({ markdown: 'Which layout should stay?' }, [{ label: 'Compact', tab: 'Compact' }, { label: 'Wide', tab: 'Wide', value: 'wide' }, { label: 'Split', tab: 'Split' }], { view: VIEW, in: 'view' });
+	/** A choice of option `index` with choice id `n`, by `user`. */
+	const pick = (index: number, n = 1, user = USER): QuestionEvent => ({ type: 'choice', id: `v${String(n).padStart(21, '0')}`, user: { id: user, name: 'Dana' }, index, at: NOW });
+	const views = states(inView);
+	const table: [string, QuestionEvent, Outcome[]][] = [
+		['a choice of option 0', pick(0), ['closed', 'answered', 'repeat', 'repeat', 'closed', 'closed', 'closed']],
+		['a choice of option 1', pick(1), ['closed', 'answered', 'answered', 'repeat', 'closed', 'closed', 'closed']],
+		['a choice of an option that does not exist', pick(3), every('unknown')],
+		['a choice by a user outside allow', pick(1, 1, 999), every('forbidden')],
+	];
+	for (const [name, event, expected] of table) {
+		test(`${name} in every status`, () => {
+			expect(STATUSES.map((status) => outcome(reduce(views[status], event, { now: NOW }).handled))).toEqual(expected);
+		});
+	}
+
+	test('a choice for a question answered in the chat, or for a ref the store lacks, is stale: unknown', () => {
+		expect(STATUSES.map((status) => outcome(reduce(states(choiceSpec)[status], pick(0), { now: NOW }).handled))).toEqual(every('unknown'));
+		expect(reduce(undefined, pick(0), { now: NOW })).toEqual({ calls: [], handled: { kind: 'stale', reason: 'unknown' } });
+	});
+
+	test('a choice answers without a call, owes the mark on the view button and keeps its key', () => {
+		const result = reduce(views.open, pick(1), { now: NOW + 5 });
+		expect(result.calls).toEqual([]);
+		expect(result.handled).toEqual({ kind: 'answered', ref: REF, seq: 1, answer: { kind: 'choice', index: 1, label: 'Wide', value: 'wide' }, by: { id: USER, name: 'Dana' }, at: NOW + 5 });
+		if (!result.question) throw new Error('no question');
+		expect(result.question.applied).toEqual([`view:v${'1'.padStart(21, '0')}`]);
+		expect(result.question.shown.want).toBe(views.open.shown.want + 1);
+		expect(renderEdit(result.question).payload.reply_markup).toEqual({ inline_keyboard: [[{ text: '✓ Wide', web_app: { url: `${ORIGIN}/?v=${VIEW}&q=${REF}&t=Wide` } }]] });
+	});
+
+	test('the first failing check wins: unknown, forbidden, closed, repeat', () => {
+		expect(outcome(reduce(views.closed, pick(3, 1, 999), { now: NOW }).handled)).toBe('unknown');
+		expect(outcome(reduce(views.closed, pick(0, 1, 999), { now: NOW }).handled)).toBe('forbidden');
+		const applied = step(views.open, pick(0, 1));
+		expect(outcome(reduce(step(applied, { type: 'close' }), pick(1, 1), { now: NOW }).handled)).toBe('closed');
+		// The same choice id is a repeat even where its option would correct the answer.
+		expect(outcome(reduce(step(applied, pick(2, 2)), pick(0, 1), { now: NOW }).handled)).toBe('repeat');
+	});
+
+	test('once holds across chat taps and view choices', () => {
+		const once = asked({ ...inView, answer: { ...inView.answer, once: true } });
+		const open = step(once, { type: 'sent', sent: sentFor(once) });
+		const chosen = step(open, pick(0));
+		expect(reduce(chosen, input(tap({ button: 1, id: 't1' })), { now: NOW })).toMatchObject({ question: chosen, handled: { kind: 'stale', reason: 'repeat' } });
+		const tapped = step(open, input(tap({ button: 0, id: 't0' })));
+		expect(reduce(tapped, pick(1), { now: NOW })).toEqual({ question: tapped, calls: [], handled: { kind: 'stale', reason: 'repeat' } });
+		// Without once, a tap after a choice corrects it.
+		expect(reduce(step(views.open, pick(0)), input(tap({ button: 2, id: 't2' })), { now: NOW }).handled).toMatchObject({ kind: 'answered', previous: { index: 0 } });
+	});
+
+	test('a choice retried after 33 inputs is a tap on its option again: a repeat on the same option, else a correction', () => {
+		let question = step(views.open, pick(0, 0));
+		// 32 more inputs push the key of choice 0 out of the window; the last picks option 0 again.
+		for (let n = 1; n <= 32; n++) question = step(question, pick(n % 2 === 1 ? 1 : 0, n));
+		expect(question.applied).not.toContain(`view:v${'0'.padStart(21, '0')}`);
+		expect(reduce(question, pick(0, 0), { now: NOW })).toEqual({ question, calls: [], handled: { kind: 'stale', reason: 'repeat' } });
+		question = step(question, pick(1, 33));
+		expect(reduce(question, pick(0, 0), { now: NOW }).handled).toMatchObject({ kind: 'answered', seq: question.seq + 1, answer: { index: 0 }, previous: { index: 1 } });
+		// Within the window the same id stays a repeat, even where it would be a correction.
+		const recent = step(step(views.open, pick(0, 40)), pick(1, 41));
+		expect(outcome(reduce(recent, pick(0, 40), { now: NOW }).handled)).toBe('repeat');
+	});
+
+	test('a close and an expiry make a question answered in its view owe its closed binding, and no other question', () => {
+		expect(step(views.open, { type: 'close' })).toMatchObject({ status: 'closed', bindingOwed: true });
+		expect(step(views.sending, { type: 'close' })).toMatchObject({ status: 'closed', bindingOwed: true });
+		const timed = asked(inView, { expiresAt: NOW + 1 });
+		expect(reduce(timed, pick(0), { now: NOW + 1 }).question).toMatchObject({ status: 'closed', bindingOwed: true });
+		expect(step(states(choiceSpec).open, { type: 'close' })).not.toHaveProperty('bindingOwed');
+	});
+
+	test('a choice at or past expiresAt is stale: closed and closes the question', () => {
+		const timed = asked(inView, { expiresAt: NOW + 60_000 });
+		const open = step(timed, { type: 'sent', sent: sentFor(timed) });
+		expect(outcome(reduce(open, pick(0), { now: NOW + 59_999 }).handled)).toBe('answered');
+		const late = reduce(open, pick(0), { now: NOW + 60_000 });
+		expect(late.handled).toEqual({ kind: 'stale', reason: 'closed' });
+		expect(late.question).toMatchObject({ status: 'closed', seq: 0 });
+	});
+
+	test('a choice event that breaks its type throws ShapeError', () => {
+		const bad: unknown[] = [
+			{ ...pick(0), id: 'short' },
+			{ ...pick(0), index: -1 },
+			{ ...pick(0), at: 1.5 },
+			{ ...pick(0), user: { name: 'no id' } },
+		];
+		for (const event of bad) expect(() => reduce(views.open, event as QuestionEvent, { now: NOW })).toThrow(ShapeError);
+	});
+});
+
 describe('expiry', () => {
 	const expiresAt = NOW + 60_000;
 	const open = () => {

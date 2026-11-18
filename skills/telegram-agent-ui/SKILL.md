@@ -35,6 +35,7 @@ Done when: a config exists, for a question the listener is alive, and for a view
 | A name, a number or other free text | `ask --text` |
 | Content a message cannot show: a diff, an HTML page, a document longer than a screen | `view put`, then `send --view <id>` with the result |
 | A pick between 2 to 8 mocks or variants | `view put` with one tab per variant, then `ask --view <id> -o <tab label>...` |
+| A pick between 2 to 8 variants that the user asked to make inside the view | `view put` with one tab per variant, then `ask --view <id> --answer-in view -o <tab label>...` |
 | Nothing new: the user reads the terminal, or asked for no message | nothing |
 
 Done when: one row fits the task. The row "nothing" ends the skill.
@@ -82,6 +83,8 @@ telegram-agent-ui ask --view <id> -o Compact -o Wide --strict - <<'EOF'
 Both layouts show the same 3 settings. Which one should the settings page keep?
 EOF
 ```
+
+- A pick inside the view adds `--answer-in view`. Each `-o` is the label of a tab, and the view's bottom button picks the option of the open tab. An exit with `"error": "no-view-host"` means that the view host takes no answers yet: ask the same question without `--answer-in view`, and tell the user in the terminal that `telegram-agent-ui view deploy` updates the host.
 
 Done when: the command exits 0 and prints a `ref` for a question, a Sent for a message, or an `id` for a view.
 

@@ -3,7 +3,8 @@ import { type Body, defaultLabels, type Labels, type Option, type Spec } from '.
 
 /** What every message may carry besides its body and answer. */
 export type Extras = Omit<Spec, 'body' | 'answer'>;
-export type ChoiceExtras = Extras & { layout?: 'rows' | 'row'; once?: boolean };
+/** `in: 'view'` answers the choice inside its view: each option then needs a `tab` of `view`. */
+export type ChoiceExtras = Extras & { layout?: 'rows' | 'row'; once?: boolean; in?: 'chat' | 'view' };
 
 /** A message that asks nothing: `message({ markdown: 'Build passed.' })`. */
 export function message(body: Body, extras: Extras = {}): Spec {
@@ -12,8 +13,8 @@ export function message(body: Body, extras: Extras = {}): Spec {
 
 /** A question answered by a tap on one of 2 to 8 options. */
 export function choice(body: Body, options: Option[], extras: ChoiceExtras = {}): Spec & { answer: { type: 'choice' } } {
-	const { layout, once, ...rest } = extras;
-	return { body, ...rest, answer: { type: 'choice', options, ...(layout ? { layout } : {}), ...(once !== undefined ? { once } : {}) } };
+	const { layout, once, in: where, ...rest } = extras;
+	return { body, ...rest, answer: { type: 'choice', options, ...(layout ? { layout } : {}), ...(once !== undefined ? { once } : {}), ...(where !== undefined ? { in: where } : {}) } };
 }
 
 /** A choice of `labels.yes` and `labels.no` in one row, with the values `yes` and `no`. */

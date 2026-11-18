@@ -19,14 +19,15 @@ function defined<T extends object>(from: T): Defined<T> {
  * A stored value to a question. Undefined for anything that breaks the type or one of the
  * rules of 4.2: the spec passes the shape checks, `viewOrigin` exactly with a view, an answer
  * of the question's kind on an existing option, an answer only on a known message, `seq` and
- * the answer fields in step, bounded counters, and a `Sent` that names this question.
+ * the answer fields in step, bounded counters, a `Sent` that names this question, and
+ * `bindingOwed` only on a closed question.
  *
  *   const question = parseQuestion(await store.get(`q:${ref}`));
  */
 export function parseQuestion(value: unknown): Question | undefined {
 	// JSON first: a cycle, a hole or a non-JSON value fails here, before any check recurses.
 	if (!storable(value) || !isRecord(value) || value.v !== 1) return undefined;
-	const { ref, spec, chat, topic, viewOrigin, allow, expiresAt, seq, applied, shown, delivery, meta, createdAt, status } = value;
+	const { ref, spec, chat, topic, viewOrigin, allow, expiresAt, seq, applied, shown, delivery, meta, createdAt, status, bindingOwed } = value;
 	if (!isString(ref) || !REF.test(ref) || !isSpec(spec) || !isInt(chat) || !optional(isInt)(topic) || !optional(isString)(viewOrigin)) return undefined;
 	if (!arrayOf(isInt)(allow) || !optional(isNat)(expiresAt) || !isNat(seq) || !isNat(createdAt) || !optional(isJson)(meta) || (meta !== undefined && metaIssue(meta) !== undefined)) return undefined;
 	if (!arrayOf(isString)(applied) || applied.length > APPLIED_WINDOW) return undefined;
@@ -48,6 +49,8 @@ export function parseQuestion(value: unknown): Question | undefined {
 	if (answer !== undefined && sent === undefined) return undefined;
 	if ((answer === undefined) !== (by === undefined) || (answer === undefined) !== (answeredAt === undefined)) return undefined;
 	if (previous !== undefined && (answer === undefined || seq < 2)) return undefined;
+	// Only a closed question owes the view host its closed binding.
+	if (bindingOwed !== undefined && (bindingOwed !== true || status !== 'closed')) return undefined;
 
 	const common = { v: 1 as const, ref, spec: { ...spec, answer: answerSpec }, chat, allow, seq, applied, shown, delivery, createdAt, ...defined({ topic, viewOrigin, expiresAt, meta }) };
 	switch (status) {
@@ -60,7 +63,7 @@ export function parseQuestion(value: unknown): Question | undefined {
 				? { ...common, status, sent, answer, by, answeredAt, ...defined({ previous }) }
 				: undefined;
 		case 'closed':
-			return (answer !== undefined) === seq >= 1 ? { ...common, status, ...defined({ sent, resolved, answer, by, answeredAt, previous }) } : undefined;
+			return (answer !== undefined) === seq >= 1 ? { ...common, status, ...defined({ sent, resolved, answer, by, answeredAt, previous }), ...(bindingOwed === true ? { bindingOwed } : {}) } : undefined;
 		default:
 			return undefined;
 	}

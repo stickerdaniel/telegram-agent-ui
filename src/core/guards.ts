@@ -19,7 +19,7 @@ const isOption = (value: unknown): value is Option =>
 function isAnswerSpec(value: unknown): value is AnswerSpec {
 	if (!isRecord(value) || !optional(isBool)(value.once)) return false;
 	if (value.type === 'text') return true;
-	return value.type === 'choice' && arrayOf(isOption)(value.options) && optional(oneOf('rows', 'row'))(value.layout);
+	return value.type === 'choice' && arrayOf(isOption)(value.options) && optional(oneOf('rows', 'row'))(value.layout) && optional(oneOf('chat', 'view'))(value.in);
 }
 
 const isAttachment = (value: unknown): value is Attachment =>

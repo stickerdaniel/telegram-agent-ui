@@ -1,8 +1,8 @@
-// A command under its supervisor: the input on stdin, the exit code, and a deadline that ends
-// the whole process group.
+// A command under its supervisor: the input on stdin, the exit code, a deadline that ends the
+// whole process group, and an owner whose death ends the command or keeps it from starting.
 import { afterEach, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runShell } from './shell.ts';
@@ -35,18 +35,58 @@ test('the deadline ends the command and everything it started', async () => {
 	expect(spawnSync('pgrep', ['-f', marker]).status).toBe(1);
 });
 
-test('a supervisor whose owner died before it came up starts no command', async () => {
+// An owner is a runtime of its own that calls runShell with `command`, runs `then`, and kills
+// itself. A unique sleep in the command names the supervisor, whose arguments hold the command,
+// and the command's child among the machine's processes.
+function owner(command: string, then: string, env: NodeJS.ProcessEnv = process.env) {
+	const shell = JSON.stringify(join(import.meta.dir, 'shell.ts'));
+	return spawnSync(process.execPath, ['-e', `import { existsSync } from 'node:fs'; import { runShell } from ${shell}; void runShell(${JSON.stringify(command)}, {}); ${then} process.kill(process.pid, 'SIGKILL');`], { env, timeout: 20_000 });
+}
+function marker() {
+	return `sleep 59.${process.pid}${Date.now() % 100_000}`;
+}
+/** Waits up to `ms` until no process matches `pattern`, and says whether none does. */
+async function goneWithin(ms: number, pattern: string): Promise<boolean> {
+	const until = Date.now() + ms;
+	while (spawnSync('pgrep', ['-f', pattern]).status === 0) {
+		if (Date.now() >= until) return false;
+		await Bun.sleep(50);
+	}
+	return true;
+}
+
+test('a supervisor whose owner dies ends the command and everything it started', async () => {
+	const started = join(dir(), 'started');
+	const sleep = marker();
+	// The owner dies only once the command runs, so the supervisor found it alive and started the
+	// command. On a loaded machine an owner that kills itself at once can still be alive then.
+	const died = owner(`echo started > ${started}; ${sleep}`, `while (!existsSync(${JSON.stringify(started)})) await Bun.sleep(10);`);
+	expect(died.signal).toBe('SIGKILL');
+	// The supervisor looks for its owner every 100 ms. 10 s leaves room for a loaded machine and
+	// stays below the 30 s deadline, which would end the command as well.
+	expect(await goneWithin(10_000, sleep)).toBe(true);
+}, 40_000);
+
+test('a supervisor whose owner died before its check starts no command', async () => {
 	const at = dir();
 	const started = join(at, 'started');
-	// A deadline nobody else uses names this supervisor among the machine's processes.
-	const deadline = 30_000 + (process.pid % 1_000);
-	const shell = join(import.meta.dir, 'shell.ts');
-	// The owner starts the supervisor and dies at once, before the new runtime has run a line.
-	const owner = spawnSync(process.execPath, ['-e', `import { runShell } from ${JSON.stringify(shell)}; void runShell(${JSON.stringify(`echo started > ${started}; sleep 59`)}, {}, ${deadline}); process.kill(process.pid, 'SIGKILL');`]);
-	expect(owner.signal).toBe('SIGKILL');
-	const supervisor = `supervise.ts ${deadline}`;
-	const deadlineAt = Date.now() + 60_000;
-	while (spawnSync('pgrep', ['-f', supervisor]).status === 0 && !existsSync(started) && Date.now() < deadlineAt) await Bun.sleep(50);
-	expect(spawnSync('pgrep', ['-f', supervisor]).status).toBe(1);
+	const held = join(at, 'held');
+	const sleep = marker();
+	// A preload holds the supervisor back until the owner is no longer its parent, so its check
+	// certainly comes after the owner died. The file `held` shows that the hold ran.
+	const hold = join(at, 'hold.ts');
+	writeFileSync(
+		hold,
+		`import { writeFileSync } from 'node:fs';
+		const [, script = '', , owner = ''] = process.argv;
+		if (script.endsWith('supervise.ts')) {
+			while (process.ppid === Number(owner)) Bun.sleepSync(5);
+			writeFileSync(${JSON.stringify(held)}, '');
+		}`,
+	);
+	const died = owner(`echo started > ${started}; ${sleep}`, '', { ...process.env, BUN_OPTIONS: `--preload ${hold}` });
+	expect(died.signal).toBe('SIGKILL');
+	expect(await goneWithin(10_000, sleep)).toBe(true);
+	expect(existsSync(held)).toBe(true);
 	expect(existsSync(started)).toBe(false);
-});
+}, 30_000);

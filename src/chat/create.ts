@@ -2,15 +2,16 @@
 // every method that touches a question takes the store's lock of `q:<ref>`, loads the question
 // through `parseQuestion`, applies one event with `reduce`, stores the result and only then runs
 // the effects. What must survive a crash is derived from the stored question, never queued:
-// `shown.want` above `shown.done` owes an edit, `seq` above `delivery.seq` owes a delivery, and
-// `flush` pays both.
+// `shown.want` above `shown.done` owes an edit, `seq` above `delivery.seq` owes a delivery,
+// `bindingOwed` owes the view host the closed binding of a question answered in its view, and
+// `flush` pays all three.
 import { arrayOf, isInt, isRecord, isString, optional, sameJson } from '../core/check.ts';
 import { classify } from '../core/classify.ts';
 import { isBody, isSent } from '../core/guards.ts';
 import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
 import { locate, RECHECK_DELAY, reduce } from '../core/reduce.ts';
-import { kindOf, render, renderEdit } from '../core/render.ts';
+import { bindingOf, inView, kindOf, render, renderEdit } from '../core/render.ts';
 import { isOrigin, REF, VIEW_ID } from '../core/shape.ts';
 import {
 	type Answer,
@@ -31,6 +32,7 @@ import {
 	type Spec,
 	type Step,
 	type Store,
+	type StoredChoice,
 	TokenRefused,
 	type Update,
 	type User,
@@ -57,7 +59,8 @@ export type ChatIO = {
 	viewOrigin?: string;
 	/**
 	 * The client of the view host at `viewOrigin`. With it, a question with a view gets its body
-	 * shown in the view, and an option's tab is checked against the view's tabs.
+	 * shown in the view, and an option's tab is checked against the view's tabs. Without it a
+	 * question answered in its view is refused as `view-host`.
 	 */
 	views?: ViewClient;
 	/** The file reader `attach` goes through. Without it a spec with `attach` is refused. */
@@ -78,6 +81,8 @@ export type Chat = {
 	edit(sent: Sent, body: Body): Promise<Outcome>;
 	close(ref: string, body?: Body): Promise<Outcome>;
 	handle(update: Update): Promise<Handled>;
+	/** One choice stored on the view host, applied under its question's lock as the event `choice`. */
+	choose(choice: StoredChoice): Promise<Handled>;
 	wait(ref: string, options?: { seconds?: number }): Promise<Waited>;
 	flush(options?: { restart?: boolean }): Promise<void>;
 	get(ref: string): Promise<Question | undefined>;
@@ -270,13 +275,7 @@ export function createChat(io: ChatIO): Chat {
 		const view = spec.view;
 		const tabs = spec.answer?.type === 'choice' ? spec.answer.options.flatMap((option) => (option.tab !== undefined ? [option.tab] : [])) : [];
 		if (view === undefined || !views || tabs.length === 0) return undefined;
-		const found = await within(
-			Promise.resolve()
-				.then(() => views.has(view))
-				.catch(() => undefined),
-			DEADLINES.call,
-			undefined,
-		);
+		const found = await hosted(() => views.has(view));
 		if (!found) return refused('server', `the view host gave no answer about the view ${view}`);
 		if (found.kind === 'refused') return refused('server', `the view host refused to read the view ${view}: ${found.reason}`);
 		if (found.kind === 'missing') return refused('shape', `the view ${view} is not on the view host`);
@@ -284,13 +283,53 @@ export function createChat(io: ChatIO): Chat {
 		return lacking === undefined ? undefined : refused('shape', `the view ${view} has no tab "${lacking}", its tabs are ${found.tabs.map((tab) => `"${tab}"`).join(', ')}`);
 	}
 
+	/** A request to the view host with the deadline of a call: undefined when it rejects or gives no answer in time. */
+	function hosted<T>(request: () => Promise<T>): Promise<T | undefined> {
+		return within(
+			Promise.resolve()
+				.then(request)
+				.catch(() => undefined),
+			DEADLINES.call,
+			undefined,
+		);
+	}
+
+	/**
+	 * The checks before a question answered in its view is stored, under its lock: the view host
+	 * lists the format `answers`, shows every bound tab and stores the context of the ref with its
+	 * binding. The question's `expiresAt` becomes at most its view's expiry, so it closes when its
+	 * view does. Returns the question to store, or the refusal `view-host`, which leaves no
+	 * question: the body never goes out without a host that takes its answers.
+	 */
+	async function bindView(asked: Question): Promise<Question | Refused> {
+		const { views } = io;
+		const view = asked.spec.view;
+		if (!views || view === undefined) return refused('view-host', 'a question answered in its view needs the client of a view host, and createChat was given none');
+		const version = await hosted(() => views.version());
+		if (!version) return refused('view-host', 'the view host gave no answer about its formats');
+		if (version.kind === 'refused') return refused('view-host', `the view host refused to name its formats: ${version.reason}`);
+		if (!version.formats.includes('answers')) return refused('view-host', 'the view host takes no answers in a view: a person runs telegram-agent-ui view deploy');
+		const found = await hosted(() => views.has(view));
+		if (!found) return refused('view-host', `the view host gave no answer about the view ${view}`);
+		if (found.kind === 'refused') return refused('view-host', `the view host refused to read the view ${view}: ${found.reason}`);
+		if (found.kind === 'missing') return refused('view-host', `the view ${view} is not on the view host`);
+		const binding = bindingOf(asked);
+		const lacking = binding?.options.find((option) => !found.tabs.includes(option.tab));
+		if (lacking) return refused('view-host', `the view ${view} has no tab "${lacking.tab}", its tabs are ${found.tabs.map((tab) => `"${tab}"`).join(', ')}`);
+		const expiresAt = Math.min(asked.expiresAt ?? found.expiresAt, found.expiresAt);
+		const question: Question = { ...asked, expiresAt };
+		const stored = await writeContext(question);
+		if (stored.kind !== 'ok') return refused('view-host', `the view host did not store the question with its options${stored.kind === 'refused' ? `: ${stored.reason}` : ''}`);
+		return question;
+	}
+
 	/**
 	 * Stores a question's body as its view's context, as a call class, so `shown` covers it like
-	 * an edit. A context belongs to the host its question's button opens, and `views` is the
-	 * client of the configured origin. A question whose stored origin is another one, since the
-	 * configured origin moved after its ask, gets no write: the answer is a refusal, so `shown`
-	 * counts the message as shown and the outcome carries `not-shown`, since the old host keeps
-	 * whatever context it had.
+	 * an edit. A question answered in its view stores its binding with it, on every write. A
+	 * context belongs to the host its question's button opens, and `views` is the client of the
+	 * configured origin. A question whose stored origin is another one, since the configured origin
+	 * moved after its ask, gets no write: the answer is a refusal, so `shown` counts the message as
+	 * shown and the outcome carries `not-shown`, since the old host keeps whatever context it had.
 	 */
 	async function writeContext(question: Question): Promise<CallClass> {
 		const { views } = io;
@@ -299,13 +338,8 @@ export function createChat(io: ChatIO): Chat {
 		if (question.viewOrigin !== io.viewOrigin) {
 			return { kind: 'refused', code: 'server', reason: `the view button opens ${question.viewOrigin ?? 'no origin'}, and the view client writes to ${io.viewOrigin ?? 'no origin'}: the context there stays as it was` };
 		}
-		const answer = await within(
-			Promise.resolve()
-				.then(() => views.context(view, question.ref, question.spec.body))
-				.catch(() => undefined),
-			DEADLINES.call,
-			undefined,
-		);
+		const binding = bindingOf(question);
+		const answer = await hosted(() => (binding ? views.context(view, question.ref, question.spec.body, binding) : views.context(view, question.ref, question.spec.body)));
 		if (!answer) return { kind: 'uncertain' };
 		if (answer.kind === 'ok') return OK;
 		return { kind: 'refused', code: 'server', reason: answer.kind === 'missing' ? `the view ${view} is missing on the view host` : answer.reason };
@@ -341,7 +375,7 @@ export function createChat(io: ChatIO): Chat {
 			call = renderEdit(question, labels);
 		} catch (error) {
 			// A body that cannot go out counts as refused.
-			return save(question, apply(question, { type: 'shown', want, outcome: { kind: 'refused', code: 'server', reason: shapeRefusal(error).reason } }));
+			return save(question, owing(apply(question, { type: 'shown', want, outcome: { kind: 'refused', code: 'server', reason: shapeRefusal(error).reason } })));
 		}
 		const startBy = now() + START_WINDOW;
 		const mark = startBy + deadlineOf(call) + RECHECK_DELAY;
@@ -352,8 +386,15 @@ export function createChat(io: ChatIO): Chat {
 			return save(marked, withRecheck(apply(marked, { type: 'shown', want, outcome: { kind: 'uncertain' } }), before));
 		}
 		let outcome = unlessToken(started.result);
-		if (outcome.kind === 'ok' || outcome.kind === 'unchanged') outcome = await writeContext(marked);
-		let next = apply(marked, { type: 'shown', want, outcome });
+		let wrote = false;
+		if (outcome.kind === 'ok' || outcome.kind === 'unchanged') {
+			outcome = await writeContext(marked);
+			wrote = outcome.kind === 'ok';
+		}
+		// A context write after the edit of a close carries the closed binding, which pays that debt
+		// too. An edit of a closed question that ends without that write, such as a recheck that
+		// Telegram refuses, owes it again: an earlier open context may have landed after the close.
+		let next = wrote ? settled(apply(marked, { type: 'shown', want, outcome })) : owing(apply(marked, { type: 'shown', want, outcome }));
 		if (outcome.kind === 'uncertain') {
 			const windowEnd = started.start + deadlineOf(call) + RECHECK_DELAY;
 			next = withRecheck(next, Math.max(next.shown.recheckAt ?? 0, windowEnd));
@@ -361,10 +402,50 @@ export function createChat(io: ChatIO): Chat {
 		return save(marked, next);
 	}
 
+	/** A closed question answered in its view with the debt of its closed binding; any other question as it is. */
+	function owing(question: Question): Question {
+		return question.status === 'closed' && bindingOf(question) !== undefined ? { ...question, bindingOwed: true } : question;
+	}
+
+	/** The question without the debt of its closed binding. */
+	function settled(question: Question): Question {
+		const next = { ...question };
+		delete next.bindingOwed;
+		return next;
+	}
+
+	/**
+	 * Pays the debt of a closed question answered in its view: the view host stores its binding
+	 * with `closed: true`, whether or not its message is known and whatever Telegram answered its
+	 * edit. The debt ends with a write the host answers `ok`, or once the question's `expiresAt`
+	 * has come, with or without a write, since from then on the host refuses every choice for it
+	 * by the binding's own expiry. Before that a refusal, no answer and `missing` keep it for
+	 * `flush`: a storage may hide a recent view for up to 60 s. Without a view client, or for a
+	 * question whose button opens another origin than the configured one, this client writes to
+	 * no host of that question: the debt ends, and that host keeps the binding it has.
+	 */
+	async function settle(question: Question): Promise<Question> {
+		if (!question.bindingOwed) return question;
+		const { views } = io;
+		const view = question.spec.view;
+		const binding = bindingOf(question);
+		const over = () => question.expiresAt !== undefined && now() >= question.expiresAt;
+		if (!views || view === undefined || !binding || question.viewOrigin !== io.viewOrigin || over()) return save(question, settled(question));
+		const answer = await hosted(() => views.context(view, question.ref, question.spec.body, binding));
+		return answer?.kind === 'ok' || over() ? save(question, settled(question)) : question;
+	}
+
 	/** The warnings of a stored state: no known message, or a message whose edit the server refused. */
 	function stateWarnings(question: Question): Warning[] {
 		const warnings: Warning[] = [];
-		if (!sentOf(question)) warnings.push({ code: 'unconfirmed-message', message: `no message of question ${question.ref} is known: the first tap on its buttons reveals it` });
+		if (!sentOf(question)) {
+			const way = !inView(question.spec.answer)
+				? 'the first tap on its buttons reveals it'
+				: question.status === 'closed'
+					? 'it has no answer button, so ask again with a new ref'
+					: 'it has no answer button, so close it and ask again';
+			warnings.push({ code: 'unconfirmed-message', message: `no message of question ${question.ref} is known: ${way}` });
+		}
 		if (question.shown.error !== undefined) warnings.push({ code: 'not-shown', message: `the message does not show the state of question ${question.ref}: ${question.shown.error}` });
 		return warnings;
 	}
@@ -455,10 +536,11 @@ export function createChat(io: ChatIO): Chat {
 	/**
 	 * Sends a question. Under its lock, a held ref answers from the stored question before any
 	 * check that only a new send needs: the expiry, the listener, the view's tabs, the files. A
-	 * new question is stored as `sending`, gets its view's context, its body, `sent` and its
-	 * reply index. The
-	 * files go out after the lock, so a long upload never holds a tap back. The outcome reports
-	 * the question as the store holds it after the last step.
+	 * question answered in its view then passes `bindView`, which stores its context with the
+	 * binding before the question exists. A new question is stored as `sending`, gets its view's
+	 * context, its body, `sent` and its reply index. The files go out after the lock, so a long
+	 * upload never holds a tap back. The outcome reports the question as the store holds it after
+	 * the last step.
 	 */
 	async function ask(asked: Question, steps: Step[], warnings: Warning[], needsListener: boolean): Promise<Outcome> {
 		const { ref } = asked;
@@ -472,12 +554,15 @@ export function createChat(io: ChatIO): Chat {
 				if (taken) return held && sameJson(held.spec, asked.spec) ? stated(held, warnings) : refused('ref-conflict', `the ref ${ref} belongs to another question`);
 				if (asked.status === 'closed') return refused('closed', 'expiresAt has passed');
 				if (needsListener && !listenerStatus(await store.get(LISTENER_KEY), now()).alive) return refused('no-listener', 'no listener is alive to receive the answer');
-				const lacking = await tabRefusal(asked.spec);
+				const viewOnly = inView(asked.spec.answer);
+				const lacking = viewOnly ? undefined : await tabRefusal(asked.spec);
 				if (lacking) return lacking;
 				const opened = await open(asked.spec, owned);
 				if (opened.kind === 'refused') return opened;
-				let question = await save(undefined, asked);
-				if ((await writeContext(question)).kind !== 'ok') {
+				const bound = viewOnly ? await bindView(asked) : asked;
+				if ('kind' in bound) return bound;
+				let question = await save(undefined, bound);
+				if (!viewOnly && (await writeContext(question)).kind !== 'ok') {
 					// An edit to the same body owes a repair, which writes the context again once the message is known.
 					question = await save(question, apply(question, { type: 'edit', body: question.spec.body }));
 				}
@@ -491,7 +576,9 @@ export function createChat(io: ChatIO): Chat {
 					const reason =
 						question.spec.answer.type === 'text'
 							? 'the body got no answer: a text question without a known message cannot receive its answer, close it'
-							: 'the body got no answer: the question stays sending until a tap on its buttons reveals its message';
+							: viewOnly
+								? 'the body got no answer: a question answered in its view without a known message takes no answer, close it and ask again'
+								: 'the body got no answer: the question stays sending until a tap on its buttons reveals its message';
 					return { kind: 'uncertain', ref, reason };
 				}
 				const sent: Sent = { chat, ...(question.topic !== undefined ? { topic: question.topic } : {}), message, files: [], ref, ...viewOf(question.spec) };
@@ -620,7 +707,8 @@ export function createChat(io: ChatIO): Chat {
 	 * Ends a question, with `body` as its resolved form. The status is stored before the edit, so
 	 * a crash never leaves a resolved message over a question that still takes answers. A second
 	 * close replaces the resolved body and pays an edit the first one still owes. The view row
-	 * keeps the origin the question's `ask` stored.
+	 * keeps the origin the question's `ask` stored. A question answered in its view then has its
+	 * closed binding stored on the view host, or owes it to `flush`.
 	 */
 	async function close(ref: string, body?: Body): Promise<Outcome> {
 		if (!isString(ref) || !REF.test(ref)) return refused('shape', `the ref "${String(ref)}" is not 1 to 32 characters of [A-Za-z0-9_-]`);
@@ -634,7 +722,7 @@ export function createChat(io: ChatIO): Chat {
 			} catch (error) {
 				return shapeRefusal(error);
 			}
-			return stated(await show(await save(question, next)));
+			return stated(await settle(await show(await save(question, next))));
 		});
 	}
 
@@ -669,6 +757,26 @@ export function createChat(io: ChatIO): Chat {
 		});
 	}
 
+	/**
+	 * One choice the view host stored. Under the question's lock: a choice for another view than
+	 * the question's is `stale: unknown`; otherwise `reduce` applies it as the event `choice`, the
+	 * result is stored, and the mark is shown. It resolves once the result is stored, so a caller
+	 * removes the choice from the host only after that; a choice whose store failed rejects and
+	 * stays. Rejects with ShapeError for a choice whose fields break their types.
+	 */
+	async function choose(choice: StoredChoice): Promise<Handled> {
+		if (!isRecord(choice) || !isString(choice.ref) || !REF.test(choice.ref) || !isString(choice.view)) throw new ShapeError('the stored choice breaks its type');
+		const { ref, view, id, user, index, at } = choice;
+		return store.lock(questionKey(ref), async () => {
+			const { question } = await load(ref);
+			if (question && question.spec.view !== view) return { kind: 'stale', reason: 'unknown' };
+			const result = reduce(question, { type: 'choice', id, user, index, at }, { now: now(), labels });
+			const current = result.question ? await save(question, result.question) : undefined;
+			if (current) await show(current);
+			return result.handled ?? { kind: 'ignored' };
+		});
+	}
+
 	/** What `onAnswer` gets for a question's current answer. */
 	function delivered(question: Question): Delivered | undefined {
 		if (question.status !== 'answered' && question.status !== 'closed') return undefined;
@@ -694,8 +802,9 @@ export function createChat(io: ChatIO): Chat {
 
 	/**
 	 * Under the question's lock: finishes the delete of a question whose tombstone exists, closes
-	 * it past expiresAt, writes its index entry, pays or rechecks its edit and names the answer it
-	 * owes, unless its budget since `baseline` is spent.
+	 * it past expiresAt, writes its index entry, pays or rechecks its edit, stores the closed
+	 * binding it owes the view host, and names the answer it owes, unless its budget since
+	 * `baseline` is spent.
 	 */
 	async function repair(ref: string, baseline: Record<string, number>): Promise<Delivered | undefined> {
 		if ((await store.get(tombstoneKey(ref))) !== undefined) {
@@ -711,7 +820,7 @@ export function createChat(io: ChatIO): Chat {
 			question = await save(question, apply(question, { type: 'delivered', seq: question.delivery.seq }));
 		}
 		await index(question);
-		question = await show(question, true);
+		question = await settle(await show(question, true));
 		const owed = question.delivery.seq < question.seq && !spent(question.delivery.attempts, baseline[deliveryKey(question)]);
 		return io.onAnswer && owed ? delivered(question) : undefined;
 	}
@@ -798,6 +907,7 @@ export function createChat(io: ChatIO): Chat {
 		edit,
 		close,
 		handle,
+		choose,
 		wait,
 		flush,
 		get: async (ref) => parseQuestion(await store.get(questionKey(ref))),

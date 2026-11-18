@@ -6,10 +6,19 @@ import worker, { type Env } from './index.ts';
 
 type Stored = { value: Uint8Array; expiration: number; metadata?: { type: string } };
 
-/** Workers KV over a Map. A put with an expiration under 60 s ahead throws, as KV answers 400. */
+/**
+ * Workers KV over a Map. A put with an expiration under 60 s ahead throws, as KV answers 400. A
+ * list answers pages of 2 keys in key order, with a cursor until the last.
+ */
 function fakeKv() {
 	const map = new Map<string, Stored>();
 	const kv: Env['VIEWS'] = {
+		async list({ prefix, cursor }) {
+			const names = [...map.keys()].filter((key) => key.startsWith(prefix)).sort();
+			const start = cursor === undefined ? 0 : Number(cursor);
+			const keys = names.slice(start, start + 2).map((name) => ({ name }));
+			return start + 2 >= names.length ? { keys, list_complete: true } : { keys, list_complete: false, cursor: String(start + 2) };
+		},
 		async getWithMetadata(key) {
 			const stored = map.get(key);
 			if (!stored) return { value: null, metadata: null };
@@ -56,6 +65,24 @@ test('a view published through the Worker opens with its media, stored in KV wit
 
 	const shell = await (await call(env, '/')).text();
 	expect(shell).toContain('"viewClose":"Schließen"');
+});
+
+test('choices posted through the Worker are listed across every page of KV and removed one by one', async () => {
+	const { env, map } = envOf();
+	const auth = { Authorization: `Bearer ${UPLOAD_KEY}` };
+	const upload = { generation: 'g1', expiresAt: Date.now() + 86_400_000, media: [], view: { v: 1, tabs: ['A', 'B'].map((label) => ({ label, content: { markdown: label } })) } };
+	expect((await call(env, `/api/view/${ID}`, { method: 'PUT', headers: auth, body: JSON.stringify(upload) })).status).toBe(200);
+	const choice = { options: ['A', 'B'].map((label, index) => ({ index, label, tab: label })), once: false };
+	expect((await call(env, `/api/view/${ID}/context/ask1`, { method: 'PUT', headers: auth, body: JSON.stringify({ body: { markdown: 'Which?' }, choice }) })).status).toBe(200);
+	const ids = ['a', 'b', 'c'].map((letter) => letter.repeat(22));
+	for (const id of ids) expect((await call(env, `/api/answer?v=${ID}&q=ask1&n=1&c=${id}`, { method: 'POST', headers: { Authorization: `tma ${await launch()}` } })).status).toBe(200);
+	// KV answers pages of 2 keys: the 3 choices take 2 pages beside the view, its manifest and the context.
+	expect(map.size).toBe(6);
+	const listed = async () => ((await (await call(env, '/api/answers', { headers: auth })).json()) as { choices: { key: string; id: string }[] }).choices;
+	expect((await listed()).map((choice) => choice.id)).toEqual(ids);
+	const [first] = await listed();
+	expect((await call(env, `/api/answer/${encodeURIComponent(first?.key ?? '')}`, { method: 'DELETE', headers: auth })).status).toBe(200);
+	expect((await listed()).map((choice) => choice.id)).toEqual(ids.slice(1));
 });
 
 test('a variable that breaks its format answers every request with 500 and names it', async () => {

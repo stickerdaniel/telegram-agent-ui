@@ -81,7 +81,7 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const ask = tools.find((tool) => tool.name === 'ask_question');
 	// The fake view host ships in the tarball too.
 	expect(tools.find((tool) => tool.name === 'publish_view')?.inputSchema.properties).toHaveProperty('tabs.items.required', ['label', 'file']);
-	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
+	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'answerIn', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
 
 	const asked = json(await client.callTool({ name: 'ask_question', arguments: { answer: 'choice', options: ['Merge', 'Wait'], body: 'Merge `fix/lock` now?', strict: true } }));
 	expect(asked).toMatchObject({ status: 'pending', next: 'wait' });
@@ -174,4 +174,46 @@ test('a warning reaches the agent as a second text block, and an unknown argumen
 	const unknown = await client.callTool({ name: 'get_answer', arguments: { ref: 'abc', after: 3 } });
 	expect(unknown.isError).toBe(true);
 	expect(json(unknown)).toMatchObject({ error: 'usage', message: expect.stringContaining('unknown input after') });
+});
+
+test('ask_question with answerIn view binds each option to the tab of its label, and get_answer returns the pick made in the view', async () => {
+	const root = temp('tau-mcp-');
+	const project = join(root, 'project');
+	mkdirSync(project);
+	for (const name of ['compact', 'wide']) writeFileSync(join(project, `${name}.html`), `<h1>${name}</h1>`);
+	const client = await fake(root, project, { roots: [project] });
+	const ask = (await client.listTools()).tools.find((candidate) => candidate.name === 'ask_question');
+	expect(ask?.inputSchema.properties).toHaveProperty('answerIn.enum', ['chat', 'view']);
+	const published = json(await client.callTool({ name: 'publish_view', arguments: { tabs: ['compact', 'wide'].map((name) => ({ label: name, file: join(project, `${name}.html`) })) } }));
+	const question = { answer: 'choice', options: ['compact', 'wide'], view: published.id, body: 'Which layout should stay?' };
+	expect(json(await client.callTool({ name: 'ask_question', arguments: { ...question, answer: 'text', options: undefined, answerIn: 'view' } }))).toMatchObject({ error: 'refused', code: 'shape' });
+	const asked = json(await client.callTool({ name: 'ask_question', arguments: { ...question, answerIn: 'view' } }));
+	expect(asked).toMatchObject({ status: 'pending' });
+	expect(json(await client.callTool({ name: 'get_answer', arguments: { ref: asked.ref } }))).toMatchObject({ status: 'answered', answer: { kind: 'choice', index: 0, label: 'compact' } });
+	const contexts = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((line) => String(line.path).includes('/context/'));
+	expect(contexts.at(-1)?.body).toMatchObject({ choice: { options: [{ index: 0, label: 'compact', tab: 'compact' }, { index: 1, label: 'wide', tab: 'wide' }] } });
+});
+
+test('ask_question binds options to tabs of other labels, refuses a tab the view lacks with view-host and a shared tab with shape', async () => {
+	const root = temp('tau-mcp-');
+	const project = join(root, 'project');
+	mkdirSync(project);
+	for (const name of ['compact', 'wide']) writeFileSync(join(project, `${name}.html`), `<h1>${name}</h1>`);
+	const client = await fake(root, project, { roots: [project] });
+	const ask = (await client.listTools()).tools.find((candidate) => candidate.name === 'ask_question');
+	expect(ask?.inputSchema.properties).toHaveProperty('options.items.anyOf', [
+		{ type: 'string' },
+		{ type: 'object', properties: { label: { type: 'string' }, tab: { type: 'string' } }, required: ['label'], additionalProperties: false },
+	]);
+	const published = json(await client.callTool({ name: 'publish_view', arguments: { tabs: [['Compact', 'compact'], ['Wide', 'wide']].map(([label, name]) => ({ label, file: join(project, `${name}.html`) })) } }));
+	const question = (options: unknown[]) => ({ answer: 'choice', answerIn: 'view', view: published.id, body: 'Which layout should stay?', options });
+	const asked = json(await client.callTool({ name: 'ask_question', arguments: question([{ label: 'Use compact', tab: 'Compact' }, { label: 'Use wide', tab: 'Wide' }]) }));
+	expect(asked).toMatchObject({ status: 'pending' });
+	const contexts = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((line) => String(line.path).endsWith(`/context/${String(asked.ref)}`));
+	expect(contexts.at(-1)?.body).toMatchObject({ choice: { options: [{ index: 0, label: 'Use compact', tab: 'Compact' }, { index: 1, label: 'Use wide', tab: 'Wide' }] } });
+	expect(json(await client.callTool({ name: 'get_answer', arguments: { ref: asked.ref } }))).toMatchObject({ status: 'answered', answer: { kind: 'choice', index: 0, label: 'Use compact' } });
+
+	expect(json(await client.callTool({ name: 'ask_question', arguments: question([{ label: 'Use compact', tab: 'Compact' }, { label: 'Use grid', tab: 'Grid' }]) }))).toMatchObject({ error: 'no-view-host', message: expect.stringContaining('"Grid"') });
+	expect(json(await client.callTool({ name: 'ask_question', arguments: question([{ label: 'Use compact', tab: 'Compact' }, { label: 'Also compact', tab: 'Compact' }]) }))).toMatchObject({ error: 'refused', code: 'shape' });
+	expect(json(await client.callTool({ name: 'ask_question', arguments: question([{ label: 'Use compact', tab: 'Compact', style: 'primary' }, 'Wide']) }))).toMatchObject({ error: 'usage' });
 });
