@@ -1,16 +1,20 @@
 // What a command returns and how it ends: one JSON object, and an exit code from the table of
-// section 5. A failure is `{ error, code?, message, ref? }`. Every refusal names its code.
+// section 5. A failure is `{ error, code?, message, ref?, id? }`. Every refusal names its code.
 import { LockTimeout, type Outcome, ShapeError, TokenRefused } from '../core/types.ts';
 import type { Stopped } from '../telegram/listen.ts';
 
-/** The codes of a refusal: those of `createChat`, plus those of pairing, of an edit by ref, of `mcp init` and of `view deploy`. */
-export type RefusedCode = Extract<Outcome, { kind: 'refused' }>['code'] | 'webhook' | 'conflict' | 'not-paired' | 'unconfirmed-message' | 'client-config' | 'wrangler';
+/**
+ * The codes of a refusal: those of `createChat`, plus those of pairing, of an edit by ref, of
+ * `mcp init`, of `view deploy`, and of the view host: `view-host` for a request it refused,
+ * `unknown-view` for a view it does not hold.
+ */
+export type RefusedCode = Extract<Outcome, { kind: 'refused' }>['code'] | 'webhook' | 'conflict' | 'not-paired' | 'unconfirmed-message' | 'client-config' | 'wrangler' | 'view-host' | 'unknown-view';
 
 export type Failure =
 	| { error: 'refused'; code: RefusedCode; message: string; ref?: string }
 	| { error: 'usage'; message: string }
 	| { error: 'no-listener'; message: string }
-	| { error: 'uncertain'; message: string; ref?: string }
+	| { error: 'uncertain'; message: string; ref?: string; id?: string }
 	| { error: 'stopped'; code: Exclude<Stopped['reason'], 'signal'>; message: string }
 	| { error: 'no-config'; message: string }
 	| { error: 'no-view-host'; message: string };

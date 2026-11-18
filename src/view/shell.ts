@@ -198,11 +198,24 @@ function resolveMedia(text, urls) {
 // The elements the shell draws typed content with. Any other tag draws nothing.
 var TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'br', 'div', 'span', 'a', 'img'];
 
-// The address an image of typed content loads: a media reference's probed URL, or the
-// placeholder when its probe found it missing. Undefined for any other address, which shows as text.
-function imageSource(src, urls) {
-	var reference = /^media:(\d{1,2})$/.exec(String(src || ''));
-	var url = reference && urls ? urls[Number(reference[1])] : undefined;
+// The media indexes of a Markdown tab's map from image destination to index, each once.
+function mapIndexes(map) {
+	var found = [];
+	Object.keys(map || {}).forEach(function (key) {
+		var index = map[key];
+		if (typeof index === 'number' && found.indexOf(index) < 0) found.push(index);
+	});
+	return found;
+}
+
+// The address an image of typed content loads: for a destination that the tab's map names, the
+// probed URL of its media index, or the placeholder when its probe found it missing. Undefined
+// for any other destination, which shows its alt text. images is { urls, map }, or nothing.
+function imageSource(src, images) {
+	var key = String(src || '');
+	var map = images && images.map;
+	var index = map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+	var url = typeof index === 'number' ? images.urls[index] : undefined;
 	return url === undefined ? undefined : url || PLACEHOLDER;
 }
 
@@ -553,12 +566,13 @@ function htmlText(html) {
 }
 // A node of the Markdown, diff and context functions as DOM: text nodes and a fixed set of
 // elements. A link is a span that opens through Telegram, so the shell never navigates. An image
-// shows only a media reference, as its probed URL or the placeholder; any other shows its alt text.
-function build(node, urls) {
+// shows only a destination of the tab's media map, as its probed URL or the placeholder; any other
+// shows its alt text. images is { urls, map } for a Markdown tab, and nothing for a context.
+function build(node, images) {
 	if (typeof node === 'string') return document.createTextNode(node);
 	if (TAGS.indexOf(node.t) < 0) return document.createTextNode('');
 	if (node.t === 'img') {
-		var source = imageSource(node.src, urls);
+		var source = imageSource(node.src, images);
 		if (source === undefined) return element('span', 'muted', node.alt || '');
 		var image = document.createElement('img');
 		image.addEventListener('error', function () { if (image.src !== PLACEHOLDER) image.src = PLACEHOLDER; });
@@ -577,7 +591,7 @@ function build(node, urls) {
 		made.addEventListener('keydown', function (event) { if (event.key === 'Enter') open(event); });
 	}
 	if (node.t === 'ol' && node.start) made.start = node.start;
-	(node.c || []).forEach(function (child) { made.append(build(child, urls)); });
+	(node.c || []).forEach(function (child) { made.append(build(child, images)); });
 	return made;
 }
 
@@ -615,9 +629,13 @@ function fill(panel, content, media) {
 		panel.append(element('p', 'state', labels.viewError));
 		return;
 	}
-	probeAll(mediaIndexes(text), media).then(function (urls) {
+	// A page names its media as media:<index> in its text; a Markdown tab keeps its source and maps
+	// each image destination to its index.
+	var page = typeof content.page === 'string';
+	var map = !page && content.media && typeof content.media === 'object' ? content.media : {};
+	probeAll(page ? mediaIndexes(text) : mapIndexes(map), media).then(function (urls) {
 		if (expired) return;
-		if (typeof content.page === 'string') {
+		if (page) {
 			var frame = document.createElement('iframe');
 			frame.setAttribute('sandbox', '');
 			var entry = { frame: frame, page: resolveMedia(content.page, urls) };
@@ -626,7 +644,7 @@ function fill(panel, content, media) {
 			panel.classList.add('page');
 			panel.append(frame);
 		} else {
-			panel.append(build({ t: 'div', k: 'markdown', c: markdownBlocks(content.markdown) }, urls));
+			panel.append(build({ t: 'div', k: 'markdown', c: markdownBlocks(content.markdown) }, { urls: urls, map: map }));
 		}
 	});
 }

@@ -18,16 +18,21 @@ const SKILL = join(REPO, 'skills', 'telegram-agent-ui');
 /**
  * One prompt of `evals.json`. `files` maps a path relative to the project to its text; `../`
  * reaches outside the project. A `guardrail` prompt tests a behaviour no run may break, such as
- * sending nothing or leaking no file: one failed run of it fails the criterion.
+ * sending nothing or leaking no file: one failed run of it fails the criterion. `scenario`
+ * names a failure script of fake mode, such as `no-view-host`.
  */
-export type Eval = { id: number; name: string; prompt: string; expected: string; files: Record<string, string>; expectations: Expectation[]; guardrail?: boolean };
+export type Eval = { id: number; name: string; prompt: string; expected: string; files: Record<string, string>; expectations: Expectation[]; guardrail?: boolean; scenario?: string };
 
 const isExpectation = (value: unknown): value is Expectation =>
 	isRecord(value) &&
 	((value.kind === 'none' || value.kind === 'message') ||
 		(value.kind === 'status' && isInt(value.edits)) ||
+		(value.kind === 'view' && isInt(value.tabs) && (value.sources === undefined || arrayOf(isString)(value.sources))) ||
 		(value.kind === 'never' && isString(value.text)) ||
-		(value.kind === 'question' && (value.answer === 'choice' || value.answer === 'yesNo' || value.answer === 'text') && (value.options === undefined || isInt(value.options))));
+		(value.kind === 'question' &&
+			(value.answer === 'choice' || value.answer === 'yesNo' || value.answer === 'text') &&
+			(value.options === undefined || isInt(value.options)) &&
+			(value.tabs === undefined || typeof value.tabs === 'boolean')));
 
 const isEval = (value: unknown): value is Eval =>
 	isRecord(value) &&
@@ -38,7 +43,8 @@ const isEval = (value: unknown): value is Eval =>
 	isRecord(value.files) &&
 	Object.values(value.files).every(isString) &&
 	arrayOf(isExpectation)(value.expectations) &&
-	(value.guardrail === undefined || typeof value.guardrail === 'boolean');
+	(value.guardrail === undefined || typeof value.guardrail === 'boolean') &&
+	(value.scenario === undefined || isString(value.scenario));
 
 /** The evals of an `evals.json` value, or a thrown error that names the first one that breaks the format. */
 export function parseEvals(value: unknown): Eval[] {
@@ -57,8 +63,8 @@ export type Job = { eval: Eval; skill: boolean; run: number; root: string; work:
  */
 export type Ran = { transcript: string } & ({ status: 'done' } | { status: 'failed'; code: number } | { status: 'timeout'; seconds: number });
 
-/** A runner works through a prepared job. */
-export type Runner = { name: string; run(job: Job): Promise<Ran> };
+/** A runner works through a prepared job. `signal` stops it: no further step starts, and the running process is killed. */
+export type Runner = { name: string; run(job: Job, signal?: AbortSignal): Promise<Ran> };
 
 const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
@@ -84,7 +90,8 @@ export function prepare(evalCase: Eval, skill: boolean, run: number, root: strin
 	if (skill) cpSync(SKILL, join(work, '.claude', 'skills', 'telegram-agent-ui'), { recursive: true, filter: (path) => path !== evals && !path.startsWith(`${evals}${sep}`) });
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith('TELEGRAM_')) env[key] = value;
-	return { eval: evalCase, skill, run, root, work, fake, env: { ...env, PATH: `${bin}:${env.PATH ?? '/usr/bin:/bin'}`, TELEGRAM_AGENT_UI_FAKE: fake } };
+	const scenario = evalCase.scenario !== undefined ? { TELEGRAM_AGENT_UI_FAKE_SCENARIO: evalCase.scenario } : {};
+	return { eval: evalCase, skill, run, root, work, fake, env: { ...env, PATH: `${bin}:${env.PATH ?? '/usr/bin:/bin'}`, TELEGRAM_AGENT_UI_FAKE: fake, ...scenario } };
 }
 
 /** One recorded command: the arguments after `telegram-agent-ui`, and its stdin. */
@@ -101,19 +108,29 @@ export function parseTranscripts(value: unknown): Record<string, Step[]> {
 /**
  * Replays the transcript of a job in its project, one command after the other: the one keyed
  * `<eval id>:with` or `<eval id>:without` for the job's condition, else the one keyed by the eval
- * id. An eval without a transcript runs nothing.
+ * id. An eval without a transcript runs nothing. A run that `signal` stopped ends as failed with
+ * code 130, so its calls are no evidence.
  */
 export function recordedRunner(transcripts: Readonly<Record<string, readonly Step[]>>): Runner {
 	return {
 		name: 'recorded',
-		async run(job) {
+		async run(job, signal) {
 			const lines: string[] = [];
 			const id = String(job.eval.id);
 			for (const step of transcripts[`${id}:${job.skill ? 'with' : 'without'}`] ?? transcripts[id] ?? []) {
-				const child = Bun.spawn([join(job.root, 'bin', 'telegram-agent-ui'), ...step.args], { cwd: job.work, env: job.env, stdin: step.stdin === undefined ? 'ignore' : new Blob([step.stdin]), stdout: 'pipe', stderr: 'pipe' });
+				if (signal?.aborted) return { status: 'failed', code: 130, transcript: lines.join('\n') };
+				const child = Bun.spawn([join(job.root, 'bin', 'telegram-agent-ui'), ...step.args], {
+					cwd: job.work,
+					env: job.env,
+					stdin: step.stdin === undefined ? 'ignore' : new Blob([step.stdin]),
+					stdout: 'pipe',
+					stderr: 'pipe',
+					...(signal ? { signal, killSignal: 'SIGKILL' as const } : {}),
+				});
 				const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
 				lines.push(`$ telegram-agent-ui ${step.args.join(' ')}`, out.trim(), ...(err.trim() ? [err.trim()] : []));
 			}
+			if (signal?.aborted) return { status: 'failed', code: 130, transcript: lines.join('\n') };
 			return { status: 'done', transcript: lines.join('\n') };
 		},
 	};

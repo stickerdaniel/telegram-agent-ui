@@ -1,21 +1,25 @@
-// What a command runs on: the config, the token, the store and a chat over them. Fake mode,
-// `TELEGRAM_AGENT_UI_FAKE=<dir>`, replaces the Bot API with a recorder that appends every call
-// and its answer to `<dir>/calls.jsonl`, and the config with a built-in one. Its store lives in
-// `<dir>/store`, it reports a live listener without an answer command, and the first `wait` on
-// a question answers it. `TELEGRAM_AGENT_UI_FAKE_SCENARIO` picks a failure script for tests.
+// What a command runs on: the config, the token, the store, a chat over them and the client of
+// the view host. Fake mode, `TELEGRAM_AGENT_UI_FAKE=<dir>`, replaces the Bot API with a recorder
+// that appends every call and its answer to `<dir>/calls.jsonl`, the view host with the package's
+// own handler over a store in `<dir>/views`, whose requests go to `<dir>/views.jsonl`, and the
+// config with a built-in one. Its store lives in `<dir>/store`, it reports a live listener
+// without an answer command, and the first `wait` on a question answers it.
+// `TELEGRAM_AGENT_UI_FAKE_SCENARIO` picks a failure script for tests.
 import { appendFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { type Chat, createChat, type Delivered } from '../chat/create.ts';
 import { writeListener } from '../chat/listener.ts';
-import { isNat, isRecord } from '../core/check.ts';
+import { isNat, isRecord, isString } from '../core/check.ts';
 import { LIMITS } from '../core/shape.ts';
-import type { Call, CallResponse, Store, Update } from '../core/types.ts';
+import type { Call, CallResponse, Store, Update, ViewClient } from '../core/types.ts';
 import { readTextInRoots } from '../files/roots.ts';
 import { fileStore } from '../store/file.ts';
 import { fetchCall, type Transport } from '../telegram/fetch.ts';
 import { isUpdate } from '../telegram/listen.ts';
-import { apiUrlOf, type Config, type Env, FILE_LIMITS, findToken, paths, readConfig } from './config.ts';
+import { viewClient } from '../view/client.ts';
+import { createViewHandler, type ViewStorage } from '../view/handler.ts';
+import { apiUrlOf, type Config, type Env, FILE_LIMITS, findSecret, findToken, KEY_NAMES, paths, readConfig } from './config.ts';
 import { Failed, type Failure } from './result.ts';
 
 /** What a command gets from its caller: the CLI's process, or an MCP server's. */
@@ -23,6 +27,8 @@ export type Context = {
 	env: Env;
 	/** The roots files may be read from before `publishRoots`: the CLI's working directory, or the roots an MCP client reports. */
 	roots: readonly string[];
+	/** Where a relative path resolves: the CLI's working directory. Without it, as for an MCP client, every path is absolute. */
+	cwd?: string;
 	/** Progress and warnings, one line each. */
 	log: (line: string) => void;
 	/** Ends a command that runs until stopped: `listen`, and `init` while it waits. */
@@ -40,18 +46,26 @@ export type Session = {
 	store: Store;
 	call: Transport;
 	chat: Chat;
+	/** The client of the view host, once `view deploy` recorded its origin and its upload key is found. */
+	views?: ViewClient;
 	/** The directories files may be read from: the caller's roots and `publishRoots`. */
 	roots: string[];
 	/** Fake mode only: answers a pending question as a person would, on the first wait. */
 	fake?: { answer(ref: string): Promise<void> };
 };
 
-/** The failure scripts of fake mode. `no-listener` has no live listener, the others answer every send and edit so. */
-export const FAKE_SCENARIOS = ['no-listener', 'uncertain', 'refused', 'token'] as const;
+/**
+ * The failure scripts of fake mode. `no-listener` has no live listener, `no-view-host` no view
+ * host, and the others answer every send and edit so.
+ */
+export const FAKE_SCENARIOS = ['no-listener', 'no-view-host', 'uncertain', 'refused', 'token'] as const;
 type Scenario = (typeof FAKE_SCENARIOS)[number];
 const isScenario = (value: string): value is Scenario => FAKE_SCENARIOS.some((scenario) => scenario === value);
 
-const FAKE_CONFIG: Config = { v: 1, bot: { id: 1, username: 'fake_bot' }, chat: 111, users: [111], labels: {}, publishRoots: [], views: {} };
+/** The origin of fake mode's view host. Nothing serves it: its client calls the handler in the same process. */
+export const FAKE_VIEW_ORIGIN = 'https://views.fake.invalid';
+const FAKE_KEYS = { upload: 'fake-upload-key-0123456789', media: 'fake-media-key-0123456789' } as const;
+const FAKE_CONFIG: Config = { v: 1, bot: { id: 1, username: 'fake_bot' }, chat: 111, users: [111], labels: {}, publishRoots: [], views: { origin: FAKE_VIEW_ORIGIN } };
 const CHANGES = new Set(['sendRichMessage', 'sendPhoto', 'sendVideo', 'sendDocument', 'sendMediaGroup', 'editMessageText']);
 const SENDS = new Set(['sendRichMessage', 'sendPhoto', 'sendVideo', 'sendDocument']);
 
@@ -99,6 +113,47 @@ function recorder(log: string, store: Store, scenario: Scenario | undefined, com
 	};
 }
 
+/** A ViewStorage over `store`: each value as base64 in JSON, with its type and expiry. */
+function storeStorage(store: Store): ViewStorage {
+	return {
+		async get(key) {
+			const stored = await store.get(key);
+			if (!isRecord(stored) || !isString(stored.value)) return undefined;
+			return { value: Uint8Array.from(Buffer.from(stored.value, 'base64')), ...(isString(stored.type) ? { type: stored.type } : {}) };
+		},
+		put: (key, value, { expiresAt, type }) => store.set(key, { value: Buffer.from(value).toString('base64'), expiresAt, ...(type !== undefined ? { type } : {}) }),
+		delete: (key) => store.delete(key),
+	};
+}
+
+/**
+ * The view host of fake mode: the package's handler over a store in `dir`, called in this
+ * process. Each request becomes one line of `log`, `{ at, method, path, status, body?, type?,
+ * bytes?, command? }`: the JSON of a view or context upload as `body`, a media upload by its
+ * type and size. A storage of files shows every key at once, so the client asks no 404 again.
+ */
+function fakeViews(dir: string, log: string, command: string | undefined): ViewClient {
+	const handle = createViewHandler({ storage: storeStorage(fileStore(dir)), botId: String(FAKE_CONFIG.bot.id), allowedUsers: FAKE_CONFIG.users, uploadKey: FAKE_KEYS.upload, mediaKey: FAKE_KEYS.media });
+	const recorded = async (request: Request): Promise<Response> => {
+		const bytes = new Uint8Array(await request.clone().arrayBuffer());
+		const type = request.headers.get('Content-Type') ?? undefined;
+		let body: unknown;
+		if (type === 'application/json') {
+			try {
+				body = JSON.parse(new TextDecoder().decode(bytes));
+			} catch {
+				body = undefined;
+			}
+		}
+		const response = await handle(request);
+		const url = new URL(request.url);
+		const line = { at: Date.now(), method: request.method, path: url.pathname, status: response.status, ...(body !== undefined ? { body } : type !== undefined ? { type, bytes: bytes.length } : {}), ...(command !== undefined ? { command } : {}) };
+		await appendFile(log, `${JSON.stringify(line)}\n`);
+		return response;
+	};
+	return viewClient({ origin: FAKE_VIEW_ORIGIN, uploadKey: FAKE_KEYS.upload, fetch: recorded, lateWindow: 0 });
+}
+
 /** A tap on the first button, or a reply with message id `reply` to the message, by the fake chat's user, as JSON from Telegram. */
 function personAnswer(ref: string, message: number, answer: { kind: 'choice' } | { kind: 'text'; reply: number }): Update {
 	const person = { id: FAKE_CONFIG.chat, is_bot: false, first_name: 'Fake' };
@@ -123,13 +178,16 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 	// The fake listener beats with every command, and stops for the `no-listener` scenario. The stored baselines stay.
 	await writeListener(store, { heartbeat: Date.now(), ...(scenario === 'no-listener' ? { stopped: 'fake mode: no-listener' } : {}) });
 	const call = recorder(join(dir, 'calls.jsonl'), store, scenario, context.command);
-	const chat = createChat({ call, store, chat: FAKE_CONFIG.chat, allow: FAKE_CONFIG.users, ...(onAnswer ? { onAnswer } : {}) });
+	const views = scenario === 'no-view-host' ? undefined : fakeViews(join(dir, 'views'), join(dir, 'views.jsonl'), context.command);
+	const config: Config = views ? FAKE_CONFIG : { ...FAKE_CONFIG, views: {} };
+	const chat = createChat({ call, store, chat: config.chat, allow: config.users, ...(views ? { viewOrigin: FAKE_VIEW_ORIGIN, views } : {}), ...(onAnswer ? { onAnswer } : {}) });
 	return {
-		config: FAKE_CONFIG,
+		config,
 		where: { config: 'built in: fake mode', store: join(dir, 'store') },
 		store,
 		call,
 		chat,
+		...(views ? { views } : {}),
 		roots: await rootsOf(context),
 		fake: {
 			async answer(ref) {
@@ -181,15 +239,19 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 	const call = fetchCall({ token, ...(apiUrl !== undefined ? { apiUrl } : {}) });
 	const where = { config: paths(env).configFile, store: paths(env).store(config.bot.id) };
 	const store = fileStore(where.store);
+	const { origin } = config.views;
+	const uploadKey = origin !== undefined ? await findSecret(env, KEY_NAMES.upload) : undefined;
+	const views = origin !== undefined && uploadKey !== undefined ? viewClient({ origin, uploadKey }) : undefined;
 	const chat = createChat({
 		call,
 		store,
 		chat: config.chat,
 		allow: config.users,
 		labels: config.labels,
-		...(config.views.origin !== undefined ? { viewOrigin: config.views.origin } : {}),
+		...(origin !== undefined ? { viewOrigin: origin } : {}),
+		...(views ? { views } : {}),
 		fileLimit: apiUrl !== undefined ? FILE_LIMITS.local : FILE_LIMITS.cloud,
 		...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
 	});
-	return { config, where, store, call, chat, roots: [...context.roots, ...config.publishRoots] };
+	return { config, where, store, call, chat, ...(views ? { views } : {}), roots: [...context.roots, ...config.publishRoots] };
 }

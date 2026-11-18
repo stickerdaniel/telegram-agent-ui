@@ -61,6 +61,9 @@ function parseViews(value: unknown): Views | undefined {
 	};
 }
 
+/** The `.env` names of the view host's two secrets, which `view deploy` writes and `view put` reads. */
+export const KEY_NAMES = { upload: 'TELEGRAM_AGENT_UI_UPLOAD_KEY', media: 'TELEGRAM_AGENT_UI_MEDIA_KEY' } as const;
+
 /** A file a non-photo upload may have: the cloud Bot API's limit and a local server's. */
 export const FILE_LIMITS = { cloud: 50_000_000, local: 2_000_000_000 } as const;
 

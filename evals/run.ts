@@ -2,11 +2,11 @@
 // skill and without it, in fake mode, and each run is graded on what fake mode recorded.
 //
 // `--study` runs the fixed study in one process, the only run that can pass the criterion.
-// Phase 1 runs each of the 7 prompts once with and once without the skill. It stops there when
+// Phase 1 runs each of the 10 prompts once with and once without the skill. It stops there when
 // a with-skill run fails, a guardrail run fails in either condition, a run does not complete, or
 // the prompts that pass with the skill exceed those without it by fewer than 2: phase 2 adds no
 // run without the skill, so that gain cannot grow. Phase 2 runs each prompt once more with the
-// skill. The criterion then applies to exactly those 21 runs: each present once, every
+// skill. The criterion then applies to exactly those 30 runs: each present once, every
 // with-skill run passing, no guardrail run failing, and a gain of at least 2 prompts.
 //
 // Any other run is a diagnostic: `--with <n>`, `--without <n>` and `--only <ids>` pick its runs,
@@ -20,7 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { grade, parseCalls } from './grade.ts';
+import { grade, parseCalls, parseViewCalls } from './grade.ts';
 import { claudeArgs, claudeRunner, type Eval, type Job, parseEvals, parseTranscripts, prepare, recordedRunner, type Runner, storedQuestions } from './runners.ts';
 
 const REPO = join(import.meta.dir, '..');
@@ -46,7 +46,8 @@ export async function runAll(jobs: readonly Job[], runner: Runner, parallel: num
 				graded.push({ ...base, outcome: 'error', failures });
 			} else {
 				const calls = parseCalls(await Bun.file(join(job.fake, 'calls.jsonl')).text().catch(() => ''));
-				const { pass, failures } = grade(calls, job.eval.expectations, await storedQuestions(job.fake));
+				const views = parseViewCalls(await Bun.file(join(job.fake, 'views.jsonl')).text().catch(() => ''));
+				const { pass, failures } = grade(calls, job.eval.expectations, await storedQuestions(job.fake), views, job.eval.files);
 				graded.push({ ...base, outcome: pass ? 'pass' : 'fail', failures });
 			}
 			const last = graded.at(-1);

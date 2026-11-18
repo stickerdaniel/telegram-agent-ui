@@ -17,14 +17,13 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isRecord, isString } from '../core/check.ts';
 import { type CssVars, parseTheme, themeIssue } from '../view/theme.ts';
-import { type Config, type Env, findSecret, isAccount, readConfig, routeOrigin, writeConfigFile, writeSecrets } from './config.ts';
+import { type Config, type Env, findSecret, isAccount, KEY_NAMES, readConfig, routeOrigin, writeConfigFile, writeSecrets } from './config.ts';
 import { done, failed, type Result } from './result.ts';
 import { type Context, readBodyFile, rootsOf } from './session.ts';
 
 /** The wrangler release `view deploy` runs. */
 export const WRANGLER_VERSION = '4.164.0';
-/** The `.env` names of the two secrets. */
-export const KEY_NAMES = { upload: 'TELEGRAM_AGENT_UI_UPLOAD_KEY', media: 'TELEGRAM_AGENT_UI_MEDIA_KEY' } as const;
+export { KEY_NAMES } from './config.ts';
 
 // ./worker and the template, from src/commands and from dist/commands alike. The template ships
 // in src/, which the package publishes beside dist/.

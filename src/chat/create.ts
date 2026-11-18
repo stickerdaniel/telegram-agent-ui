@@ -11,7 +11,7 @@ import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
 import { locate, RECHECK_DELAY, reduce } from '../core/reduce.ts';
 import { kindOf, render, renderEdit } from '../core/render.ts';
-import { isOrigin, REF } from '../core/shape.ts';
+import { isOrigin, REF, VIEW_ID } from '../core/shape.ts';
 import {
 	type Answer,
 	type Body,
@@ -55,7 +55,10 @@ export type ChatIO = {
 	now?: () => number;
 	/** Without it a spec with a view is refused. */
 	viewOrigin?: string;
-	/** With it, a question with a view gets its body shown in the view. */
+	/**
+	 * The client of the view host at `viewOrigin`. With it, a question with a view gets its body
+	 * shown in the view, and an option's tab is checked against the view's tabs.
+	 */
 	views?: ViewClient;
 	/** The file reader `attach` goes through. Without it a spec with `attach` is refused. */
 	files?: (paths: string[]) => Promise<Readable>;
@@ -257,11 +260,45 @@ export function createChat(io: ChatIO): Chat {
 		return request(call, files);
 	}
 
-	/** Stores a question's body as its view's context, as a call class, so `shown` covers it like an edit. */
+	/**
+	 * Why a question's options name a tab its view lacks, read through `views.has`, or undefined.
+	 * Without `views`, or without an option that names a tab, there is nothing to read. Nothing
+	 * is sent before this check, so a host that gives no answer refuses too.
+	 */
+	async function tabRefusal(spec: Spec): Promise<Refused | undefined> {
+		const { views } = io;
+		const view = spec.view;
+		const tabs = spec.answer?.type === 'choice' ? spec.answer.options.flatMap((option) => (option.tab !== undefined ? [option.tab] : [])) : [];
+		if (view === undefined || !views || tabs.length === 0) return undefined;
+		const found = await within(
+			Promise.resolve()
+				.then(() => views.has(view))
+				.catch(() => undefined),
+			DEADLINES.call,
+			undefined,
+		);
+		if (!found) return refused('server', `the view host gave no answer about the view ${view}`);
+		if (found.kind === 'refused') return refused('server', `the view host refused to read the view ${view}: ${found.reason}`);
+		if (found.kind === 'missing') return refused('shape', `the view ${view} is not on the view host`);
+		const lacking = tabs.find((tab) => !found.tabs.includes(tab));
+		return lacking === undefined ? undefined : refused('shape', `the view ${view} has no tab "${lacking}", its tabs are ${found.tabs.map((tab) => `"${tab}"`).join(', ')}`);
+	}
+
+	/**
+	 * Stores a question's body as its view's context, as a call class, so `shown` covers it like
+	 * an edit. A context belongs to the host its question's button opens, and `views` is the
+	 * client of the configured origin. A question whose stored origin is another one, since the
+	 * configured origin moved after its ask, gets no write: the answer is a refusal, so `shown`
+	 * counts the message as shown and the outcome carries `not-shown`, since the old host keeps
+	 * whatever context it had.
+	 */
 	async function writeContext(question: Question): Promise<CallClass> {
 		const { views } = io;
 		const view = question.spec.view;
 		if (view === undefined || !views) return OK;
+		if (question.viewOrigin !== io.viewOrigin) {
+			return { kind: 'refused', code: 'server', reason: `the view button opens ${question.viewOrigin ?? 'no origin'}, and the view client writes to ${io.viewOrigin ?? 'no origin'}: the context there stays as it was` };
+		}
 		const answer = await within(
 			Promise.resolve()
 				.then(() => views.context(view, question.ref, question.spec.body))
@@ -417,8 +454,9 @@ export function createChat(io: ChatIO): Chat {
 
 	/**
 	 * Sends a question. Under its lock, a held ref answers from the stored question before any
-	 * check that only a new send needs: the expiry, the listener, the files. A new question is
-	 * stored as `sending`, gets its view's context, its body, `sent` and its reply index. The
+	 * check that only a new send needs: the expiry, the listener, the view's tabs, the files. A
+	 * new question is stored as `sending`, gets its view's context, its body, `sent` and its
+	 * reply index. The
 	 * files go out after the lock, so a long upload never holds a tap back. The outcome reports
 	 * the question as the store holds it after the last step.
 	 */
@@ -434,6 +472,8 @@ export function createChat(io: ChatIO): Chat {
 				if (taken) return held && sameJson(held.spec, asked.spec) ? stated(held, warnings) : refused('ref-conflict', `the ref ${ref} belongs to another question`);
 				if (asked.status === 'closed') return refused('closed', 'expiresAt has passed');
 				if (needsListener && !listenerStatus(await store.get(LISTENER_KEY), now()).alive) return refused('no-listener', 'no listener is alive to receive the answer');
+				const lacking = await tabRefusal(asked.spec);
+				if (lacking) return lacking;
 				const opened = await open(asked.spec, owned);
 				if (opened.kind === 'refused') return opened;
 				let question = await save(undefined, asked);
@@ -525,8 +565,14 @@ export function createChat(io: ChatIO): Chat {
 		return asked ? ask(asked, steps, warnings, needsListener === true) : post(spec, steps, warnings, topic);
 	}
 
-	/** A new body for a message that is no question's. Best effort and stateless: nothing repairs an uncertain edit. */
+	/**
+	 * A new body for a message that is no question's. Best effort and stateless: nothing repairs an
+	 * uncertain edit. The view row comes from the caller's `Sent`, so a view of another origin than
+	 * the configured one is refused as `origin`.
+	 */
 	async function editPlain(sent: Sent, body: Body): Promise<Outcome> {
+		if (sent.view && sent.view.origin !== io.viewOrigin) return refused('origin', `the view origin ${sent.view.origin} is not the configured one`);
+		if (sent.view && !VIEW_ID.test(sent.view.id)) return refused('shape', `the view id "${sent.view.id}" is not 22 base64url characters`);
 		let call: Call;
 		try {
 			call = renderEdit({ sent, body }, labels);
@@ -542,12 +588,14 @@ export function createChat(io: ChatIO): Chat {
 	/**
 	 * A new body for a sent message. A message is a question's when its `Sent` names a ref or the
 	 * reply index names it, after a rebuild, so a lost index entry never strips a question's
-	 * buttons. On a question the edit is the event `edit` under its lock.
+	 * buttons. On a question the edit is the event `edit` under its lock, and the view row comes
+	 * from the stored question: the origin its `ask` stored stays, even after the configured one
+	 * moved, and the view of the caller's `Sent` is never read. On a plain message the view of the
+	 * `Sent` must name the configured origin, so no caller points a view button at another site.
 	 */
 	async function edit(sent: Sent, body: Body): Promise<Outcome> {
 		if (!isSent(sent)) return refused('shape', 'the sent message breaks its type');
 		if (sent.chat !== chat) return refused('chat', `the message is in chat ${sent.chat}, and this chat is ${chat}`);
-		if (sent.view && sent.view.origin !== io.viewOrigin) return refused('origin', `the view origin ${sent.view.origin} is not the configured one`);
 		if (!isBody(body)) return refused('shape', 'the body breaks its type');
 		const ref = sent.ref ?? (await indexed(sent));
 		if (ref === undefined) return editPlain(sent, body);
@@ -571,7 +619,8 @@ export function createChat(io: ChatIO): Chat {
 	/**
 	 * Ends a question, with `body` as its resolved form. The status is stored before the edit, so
 	 * a crash never leaves a resolved message over a question that still takes answers. A second
-	 * close replaces the resolved body and pays an edit the first one still owes.
+	 * close replaces the resolved body and pays an edit the first one still owes. The view row
+	 * keeps the origin the question's `ask` stored.
 	 */
 	async function close(ref: string, body?: Body): Promise<Outcome> {
 		if (!isString(ref) || !REF.test(ref)) return refused('shape', `the ref "${String(ref)}" is not 1 to 32 characters of [A-Za-z0-9_-]`);

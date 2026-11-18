@@ -17,7 +17,8 @@ type Lib = {
 	resolveVars(names: string[], read: (name: string) => string): Record<string, string>;
 	mediaIndexes(text: string): number[];
 	resolveMedia(text: string, urls: (string | undefined)[]): string;
-	imageSource(src: string, urls: (string | undefined)[]): string | undefined;
+	mapIndexes(map: Record<string, number>): number[];
+	imageSource(src: string, images?: { urls: (string | undefined)[]; map: Record<string, number> }): string | undefined;
 	safeLink(href: string): { href: string; telegram: boolean } | null;
 	markdownBlocks(text: string): Node[];
 	diffLines(text: string): Node[];
@@ -25,7 +26,7 @@ type Lib = {
 	TAGS: string[];
 	PLACEHOLDER: string;
 };
-const names = ['fetchRetry', 'fetchContext', 'pagePrefix', 'themeBlocks', 'resolveVars', 'mediaIndexes', 'resolveMedia', 'imageSource', 'safeLink', 'markdownBlocks', 'diffLines', 'contextNodes', 'TAGS', 'PLACEHOLDER'];
+const names = ['fetchRetry', 'fetchContext', 'pagePrefix', 'themeBlocks', 'resolveVars', 'mediaIndexes', 'mapIndexes', 'resolveMedia', 'imageSource', 'safeLink', 'markdownBlocks', 'diffLines', 'contextNodes', 'TAGS', 'PLACEHOLDER'];
 const lib = new Function(`'use strict';\n${SHELL_LIB}\nreturn { ${names.join(', ')} };`)() as Lib;
 
 /** Every text node of a tree, in order. */
@@ -121,7 +122,7 @@ test('Markdown is drawn as text nodes: raw HTML stays text, a link opens only ht
 			'',
 			'[ok](https://example.com/a) [tg](t.me/somebot) [bad](javascript:alert(3)) [data](data:text/html,x)',
 			'',
-			'![shot](media:0) ![remote](https://evil.example/x.png) ![gone](media:1)',
+			'![shot](shot.png) ![remote](https://evil.example/x.png) ![gone](gone.png) ![unmapped](other.png) ![old](media:0)',
 			'',
 			'| a | b |',
 			'| --- | --- |',
@@ -146,8 +147,14 @@ test('Markdown is drawn as text nodes: raw HTML stays text, a link opens only ht
 		['https://t.me/somebot', true],
 	]);
 	const images = elements(nodes).filter((node) => node.t === 'img');
+	// A destination the tab's map names gets its media's URL, or the placeholder after a failed probe; any other shows its alt text.
 	const urls = [`${ORIGIN}/m/${ID}/g1/0?e=1&s=x`, ''];
-	expect(images.map((image) => lib.imageSource(image.src ?? '', urls))).toEqual([urls[0], undefined, lib.PLACEHOLDER]);
+	const map = { 'shot.png': 0, 'gone.png': 1 };
+	expect(lib.mapIndexes({ ...map, 'again.png': 0 })).toEqual([0, 1]);
+	expect(images.map((image) => lib.imageSource(image.src ?? '', { urls, map }))).toEqual([urls[0], undefined, lib.PLACEHOLDER, undefined, undefined]);
+	// A context has no map: no image of its own.
+	expect(lib.imageSource('shot.png')).toBeUndefined();
+	expect(lib.imageSource('toString', { urls, map })).toBeUndefined();
 	expect(elements(nodes).map((node) => node.t)).toEqual(expect.arrayContaining(['h1', 'table', 'th', 'td', 'code', 'strong', 'ul', 'li', 'pre']));
 });
 

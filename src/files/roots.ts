@@ -2,13 +2,16 @@
 // through a link that leaves the roots, and never a file whose name marks a secret. A root that
 // is `/`, the home directory or a directory above it is refused, since it would allow every file.
 // The checks run on the real path of the opened handle before and after the read, see
-// `openInRoots` for what that boundary covers. `readPublishable` of `./files` builds on these.
+// `openInRoots` for what that boundary covers. `openPublishable` turns the opened handles into
+// the Publishable files of 4.7, which `readPublishable` of `./files`, the body file reader of
+// the CLI and `prepareView` all read through.
 import { constants } from 'node:fs';
 import { type FileHandle, lstat, open, readlink, realpath } from 'node:fs/promises';
-import { basename, resolve, sep } from 'node:path';
+import { basename, extname, resolve, sep } from 'node:path';
+import type { Publishable, Readable } from '../core/types.ts';
 
 /** Why a file may not leave the machine. */
-export type FileRefusal = { kind: 'refused'; code: 'outside-roots' | 'secret-file' | 'publish-root' | 'shape'; reason: string };
+export type FileRefusal = Extract<Readable, { kind: 'refused' }>;
 
 // `.env` and `.env.*`, `.netrc`, `.npmrc`, `*.pem`, `*.key`, and private SSH keys.
 const SECRET_NAME = /^(?:\.env(?:\..*)?|\.netrc|\.npmrc|.*\.pem|.*\.key|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?)$/i;
@@ -119,15 +122,122 @@ export async function openInRoots(path: string, options: { roots: readonly strin
 	}
 }
 
-/** The text of `path` through `openInRoots` and its `confirm`, refused with `shape` above `limit` bytes. */
+/** A read of a Publishable whose path changed while it was read: `refusal` says why, and the content must not be used. */
+export class FileRefused extends Error {
+	override name = 'FileRefused';
+	constructor(readonly refusal: FileRefusal) {
+		super(refusal.reason);
+	}
+}
+
+// The content types by ending: the media types of 4.8, the view files and a few documents.
+const TYPES: Record<string, string> = {
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	webp: 'image/webp',
+	gif: 'image/gif',
+	mp4: 'video/mp4',
+	md: 'text/markdown; charset=utf-8',
+	diff: 'text/x-diff; charset=utf-8',
+	patch: 'text/x-diff; charset=utf-8',
+	html: 'text/html; charset=utf-8',
+	txt: 'text/plain; charset=utf-8',
+	json: 'application/json',
+	pdf: 'application/pdf',
+};
+/** The content type of a path by its ending, `application/octet-stream` for any other. */
+export const typeOf = (path: string) => TYPES[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream';
+
+const CHUNK = 64 * 1024;
+
+/**
+ * An opened file as a Publishable. Every read starts at byte 0 and stops at the size the handle
+ * had when it was checked, so a file that grows later is never sent past its checked size, and
+ * a second read, such as a retried upload, sends the same bytes. Each read ends with `confirm`:
+ * `bytes` rejects and `stream` errors with FileRefused when the path changed meanwhile.
+ */
+function publishable(opened: Opened): Publishable {
+	const { handle, path, size, confirm } = opened;
+	let closing: Promise<void> | undefined;
+	const settled = async () => {
+		const refusal = await confirm();
+		if (refusal) throw new FileRefused(refusal);
+	};
+	return {
+		path,
+		type: typeOf(path),
+		size,
+		async bytes() {
+			const buffer = new Uint8Array(size);
+			let offset = 0;
+			while (offset < size) {
+				const { bytesRead } = await handle.read(buffer, offset, size - offset, offset);
+				if (bytesRead === 0) break;
+				offset += bytesRead;
+			}
+			await settled();
+			return offset === size ? buffer : buffer.slice(0, offset);
+		},
+		stream() {
+			let offset = 0;
+			return new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					try {
+						if (offset < size) {
+							const buffer = new Uint8Array(Math.min(CHUNK, size - offset));
+							const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+							if (bytesRead > 0) {
+								offset += bytesRead;
+								return controller.enqueue(bytesRead === buffer.length ? buffer : buffer.slice(0, bytesRead));
+							}
+						}
+						await settled();
+						controller.close();
+					} catch (error) {
+						controller.error(error);
+					}
+				},
+			});
+		},
+		close() {
+			closing ??= handle.close();
+			return closing;
+		},
+	};
+}
+
+/**
+ * Opens every path of `paths`, relative to `cwd`, through `openInRoots`, as Publishable files in
+ * the same order, or returns the refusal of the first that fails and closes the ones opened
+ * before it. A path given twice is opened twice. The caller closes every file it gets.
+ */
+export async function openPublishable(paths: readonly string[], options: { roots: readonly string[]; cwd: string; home: string }): Promise<Readable> {
+	const files: Publishable[] = [];
+	for (const path of paths) {
+		const opened = await openInRoots(path, options);
+		if (opened.kind === 'refused') {
+			await Promise.allSettled(files.map((file) => file.close()));
+			return opened;
+		}
+		files.push(publishable(opened));
+	}
+	return { kind: 'ok', files };
+}
+
+/** The text of `path` through `openPublishable`, refused with `shape` above `limit` bytes. */
 export async function readTextInRoots(path: string, options: { roots: readonly string[]; cwd: string; home: string; limit: number }): Promise<{ kind: 'ok'; text: string } | FileRefusal> {
-	const opened = await openInRoots(path, options);
-	if (opened.kind === 'refused') return opened;
+	const read = await openPublishable([path], options);
+	if (read.kind === 'refused') return read;
+	const [file] = read.files;
+	if (!file) return refused('shape', `cannot open ${path}`);
 	try {
-		if (opened.size > options.limit) return refused('shape', `${path} has ${opened.size} bytes, more than ${options.limit}`);
-		const text = await opened.handle.readFile('utf8');
-		return (await opened.confirm()) ?? { kind: 'ok', text };
+		if (file.size > options.limit) return refused('shape', `${path} has ${file.size} bytes, more than ${options.limit}`);
+		return { kind: 'ok', text: new TextDecoder().decode(await file.bytes()) };
+	} catch (error) {
+		if (error instanceof FileRefused) return error.refusal;
+		return refused('shape', `cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	} finally {
-		await opened.handle.close();
+		await file.close();
 	}
 }

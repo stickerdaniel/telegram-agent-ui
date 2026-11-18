@@ -73,10 +73,25 @@ export function mediaIssue(media: unknown): string | undefined {
 	return undefined;
 }
 
+/** Why a Markdown tab's map from image destination to media index is refused, or undefined: each index names an image of the view. */
+function mapIssue(map: unknown, media: readonly MediaEntry[]): string | undefined {
+	if (map === undefined) return undefined;
+	if (!isRecord(map)) return 'the media of a Markdown tab map destinations to media indexes';
+	for (const [destination, index] of Object.entries(map)) {
+		if (!isNat(index)) return `the Markdown image ${destination} names no media index`;
+		const entry = media[index];
+		if (!entry) return `the Markdown image ${destination} names media ${index}, and the view has ${media.length}`;
+		if (!entry.type.startsWith('image/')) return `the Markdown image ${destination} names media ${index}, which is ${entry.type}, no image`;
+	}
+	return undefined;
+}
+
 /** Why one tab's content is refused against the view's media, or undefined. */
 function contentIssue(content: unknown, media: readonly MediaEntry[]): string | undefined {
+	if (isRecord(content) && 'markdown' in content && Object.keys(content).every((key) => key === 'markdown' || key === 'media')) {
+		return isString(content.markdown) ? mapIssue(content.media, media) : 'markdown is text';
+	}
 	if (!isRecord(content) || Object.keys(content).length !== 1) return 'a tab content is one of markdown, diff, page and gallery';
-	if ('markdown' in content) return isString(content.markdown) ? undefined : 'markdown is text';
 	if ('diff' in content) return isString(content.diff) ? undefined : 'diff is text';
 	if ('page' in content) {
 		if (!isString(content.page)) return 'page is text';
@@ -96,7 +111,8 @@ function contentIssue(content: unknown, media: readonly MediaEntry[]): string | 
 /**
  * Why `view` is no stored view of format 1 with these media, or undefined: 1 to 8 tabs with
  * labels of 1 to 46 characters, unique in the view, each with one content, no `<script` in a
- * page, gallery items that name a media entry of their type, and at most 2 MiB as JSON.
+ * page, a Markdown media map and gallery items that name media entries of their type, and at
+ * most 2 MiB as JSON.
  */
 export function viewIssue(view: unknown, media: readonly MediaEntry[]): string | undefined {
 	if (!isRecord(view) || !storable(view)) return 'the view is no JSON object';

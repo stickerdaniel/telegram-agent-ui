@@ -4,7 +4,8 @@
 // TAU_RACE_TARGET the file that must not leave. TAU_RACE_MODE picks the schedule:
 // - `retarget`: after the open, the link turns to the safe file; after its resolution, the safe
 //   file turns into a link to the target. The opened file stays the target throughout.
-// - `read`: the link leads to the safe file until the read starts, and to the target after it.
+// - `read`: the link leads to the safe file until the first read on the handle, and to the
+//   target after it.
 import { mock } from 'bun:test';
 import * as fs from 'node:fs/promises';
 
@@ -23,11 +24,16 @@ mock.module('node:fs/promises', () => ({
 			await actual.symlink(safe, path);
 		}
 		if (mode === 'read') {
-			const read = handle.readFile.bind(handle);
+			// The reader takes the content in `read` calls on the handle; the first one swaps the link.
+			const read = handle.read.bind(handle);
+			let swapped = false;
 			Object.assign(handle, {
-				async readFile(...args: Parameters<typeof read>) {
-					await actual.unlink(path);
-					await actual.symlink(target, path);
+				async read(...args: Parameters<typeof read>) {
+					if (!swapped) {
+						swapped = true;
+						await actual.unlink(path);
+						await actual.symlink(target, path);
+					}
 					return read(...args);
 				},
 			});

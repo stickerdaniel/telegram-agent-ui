@@ -2,7 +2,7 @@
 // mode. One test installs the packed tarball into an empty directory and runs it with Node.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -77,8 +77,10 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, TELEGRAM_AGENT_UI_FAKE: join(root, 'fake') };
 	const client = await connect({ command: 'node', args: [bin, 'mcp'], cwd: consumer, env });
 	const { tools } = await client.listTools();
-	expect(tools.map((tool) => tool.name)).toEqual(['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question']);
+	expect(tools.map((tool) => tool.name)).toEqual(['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view']);
 	const ask = tools.find((tool) => tool.name === 'ask_question');
+	// The fake view host ships in the tarball too.
+	expect(tools.find((tool) => tool.name === 'publish_view')?.inputSchema.properties).toHaveProperty('tabs.items.required', ['label', 'file']);
 	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
 
 	const asked = json(await client.callTool({ name: 'ask_question', arguments: { answer: 'choice', options: ['Merge', 'Wait'], body: 'Merge `fix/lock` now?', strict: true } }));
@@ -133,6 +135,35 @@ test.each([
 
 	const bodies = readFileSync(join(root, 'fake', 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line).payload.rich_message?.markdown);
 	expect(bodies).toEqual(['Ship `v2` now?']);
+});
+
+test('publish_view uploads files below the roots to the view host and refuses a path outside them, a .env and a link that leaves them', async () => {
+	const root = temp('tau-mcp-');
+	const project = join(root, 'project');
+	mkdirSync(project);
+	writeFileSync(join(project, 'mock.html'), '<h1>Mock</h1>');
+	writeFileSync(join(project, '.env'), 'TOKEN=ENV_SENTINEL');
+	writeFileSync(join(root, 'outside.md'), 'OUTSIDE_SENTINEL');
+	symlinkSync(join(root, 'outside.md'), join(project, 'notes.md'));
+	const client = await fake(root, project, { roots: [project] });
+	const tool = (await client.listTools()).tools.find((candidate) => candidate.name === 'publish_view');
+	expect(tool?.description).toContain('Cloudflare account');
+	expect(Object.keys(tool?.inputSchema.properties ?? {})).toEqual(['title', 'tabs', 'ttl', 'replace', 'dryRun']);
+
+	const publish = async (file: string) => client.callTool({ name: 'publish_view', arguments: { tabs: [{ label: 'Tab', file }] } });
+	const published = json(await publish(join(project, 'mock.html')));
+	const id = String(published.id);
+	expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+	expect(published.files).toEqual([{ path: join(project, 'mock.html'), bytes: 13 }]);
+	expect(json(await publish(join(root, 'outside.md')))).toMatchObject({ error: 'refused', code: 'outside-roots' });
+	expect(json(await publish(join(project, '.env')))).toMatchObject({ error: 'refused', code: 'secret-file' });
+	expect(json(await publish(join(project, 'notes.md')))).toMatchObject({ error: 'refused', code: 'outside-roots' });
+	// A relative path would resolve against the server's own directory.
+	expect(json(await publish('mock.html'))).toMatchObject({ error: 'usage' });
+
+	const uploads = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8');
+	expect(uploads.trim().split('\n').map((line) => JSON.parse(line).path)).toEqual([`/api/view/${id}`]);
+	expect(uploads).not.toContain('SENTINEL');
 });
 
 test('a warning reaches the agent as a second text block, and an unknown argument is a usage failure', async () => {

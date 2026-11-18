@@ -47,7 +47,8 @@ async function openShell(path: string, hidden = (key: string, read: number) => k
 		v: 1,
 		title: 'Release 0.1',
 		tabs: [
-			{ label: 'Notes', content: { markdown: '# Notes\n\n<script>alert(1)</script>\n\n![shot](media:0)' } },
+			// The image's destination in a table cell carries an escaped pipe; the code example names the same file.
+			{ label: 'Notes', content: { markdown: '# Notes\n\n<script>alert(1)</script>\n\n| Image |\n| --- |\n| ![shot](a\\|b.png) |\n\n`![example](a|b.png)`', media: { 'a|b.png': 0 } } },
 			{ label: 'Mock', content: { page: '<h1>Mock</h1><img src="media:0">' } },
 		],
 	};
@@ -117,7 +118,9 @@ test('the served shell draws a page in a frame with an empty sandbox behind the 
 	const notes = await until(() => shell.document.querySelector('.markdown'));
 	expect(notes.textContent).toContain('<script>alert(1)</script>');
 	expect(notes.querySelector('script')).toBeNull();
-	expect(notes.querySelector('img')?.getAttribute('src')).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
+	expect(notes.querySelector('td img')?.getAttribute('src')).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
+	expect(notes.querySelectorAll('img')).toHaveLength(1);
+	expect(notes.querySelector('p > code')?.textContent).toBe('![example](a|b.png)');
 });
 
 test("a page's image whose load misses the object after the probe found it gets the placeholder image from the host", async () => {

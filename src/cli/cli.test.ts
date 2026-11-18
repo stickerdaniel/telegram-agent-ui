@@ -371,6 +371,46 @@ test('a link retargeted between the checks of a body file, or during its read, r
 	expect(at.server.received).toEqual([]);
 });
 
+test('view put --replace keeps the id and warns for each tab label of the earlier view that is missing', async () => {
+	const at = await machine();
+	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.root, 'fake') };
+	for (const name of ['a.html', 'b.html', 'c.html']) file(at, name, `<h1>${name}</h1>`);
+	const first = await run(at, ['view', 'put', '--tab', 'A: Compact', 'a.html', '--tab', 'B: Wide', 'b.html'], { env });
+	const id = String(first.out.id);
+	expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+	expect(first).toMatchObject({ code: 0, out: { files: [{ bytes: 15 }, { bytes: 15 }] } });
+	const replaced = await run(at, ['view', 'put', '--replace', id, '--tab', 'A: Compact', 'a.html', '--tab', 'C: Split', 'c.html'], { env });
+	expect(replaced).toMatchObject({ code: 0, out: { id } });
+	expect(replaced.err).toContain(`warning missing-tab: the view ${id} had the tab "B: Wide"`);
+	expect(replaced.err).not.toContain('"A: Compact"');
+	// The same labels replace without a warning.
+	expect((await run(at, ['view', 'put', '--replace', id, '--tab', 'A: Compact', 'a.html', '--tab', 'C: Split', 'c.html'], { env })).err).not.toContain('warning');
+	expect(await run(at, ['view', 'put', '--tab', 'A'], { env })).toMatchObject({ code: EXIT.usage, out: { error: 'usage', message: expect.stringContaining('--tab needs <label> <file>') } });
+});
+
+test('an identical ask with its ref returns the stored question after its view lost the tab labels, and a changed body still conflicts', async () => {
+	const at = await machine();
+	const fake = join(at.root, 'fake');
+	const env = { TELEGRAM_AGENT_UI_FAKE: fake };
+	const id = 'RetryViewAAAAAAAAAAAAA';
+	for (const name of ['a.html', 'b.html']) file(at, name, `<h1>${name}</h1>`);
+	const put = (...labels: string[]) => run(at, ['view', 'put', '--replace', id, ...labels.flatMap((label, index) => ['--tab', label, ['a.html', 'b.html'][index] ?? ''])], { env });
+	const ask = (body: string) => run(at, ['ask', '--ref', 'retry', '--view', id, '-o', 'A', '-o', 'B', '--strict', '-'], { env, stdin: body });
+	const sends = () => readFileSync(join(fake, 'calls.jsonl'), 'utf8').split('\n').filter((line) => line.includes('"sendRichMessage"')).length;
+	expect((await put('A', 'B')).code).toBe(0);
+	expect(await ask('Which one should stay?')).toMatchObject({ code: 0, out: { ref: 'retry', status: 'pending' } });
+	const stored = parseQuestion(await fileStore(join(fake, 'store')).get('q:retry'));
+	expect(stored?.spec.answer).toMatchObject({ options: [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }] });
+	// The view now holds other labels, and then is gone, so a read of its tabs finds none.
+	expect((await put('C', 'D')).code).toBe(0);
+	expect(await ask('Which one should stay?')).toMatchObject({ code: 0, out: { ref: 'retry', status: 'pending' } });
+	expect((await run(at, ['view', 'delete', id], { env })).code).toBe(0);
+	expect(await ask('Which one should stay?')).toMatchObject({ code: 0, out: { ref: 'retry', status: 'pending' } });
+	expect(sends()).toBe(1);
+	expect(await ask('Which one should stay now?')).toMatchObject({ code: EXIT.refused, out: { code: 'ref-conflict' } });
+	expect(sends()).toBe(1);
+});
+
 test('a message command that passes its deadline keeps the message, and a restart delivers it', async () => {
 	const at = await machine();
 	const env = { TAU_TEST_COMMAND_DEADLINE: '1000' };

@@ -1,18 +1,21 @@
 // The command table of section 5. Each entry has a name, a description, its input schema, the
 // MCP tool that serves it, and a handler over `createChat`. The CLI parser reads the schema
 // to parse arguments, and a handler gets its input typed after `inputIssue` checked it.
+import { isAbsolute, resolve } from 'node:path';
 import { deliveryKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
 import { choice, message, text, yesNo } from '../core/builders.ts';
-import { isRecord } from '../core/check.ts';
+import { isRecord, isString } from '../core/check.ts';
 import { isSent } from '../core/guards.ts';
 import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
-import { REF } from '../core/shape.ts';
-import type { Outcome, Question, Warning } from '../core/types.ts';
+import { REF, VIEW_ID } from '../core/shape.ts';
+import type { Outcome, Question, ViewClient, Warning } from '../core/types.ts';
 import { listen } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
-import { apiUrlOf } from './config.ts';
+import { VIEW_TTL } from '../view/client.ts';
+import { prepareView } from '../view/prepare.ts';
+import { apiUrlOf, KEY_NAMES } from './config.ts';
 import { viewDeploy } from './deploy.ts';
 import { init } from './init.ts';
 import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
@@ -53,7 +56,20 @@ function command<const Ps extends readonly Param[]>(spec: { name: string; descri
 }
 
 const BODY = { name: 'body', type: 'string', required: true, description: 'The message in Markdown.', cli: { positional: true, file: true } } as const;
-const VIEW = { name: 'view', type: 'string', description: 'The id of a published view: the message gets a button that opens it.' } as const;
+const VIEW = {
+	name: 'view',
+	type: 'string',
+	description: 'The id that view put printed: the message gets a button that opens the view. An option whose label equals a tab label opens that tab once it is picked.',
+} as const;
+const TABS = {
+	name: 'tabs',
+	type: 'json',
+	many: true,
+	required: true,
+	description: 'The tabs in order, 1 to 8, each { label, file }: a label of 1 to 46 characters, and a .md, .diff, .patch or .html file below the roots, as an absolute path for an MCP client.',
+	schema: { type: 'object', properties: { label: { type: 'string' }, file: { type: 'string' } }, required: ['label', 'file'], additionalProperties: false },
+	cli: { flag: 'tab', pair: ['label', 'file'] },
+} as const;
 const STRICT = { name: 'strict', type: 'boolean', description: 'Turns every warning into a refusal before anything is sent.' } as const;
 const DRY_RUN = { name: 'dryRun', type: 'boolean', description: 'Prints what would be sent and the roots files would come from, and sends nothing.' } as const;
 
@@ -62,12 +78,31 @@ const report = (context: Context, warnings: Warning[]) => {
 	for (const warning of warnings) context.log(`warning ${warning.code}: ${warning.message}`);
 };
 
-/** Refuses `--view` without a deployed view host, which only `view deploy` records. */
+/** The client of the view host, or a thrown `no-view-host`: `view deploy` records the origin and writes the upload key. */
+function viewsOf(session: Session): ViewClient {
+	if (session.views) return session.views;
+	if (session.config.views.origin === undefined) throw new Failed({ error: 'no-view-host', message: 'no view host is deployed: a message cannot open a view yet. A person runs telegram-agent-ui view deploy' });
+	throw new Failed({ error: 'no-view-host', message: `the upload key ${KEY_NAMES.upload} of the view host is missing: a person runs telegram-agent-ui view deploy` });
+}
+
+/** Refuses `--view` without a deployed view host. */
 function viewHost(session: Session, view: string | undefined): { view?: string } {
 	if (view === undefined) return {};
-	if (session.config.views.origin === undefined) throw new Failed({ error: 'no-view-host', message: 'no view host is deployed: a message cannot open a view yet' });
+	viewsOf(session);
 	return { view };
 }
+
+/** The tab labels of a view, or none when the host has no such view or gives no answer. */
+async function tabsOf(views: ViewClient, view: string): Promise<string[]> {
+	const found = await views.has(view).catch(() => undefined);
+	return found?.kind === 'present' ? found.tabs : [];
+}
+
+/** The labels of a stored question's options that `ask` bound to the tab of the same label. */
+const boundTabs = (question: Question): string[] => (question.spec.answer.type === 'choice' ? question.spec.answer.options.flatMap((option) => (option.tab === option.label ? [option.label] : [])) : []);
+
+/** A tab of `view put`: the label and the file as the input names them. */
+const isTab = (value: unknown): value is { label: string; file: string } => isRecord(value) && Object.keys(value).length === 2 && isString(value.label) && isString(value.file);
 
 /** What a dry run prints: the calls it would make, the roots files would come from and the files it would upload. */
 const dry = (outcome: Extract<Outcome, { kind: 'dry' }>, session: Session) => ({ dryRun: true, steps: outcome.steps, warnings: outcome.warnings, roots: session.roots, files: [] });
@@ -202,6 +237,15 @@ const ask = command({
 		const session = await openSession(context);
 		const body = { markdown: input.body };
 		const extras = { ...viewHost(session, input.view), ...(input.once ? { once: true } : {}) };
+		// An option named like a tab of the view opens that tab once picked. A held ref keeps the tabs
+		// its first ask bound, so an identical retry equals the stored spec whatever the view holds
+		// now. Only a new question reads the view's tabs; a dry run makes no request, so it reads none.
+		const held = input.ref !== undefined ? await session.chat.get(input.ref) : undefined;
+		const tabs = held
+			? boundTabs(held)
+			: kind === 'choice' && input.view !== undefined && !input.dryRun
+				? await tabsOf(viewsOf(session), input.view)
+				: [];
 		const spec =
 			kind === 'yesNo'
 				? yesNo(body, { ...extras, labels: mergeLabels(session.config.labels) })
@@ -209,7 +253,7 @@ const ask = command({
 					? text(body, extras)
 					: choice(
 							body,
-							(input.options ?? []).map((label) => ({ label })),
+							(input.options ?? []).map((label) => ({ label, ...(tabs.includes(label) ? { tab: label } : {}) })),
 							extras,
 						);
 		const outcome = await session.chat.send(spec, {
@@ -288,6 +332,69 @@ const listenCommand = command({
 	},
 });
 
+/** Warns for each tab label of the earlier view `id` that `labels` lacks: a sent button that names it opens the first tab. */
+async function warnReplaced(views: ViewClient, id: string, labels: readonly string[], context: Context): Promise<void> {
+	const earlier = await views.has(id).catch(() => undefined);
+	if (!earlier) return context.log(`warning replace: the view host gave no answer about the view ${id}, so its tab labels went unchecked`);
+	if (earlier.kind === 'missing') return context.log(`warning replace: no view ${id} is on the view host, so this one is new`);
+	if (earlier.kind === 'refused') return context.log(`warning replace: the view host refused to read the view ${id}: ${earlier.reason}`);
+	for (const label of earlier.tabs.filter((tab) => !labels.includes(tab))) {
+		context.log(`warning missing-tab: the view ${id} had the tab "${label}", and this one has none of that label: a button that names it opens the first tab`);
+	}
+}
+
+const viewPut = command({
+	name: 'view put',
+	description:
+		'Publishes a view: uploads each file below the roots as a tab, with the local images it names, to the view host in your Cloudflare account. Prints its id, its url, its files and its expiry. send and ask open it with --view <id>.',
+	tool: 'publish_view',
+	params: [
+		{ name: 'title', type: 'string', description: 'The title above the tabs.', cli: { label: 'text' } },
+		TABS,
+		{ name: 'ttl', type: 'integer', description: 'The days the view lives: 7 by default, at most 365.', cli: { label: 'days' } },
+		{ name: 'replace', type: 'string', description: 'The id of a view to replace. It keeps its id, so a button sent before opens the new view.', cli: { label: 'id' } },
+		DRY_RUN,
+	],
+	async run(input, context) {
+		if (!input.tabs.every(isTab)) return failed({ error: 'usage', message: 'each tab is { label, file }' });
+		const files: { label: string; file: string }[] = [];
+		for (const tab of input.tabs.filter(isTab)) {
+			if (!isAbsolute(tab.file) && context.cwd === undefined) return failed({ error: 'usage', message: `the file of tab "${tab.label}" needs an absolute path` });
+			files.push({ label: tab.label, file: resolve(context.cwd ?? '/', tab.file) });
+		}
+		if (input.ttl !== undefined && (input.ttl < 1 || input.ttl > VIEW_TTL.most)) return failed({ error: 'usage', message: `--ttl takes 1 to ${VIEW_TTL.most} days` });
+		if (input.replace !== undefined && !VIEW_ID.test(input.replace)) return failed({ error: 'usage', message: `the view id "${input.replace}" is not 22 base64url characters` });
+		const session = await openSession(context);
+		// A dry run makes no request and needs no view host.
+		const views = input.dryRun ? undefined : viewsOf(session);
+		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: files.map(({ label, file }) => ({ label, content: { file } })) }, { roots: session.roots });
+		if (ready.kind === 'refused') return failed({ error: 'refused', code: ready.code, message: ready.reason });
+		report(context, ready.warnings);
+		const labels = files.map((tab) => tab.label);
+		if (!views) return done({ dryRun: true, roots: session.roots, tabs: labels, files: ready.files, media: ready.prepared.media.length, warnings: ready.warnings });
+		if (input.replace !== undefined) await warnReplaced(views, input.replace, labels, context);
+		const put = await views.put(ready.prepared, { ...(input.replace !== undefined ? { id: input.replace } : {}), ...(input.ttl !== undefined ? { ttlDays: input.ttl } : {}) });
+		if (put.kind === 'ok') return done({ id: put.id, url: put.url, expiresAt: put.expiresAt, files: ready.files });
+		if (put.kind === 'uncertain') return failed({ error: 'uncertain', message: `${put.reason}. The view may be stored: run view put --replace ${put.id} with the same tabs`, id: put.id });
+		if (put.status === 409) return failed({ error: 'no-view-host', message: `${put.reason}. The view host is of another release: a person runs telegram-agent-ui view deploy` });
+		return failed({ error: 'refused', code: 'view-host', message: put.reason });
+	},
+});
+
+const viewDelete = command({
+	name: 'view delete',
+	description: 'Deletes a view and its media from the view host. A button that opens it shows that the view is gone.',
+	params: [{ name: 'id', type: 'string', required: true, description: 'The id that view put printed.', cli: { positional: true } }],
+	async run(input, context) {
+		if (!VIEW_ID.test(input.id)) return failed({ error: 'usage', message: `the view id "${input.id}" is not 22 base64url characters` });
+		const session = await openSession(context);
+		const deleted = await viewsOf(session).delete(input.id);
+		if (deleted.kind === 'ok') return done({ id: input.id, deleted: true });
+		if (deleted.kind === 'missing') return failed({ error: 'refused', code: 'unknown-view', message: `no view ${input.id} is on the view host` });
+		return failed({ error: 'refused', code: 'view-host', message: deleted.reason });
+	},
+});
+
 const viewDeployCommand = command({
 	name: 'view deploy',
 	description: 'Deploys the view host to your Cloudflare account with your wrangler login, and stores its origin in the config.',
@@ -317,6 +424,8 @@ export const commands: readonly Command[] = [
 	ask,
 	wait,
 	close,
+	viewPut,
+	viewDelete,
 	viewDeployCommand,
 	listenCommand,
 	mcpInitCommand,

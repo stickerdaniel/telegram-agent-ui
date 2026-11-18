@@ -63,6 +63,7 @@ async function main(args: string[]): Promise<Result> {
 	const context: Context = {
 		env,
 		roots: [cwd],
+		cwd,
 		log: (line) => void process.stderr.write(`${line}\n`),
 		signal: controller.signal,
 		readLine,

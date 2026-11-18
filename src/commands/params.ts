@@ -12,6 +12,8 @@ export type Param = {
 	readonly required?: boolean;
 	/** A list: the CLI flag may repeat. */
 	readonly many?: boolean;
+	/** The JSON Schema an MCP tool shows for one value, in place of the one `type` gives. The command still checks the value. */
+	readonly schema?: Readonly<Record<string, unknown>>;
 	readonly cli?: {
 		/** The parameter exists on the CLI alone, such as `--json`: an MCP tool leaves it out. */
 		readonly only?: boolean;
@@ -27,6 +29,8 @@ export type Param = {
 		readonly switches?: Readonly<Record<string, string>>;
 		/** The value's name in the usage line. */
 		readonly label?: string;
+		/** The flag takes one argument per name, and the value is an object of them: `--tab <label> <file>` gives `{ label, file }`. */
+		readonly pair?: readonly [string, string];
 	};
 };
 
@@ -92,7 +96,7 @@ export function usage(name: string, params: readonly Param[]): string {
 		if (cli.positional) return param.required ? `<${label}>` : `[<${label}>]`;
 		if (cli.switches) return `[${Object.keys(cli.switches).map((flag) => `--${flag}`).join(' | ')}]`;
 		const flag = cli.short ? `-${cli.short}` : `--${cli.flag ?? kebab(param.name)}`;
-		const spelled = param.type === 'boolean' ? flag : `${flag} <${label}>`;
+		const spelled = param.type === 'boolean' ? flag : cli.pair ? `${flag} ${cli.pair.map((name) => `<${name}>`).join(' ')}` : `${flag} <${label}>`;
 		const shown = param.required ? spelled : `[${spelled}]`;
 		return param.many ? `${shown}...` : shown;
 	});

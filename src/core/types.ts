@@ -94,10 +94,15 @@ export type Call = { method: string; payload: Record<string, unknown>; files?: {
 export type Step = { call: Call; role: 'body' | 'files' };
 
 /**
- * A finding about a spec that refuses nothing without `strict`. The first three are computed
- * by `render`. `unconfirmed-message` and `not-shown` report a stored state after the fact.
+ * A finding that refuses nothing without `strict`. The first three are computed by `render`.
+ * `unconfirmed-message` and `not-shown` report a stored state after the fact. `event-handler`,
+ * `link` and `remote-image` come from `prepareView`: a page runs no handler and follows no link,
+ * and no view loads an image of another host.
  */
-export type Warning = { code: 'no-question-mark' | 'table-candidate' | 'answer-hint' | 'unconfirmed-message' | 'not-shown'; message: string };
+export type Warning = {
+	code: 'no-question-mark' | 'table-candidate' | 'answer-hint' | 'unconfirmed-message' | 'not-shown' | 'event-handler' | 'link' | 'remote-image';
+	message: string;
+};
 
 /**
  * What `createChat` returns for `send`, `edit` and `close`. `refused` means that no message was
@@ -121,17 +126,25 @@ export type Publishable = { path: string; type: string; size: number; stream(): 
 /** What a file reader returns for a list of paths: every file opened, or the refusal of the first that failed. */
 export type Readable = { kind: 'ok'; files: Publishable[] } | { kind: 'refused'; code: 'outside-roots' | 'secret-file' | 'publish-root' | 'shape'; reason: string };
 
-/** A view as the host stores it: 1 to 8 tabs, media referenced by index. */
+/**
+ * A view as the host stores it: 1 to 8 tabs, media referenced by index. A Markdown tab keeps its
+ * source unchanged: `media` maps each local image destination, as the shell's parser reads it,
+ * to its media index. A page names its media as `media:<index>` in its text.
+ */
 export type StoredView = { v: 1; title?: string; tabs: { label: string; content: StoredContent }[] };
-export type StoredContent = { markdown: string } | { diff: string } | { page: string } | { gallery: { media: number; type: string; caption?: string }[] };
+export type StoredContent = { markdown: string; media?: Record<string, number> } | { diff: string } | { page: string } | { gallery: { media: number; type: string; caption?: string }[] };
 /** A view ready to publish: the stored view and its media bytes, in index order. */
 export type PreparedView = { view: StoredView; media: { type: string; bytes: Uint8Array }[] };
-/** A view host's answer that refuses a request, such as a wrong upload key or a limit. */
-export type HostRefusal = { kind: 'refused'; reason: string };
+/**
+ * A view host's answer that refuses a request, such as a wrong upload key or a limit. `status`
+ * is the HTTP status of that answer: 409 names a view format the host does not accept.
+ */
+export type HostRefusal = { kind: 'refused'; reason: string; status?: number };
 
 /**
- * The client of a view host. `createChat` uses `context` alone: it stores a question's body under
- * the pair of view id and ref, so the view shows the question it was opened from.
+ * The client of a view host. `createChat` uses `context` and `has`: it stores a question's body
+ * under the pair of view id and ref, so the view shows the question it was opened from, and it
+ * reads the view's tab labels before it sends options that name a tab.
  */
 export type ViewClient = {
 	put(prepared: PreparedView, options?: { id?: string; ttlDays?: number }): Promise<{ kind: 'ok'; id: string; url: string; expiresAt: number } | HostRefusal | { kind: 'uncertain'; id: string; reason: string }>;

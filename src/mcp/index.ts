@@ -6,8 +6,9 @@
 // second text block.
 //
 // Files come from the roots the client reports plus `publishRoots`. A body file is an absolute
-// path below them, given in place of the body as `bodyFile`. A client that reports no roots
-// adds none, so with an empty `publishRoots` every path is refused.
+// path below them, given in place of the body as `bodyFile`, and so is every file of
+// `publish_view`: the context names no working directory, so a relative path is a usage error.
+// A client that reports no roots adds none, so with an empty `publishRoots` every path is refused.
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +43,7 @@ const fileKey = (param: Param) => `${param.name}File`;
 /** The JSON Schema of one parameter. */
 function paramSchema(param: Param): Record<string, unknown> {
 	const { type } = param;
-	const one = typeof type !== 'string' ? { type: 'string', enum: [...type] } : type === 'json' ? {} : { type };
+	const one = param.schema ? { ...param.schema } : typeof type !== 'string' ? { type: 'string', enum: [...type] } : type === 'json' ? {} : { type };
 	return { ...(param.many ? { type: 'array', items: one } : one), description: param.description };
 }
 

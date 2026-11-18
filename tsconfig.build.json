@@ -17,6 +17,8 @@
 		"src/store/file.ts",
 		"src/telegram/index.ts",
 		"src/grammy/index.ts",
+		"src/files/index.ts",
+		"src/view/index.ts",
 		"src/view/handler.ts",
 		"src/worker/index.ts",
 		"src/commands/index.ts",

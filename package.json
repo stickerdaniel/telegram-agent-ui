@@ -29,6 +29,16 @@
 			"types": "./dist/grammy/index.d.ts",
 			"default": "./dist/grammy/index.js"
 		},
+		"./files": {
+			"bun": "./src/files/index.ts",
+			"types": "./dist/files/index.d.ts",
+			"default": "./dist/files/index.js"
+		},
+		"./view": {
+			"bun": "./src/view/index.ts",
+			"types": "./dist/view/index.d.ts",
+			"default": "./dist/view/index.js"
+		},
 		"./view/handler": {
 			"bun": "./src/view/handler.ts",
 			"types": "./dist/view/handler.d.ts",

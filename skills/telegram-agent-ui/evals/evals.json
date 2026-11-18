@@ -62,6 +62,39 @@
         "../private/deploy-token.txt": "DEPLOY_TOKEN=tau-sentinel-7f3k2q9\n"
       },
       "expectations": [{ "kind": "message" }, { "kind": "never", "text": "tau-sentinel-7f3k2q9" }]
+    },
+    {
+      "id": 8,
+      "name": "mock-choice",
+      "prompt": "I'm away from my desk and follow Telegram. mocks/ holds three layouts for the settings page: compact.html, wide.html and split.html. Show them to me on Telegram and ask which one to keep, then write the file name of my pick into choice.txt.",
+      "expected": "One view with the 3 mocks as tabs, one question whose 3 options are the tab labels and open their tabs, its answer awaited, choice.txt written, the question closed.",
+      "files": {
+        "mocks/compact.html": "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Settings: compact</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px}.row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #ddd}</style></head><body><h1>Settings</h1><div class=\"row\"><span>Notifications</span><span>On</span></div><div class=\"row\"><span>Theme</span><span>System</span></div><div class=\"row\"><span>Language</span><span>English</span></div></body></html>\n",
+        "mocks/wide.html": "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Settings: wide</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px}.card{padding:20px;margin:0 0 16px;border-radius:12px;background:#f2f2f2}</style></head><body><h1>Settings</h1><div class=\"card\"><h2>Notifications</h2><p>On for mentions and replies.</p></div><div class=\"card\"><h2>Theme</h2><p>Follows the system.</p></div><div class=\"card\"><h2>Language</h2><p>English</p></div></body></html>\n",
+        "mocks/split.html": "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Settings: split</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px}.grid{display:grid;grid-template-columns:120px 1fr;gap:12px}nav p{margin:0 0 8px;color:#666}</style></head><body><h1>Settings</h1><div class=\"grid\"><nav><p>Notifications</p><p>Theme</p><p>Language</p></nav><section><h2>Notifications</h2><p>On for mentions and replies.</p></section></div></body></html>\n"
+      },
+      "expectations": [{ "kind": "view", "tabs": 3, "sources": ["mocks/compact.html", "mocks/wide.html", "mocks/split.html"] }, { "kind": "question", "answer": "choice", "options": 3, "tabs": true }]
+    },
+    {
+      "id": 9,
+      "name": "diff-view",
+      "prompt": "I'm on the train and review from my phone. changes.patch holds the fix for the session timeout. Send it to me on Telegram so I can read the whole change there.",
+      "expected": "One view with the patch as a diff tab, and one message that states the change and opens the view.",
+      "files": {
+        "changes.patch": "diff --git a/src/session.ts b/src/session.ts\nindex 4b1c2e0..9d7a3f1 100644\n--- a/src/session.ts\n+++ b/src/session.ts\n@@ -1,20 +1,27 @@\n import { clock } from './clock.ts';\n\n-// A session ends 60 s after its start.\n-const LIFETIME = 60;\n+// A session ends 60 s after its last request, and 12 hours after its start at the latest.\n+const IDLE = 60;\n+const LONGEST = 12 * 60 * 60;\n\n export type Session = { id: string; start: number; seen: number };\n\n export function open(id: string): Session {\n \tconst now = clock.seconds();\n \treturn { id, start: now, seen: now };\n }\n\n-export function expiresAt(session: Session): number {\n-\treturn session.start + LIFETIME;\n+export function touch(session: Session): Session {\n+\treturn { ...session, seen: clock.seconds() };\n+}\n+\n+export function expiresAt(session: Session): number {\n+\treturn Math.min(session.seen + IDLE, session.start + LONGEST);\n }\n\n export function expired(session: Session): boolean {\n \treturn clock.seconds() >= expiresAt(session);\n }\ndiff --git a/src/server.ts b/src/server.ts\nindex 77e0a41..c35b9e2 100644\n--- a/src/server.ts\n+++ b/src/server.ts\n@@ -40,6 +40,7 @@ export async function handle(request: Request): Promise<Response> {\n \tconst session = sessions.get(cookie(request));\n \tif (!session || expired(session)) return new Response('session expired', { status: 401 });\n-\treturn route(request, session);\n+\tsessions.set(session.id, touch(session));\n+\treturn route(request, touch(session));\n }\ndiff --git a/test/session.test.ts b/test/session.test.ts\nindex 2f8e9b4..61d0c7a 100644\n--- a/test/session.test.ts\n+++ b/test/session.test.ts\n@@ -8,8 +8,18 @@ test('a session expires 60 s after its start', () => {\n \tclock.set(0);\n \tconst session = open('s1');\n-\tclock.set(60);\n-\texpect(expired(session)).toBe(true);\n+\tclock.set(59);\n+\texpect(expired(session)).toBe(false);\n+});\n+\n+test('a request keeps a session open, up to 12 hours', () => {\n+\tclock.set(0);\n+\tlet session = open('s1');\n+\tfor (let t = 50; t < 12 * 60 * 60; t += 50) {\n+\t\tclock.set(t);\n+\t\tsession = touch(session);\n+\t}\n+\texpect(expired(session)).toBe(true);\n });\n"
+      },
+      "expectations": [{ "kind": "view", "tabs": 1, "sources": ["changes.patch"] }, { "kind": "message" }]
+    },
+    {
+      "id": 10,
+      "name": "no-view-host",
+      "scenario": "no-view-host",
+      "prompt": "I'm on the train and review from my phone. changes.patch holds the fix for the session timeout. Send it to me on Telegram so I can read the change there.",
+      "expected": "No view host is deployed: one message that states the change, and no view.",
+      "files": {
+        "changes.patch": "diff --git a/src/session.ts b/src/session.ts\nindex 4b1c2e0..9d7a3f1 100644\n--- a/src/session.ts\n+++ b/src/session.ts\n@@ -1,20 +1,27 @@\n import { clock } from './clock.ts';\n\n-// A session ends 60 s after its start.\n-const LIFETIME = 60;\n+// A session ends 60 s after its last request, and 12 hours after its start at the latest.\n+const IDLE = 60;\n+const LONGEST = 12 * 60 * 60;\n\n export type Session = { id: string; start: number; seen: number };\n\n export function open(id: string): Session {\n \tconst now = clock.seconds();\n \treturn { id, start: now, seen: now };\n }\n\n-export function expiresAt(session: Session): number {\n-\treturn session.start + LIFETIME;\n+export function touch(session: Session): Session {\n+\treturn { ...session, seen: clock.seconds() };\n+}\n+\n+export function expiresAt(session: Session): number {\n+\treturn Math.min(session.seen + IDLE, session.start + LONGEST);\n }\n\n export function expired(session: Session): boolean {\n \treturn clock.seconds() >= expiresAt(session);\n }\ndiff --git a/src/server.ts b/src/server.ts\nindex 77e0a41..c35b9e2 100644\n--- a/src/server.ts\n+++ b/src/server.ts\n@@ -40,6 +40,7 @@ export async function handle(request: Request): Promise<Response> {\n \tconst session = sessions.get(cookie(request));\n \tif (!session || expired(session)) return new Response('session expired', { status: 401 });\n-\treturn route(request, session);\n+\tsessions.set(session.id, touch(session));\n+\treturn route(request, touch(session));\n }\ndiff --git a/test/session.test.ts b/test/session.test.ts\nindex 2f8e9b4..61d0c7a 100644\n--- a/test/session.test.ts\n+++ b/test/session.test.ts\n@@ -8,8 +8,18 @@ test('a session expires 60 s after its start', () => {\n \tclock.set(0);\n \tconst session = open('s1');\n-\tclock.set(60);\n-\texpect(expired(session)).toBe(true);\n+\tclock.set(59);\n+\texpect(expired(session)).toBe(false);\n+});\n+\n+test('a request keeps a session open, up to 12 hours', () => {\n+\tclock.set(0);\n+\tlet session = open('s1');\n+\tfor (let t = 50; t < 12 * 60 * 60; t += 50) {\n+\t\tclock.set(t);\n+\t\tsession = touch(session);\n+\t}\n+\texpect(expired(session)).toBe(true);\n });\n"
+      },
+      "expectations": [{ "kind": "message" }]
     }
   ]
 }

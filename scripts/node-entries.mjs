@@ -1,8 +1,8 @@
-// Imports the 10 package entries by name with plain Node, as a Node 20 consumer would, runs one
+// Imports the 12 package entries by name with plain Node, as a Node 20 consumer would, runs one
 // small call through each, and runs the bin. Run after the build: `bun run test:node`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,6 +17,8 @@ const { fetchCall, listen } = await import('telegram-agent-ui/telegram');
 const { grammyCall, grammyHandler } = await import('telegram-agent-ui/grammy');
 const { commands, EXIT } = await import('telegram-agent-ui/commands');
 const { createViewHandler, verifyLaunchData } = await import('telegram-agent-ui/view/handler');
+const { readPublishable } = await import('telegram-agent-ui/files');
+const { prepareView, viewClient } = await import('telegram-agent-ui/view');
 const { default: worker } = await import('telegram-agent-ui/worker');
 const mcp = await import('telegram-agent-ui/mcp');
 const { Client, InMemoryTransport } = await import('@modelcontextprotocol/client');
@@ -108,6 +110,37 @@ const opened = await viewHost(new Request(`https://views.example.com/api/view?v=
 assert.deepEqual((await opened.json()).view, published.view);
 assert.match((await viewHost(new Request('https://views.example.com/'))).headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/]{43}=' https:\/\/telegram\.org/);
 
+// ./files: a file below the roots opens once and streams from its handle; one outside is refused.
+const project = join(realpathSync(root), 'project');
+mkdirSync(join(project, 'shots'), { recursive: true });
+writeFileSync(join(project, 'notes.md'), '# Notes\n\n![shot](shots/a.png)');
+writeFileSync(join(project, 'shots', 'a.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]));
+const read = await readPublishable([join(project, 'notes.md')], { roots: [project] });
+assert.equal(read.kind, 'ok');
+assert.equal(await new Response(read.files[0].stream()).text(), '# Notes\n\n![shot](shots/a.png)');
+await read.files[0].close();
+assert.equal((await readPublishable(['/etc/hosts'], { roots: [project] })).code, 'outside-roots');
+
+// ./view: a prepared view with its image goes up to the handler of ./view/handler over node:http,
+// and a question's body comes back as its context.
+const ready = await prepareView({ tabs: [{ label: 'Notes', content: { file: join(project, 'notes.md') } }] }, { roots: [project] });
+assert.equal(ready.kind, 'ok');
+assert.deepEqual(ready.prepared.view.tabs[0].content, { markdown: '# Notes\n\n![shot](shots/a.png)', media: { 'shots/a.png': 0 } });
+const hostServer = createServer(async (request, response) => {
+	const body = ['GET', 'HEAD'].includes(request.method) ? undefined : Readable.toWeb(request);
+	const answer = await viewHost(new Request(`https://views.example.com${request.url}`, { method: request.method, headers: request.headers, ...(body ? { body, duplex: 'half' } : {}) }));
+	response.writeHead(answer.status, Object.fromEntries(answer.headers)).end(Buffer.from(await answer.arrayBuffer()));
+});
+await new Promise((resolve) => hostServer.listen(0, '127.0.0.1', resolve));
+const views = viewClient({ origin: `http://127.0.0.1:${hostServer.address().port}`, uploadKey: 'upload-key-0123456789' });
+const put = await views.put(ready.prepared);
+assert.equal(put.kind, 'ok');
+assert.deepEqual(await views.has(put.id), { kind: 'present', tabs: ['Notes'] });
+assert.deepEqual(await views.context(put.id, 'node4', { markdown: 'Ship it?' }), { kind: 'ok' });
+const shown = await viewHost(new Request(`https://views.example.com/api/view?v=${put.id}&q=node4`, { headers: { Authorization: `tma ${initData}` } }));
+assert.deepEqual((await shown.json()).context, { markdown: 'Ship it?' });
+hostServer.close();
+
 // ./worker: the Cloudflare entry answers from its variables, on a KV binding of its own.
 const kv = { getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {} };
 const version = await worker.fetch(new Request('https://views.example.com/api/version'), { VIEWS: kv, BOT_ID: '222', ALLOWED_USERS: '[111]', UPLOAD_KEY: 'upload-key-0123456789', MEDIA_KEY: 'media-key-0123456789' });
@@ -116,7 +149,7 @@ assert.deepEqual((await version.json()).formats, [1]);
 // ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view deploy', 'listen', 'mcp init'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');
@@ -153,7 +186,7 @@ const memory = new Client({ name: 'node', version: '1.0.0' });
 await memory.connect(clientSide);
 assert.deepEqual(
 	(await memory.listTools()).tools.map((tool) => tool.name),
-	['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question'],
+	['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view'],
 );
 await memory.close();
 const stdio = new Client({ name: 'node', version: '1.0.0' });
@@ -165,4 +198,4 @@ assert.equal(waited.structuredContent.status, 'answered');
 await stdio.close();
 rmSync(root, { recursive: true, force: true });
 
-console.log(`node ${process.version}: 10 entries import and run, and so do the bin, its supervisor and its MCP server`);
+console.log(`node ${process.version}: 12 entries import and run, and so do the bin, its supervisor and its MCP server`);
