@@ -6,8 +6,9 @@
 // second text block.
 //
 // Files come from the roots the client reports plus `publishRoots`. A body file is an absolute
-// path below them, given in place of the body as `bodyFile`, and so is every file of
-// `publish_view`: the context names no working directory, so a relative path is a usage error.
+// path below them, given in place of the body as `bodyFile`, and so is every attachment in
+// `files` of `send_message` and `ask_question` and every file of `publish_view`: the context
+// names no working directory, so a relative path is a usage error.
 // A client that reports no roots adds none, so with an empty `publishRoots` every path is refused.
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';

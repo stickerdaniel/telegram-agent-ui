@@ -1,7 +1,8 @@
 // The CLI's argument parser, read from a command's params: flags in kebab case (`--dry-run`),
 // short aliases (`-o`), switches that set a value (`--yes-no`), repeated flags for a list, flags
-// that take a pair of arguments (`--tab <label> <file>`), and positional arguments. A positional `file` parameter names a path, or `-` for stdin, which the
-// caller reads.
+// that take a pair of arguments (`--tab <label> <file>`) or a first argument and several seconds
+// (`--tab <label> <file>...`), and positional arguments. A positional `file` parameter names a
+// path, or `-` for stdin, which the caller reads.
 import { describeType, kebab, labelOf, type Param } from '../commands/params.ts';
 
 export type Parsed = { ok: true; raw: Record<string, unknown>; files: Map<string, string> } | { ok: false; message: string };
@@ -94,6 +95,12 @@ export function parseArgs(params: readonly Param[], args: readonly string[]): Pa
 			index += 2;
 			const issue = set(param, { [pair[0]]: first, [pair[1]]: second });
 			if (issue) return { ok: false, message: issue };
+			// `--tab <label> <file>...`: each further argument up to the next flag is one more value.
+			for (let next = args[index + 1]; param.cli?.more && next !== undefined && !next.startsWith('-'); next = args[index + 1]) {
+				index++;
+				const again = set(param, { [pair[0]]: first, [pair[1]]: next });
+				if (again) return { ok: false, message: again };
+			}
 			continue;
 		}
 		const text = inline ?? args[++index];

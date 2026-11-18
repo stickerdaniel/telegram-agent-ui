@@ -93,13 +93,20 @@ telegram-agent-ui wait k7q2m4xa --seconds 50
 
 A body comes from a file or from `-` for stdin. A file must lie below the working directory or a directory of `publishRoots` in the config; a file outside them, a link that leaves them, a secret such as `.env`, and a working directory that is `/` or the home directory are refused before anything is sent.
 
+`send` and `ask` take `--file <path>` up to 10 times. Each file goes out as a reply to the message: png, jpg, jpeg and webp as photos, mp4 as videos, any other file as a document. 2 or more photos and videos arrive as one album, 2 or more documents as another, and the buttons stay on the message. Every file is read under the roots and refusals of a body file, and its size is checked, before the message is sent. A files step that fails after the message exits 4 and names the step; `ask` again with the same `--ref` sends nothing and names the missing files again.
+
+```sh
+telegram-agent-ui send --file shots/before.png --file shots/after.png --file report.pdf result.md
+# {"chat":111,"message":632,"files":[633,634,635]}
+```
+
 Every command prints one JSON object on stdout and exits 0, or prints `{ error, code?, message, ref? }` and exits 1 (refused), 2 (usage), 3 (no listener), 4 (uncertain), 5 (listener stopped), 6 (no config or a rejected token) or 7 (no view host). `send`, `edit`, `close` and `info --json` complete the set. `TELEGRAM_AGENT_UI_API_URL` points every command at another Bot API server, and `TELEGRAM_AGENT_UI_FAKE=<dir>` records every call in `<dir>/calls.jsonl` instead of sending it. `telegram-agent-ui/commands` holds the command table, and `telegram-agent-ui/telegram` holds `fetchCall`, `listen`, `fetchFile` and the topic functions for a program of its own. `listen({ chat, target, origin, allow, call, store, signal, onMessage?, onUpdate? })` takes the chat id whose updates its consumers see, the users they may come from, and a name of the Bot API server behind `call`, such as its URL, which it stores with its cursor. A bot on grammY uses `telegram-agent-ui/grammy` instead: `grammyCall(bot.api)` as the transport and `bot.use(grammyHandler(chat))` in its own loop.
 
 `telegram-agent-ui/store/memory` holds `memoryStore`, a store in memory with a lock per key. `telegram-agent-ui/store/file` holds `fileStore(dir)`, one JSON file per key in a directory of mode 0700, for Node and Bun on macOS and Linux, with a lock that several processes share. `telegram-agent-ui/testing` holds `fakeCall`, a transport that records calls and answers from a script, and `faultyStore`, a store that fails one chosen call before or after it runs.
 
 ## Views
 
-A view is content a message cannot show, opened from the message as a Telegram Mini App: Markdown, a diff, or a page of your own HTML. It lives on a view host in your own Cloudflare account, which holds no bot token and calls nobody. `view deploy` deploys it with your `wrangler login`:
+A view is content a message cannot show, opened from the message as a Telegram Mini App: Markdown, a diff, a gallery of images and videos, or a page of your own HTML. It lives on a view host in your own Cloudflare account, which holds no bot token and calls nobody. `view deploy` deploys it with your `wrangler login`:
 
 ```sh
 telegram-agent-ui view deploy
@@ -110,7 +117,7 @@ It deploys the Worker of the installed package as `telegram-agent-ui-<bot id>` w
 
 `view deploy` passes the environment on to wrangler, so a changed `XDG_CONFIG_HOME` hides wrangler's own login.
 
-`view put` publishes a view, one `--tab <label> <file>` per tab, and prints its id. A tab is a `.md`, `.diff`, `.patch` or `.html` file below the roots, refused like a body file outside them, and a png, jpg, webp, gif or mp4 image it names goes up with it. `send --view <id>` and `ask --view <id>` give the message a button that opens the view, and a question's body shows above the tabs. An option whose label equals a tab label opens that tab once it is picked.
+`view put` publishes a view, one `--tab <label> <file>` per tab, and prints its id. A tab is a `.md`, `.diff`, `.patch` or `.html` file below the roots, refused like a body file outside them, and a png, jpg, webp, gif or mp4 image it names goes up with it. `--tab <label> <file>...` with png, jpg, jpeg, webp, gif and mp4 files is a gallery tab: the view shows the images and plays each video inline, seeking through the host's `Range` answers. `send --view <id>` and `ask --view <id>` give the message a button that opens the view, and a question's body shows above the tabs. An option whose label equals a tab label opens that tab once it is picked.
 
 ```sh
 telegram-agent-ui view put --title 'Settings page' --tab Compact mocks/compact.html --tab Wide mocks/wide.html
@@ -128,7 +135,7 @@ A view opens only for launch data that Telegram signed for an allowed user withi
 
 ## MCP
 
-`telegram-agent-ui mcp` serves the tools `get_status`, `send_message`, `edit_message`, `ask_question`, `get_answer`, `close_question`, `publish_view` and `fetch_file` over stdio, one per command above. `send_message` and `ask_question` take a `topic`. A tool takes its command's input and returns the command's JSON as text and as `structuredContent`, with `isError` on a failure. `ask_question` refuses without a live listener, and takes `answerIn: 'view'` for a pick inside the view, with each option a label or `{ label, tab }`, and `get_answer` waits 10 s by default, at most 50 s. A body file is an absolute path in `bodyFile`, below a root the client reports or a directory of `publishRoots`. `publish_view` uploads files to the view host in your Cloudflare account, each tab's `file` an absolute path below those roots.
+`telegram-agent-ui mcp` serves the tools `get_status`, `send_message`, `edit_message`, `ask_question`, `get_answer`, `close_question`, `publish_view` and `fetch_file` over stdio, one per command above. `send_message` and `ask_question` take a `topic`. A tool takes its command's input and returns the command's JSON as text and as `structuredContent`, with `isError` on a failure. `ask_question` refuses without a live listener, and takes `answerIn: 'view'` for a pick inside the view, with each option a label or `{ label, tab }`, and `get_answer` waits 10 s by default, at most 50 s. A body file is an absolute path in `bodyFile`, below a root the client reports or a directory of `publishRoots`, and so is each attachment in `files` of `send_message` and `ask_question`. `publish_view` uploads files to the view host in your Cloudflare account, each tab's `file` an absolute path below those roots; the picture files of one label form a gallery tab, each with an optional `caption`.
 
 `mcp init --client <claude|cursor|vscode|codex|opencode>` writes the entry `npx telegram-agent-ui@latest mcp` into the client's user config and installs nothing. A config that cannot take the entry with every other setting kept is refused with `client-config` and left as it was. A second run changes nothing.
 

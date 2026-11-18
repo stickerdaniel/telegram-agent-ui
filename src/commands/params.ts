@@ -33,6 +33,13 @@ export type Param = {
 		readonly pair?: readonly [string, string];
 		/** A `json` parameter whose CLI argument is the text itself, never parsed: `-o Merge` gives `"Merge"`. */
 		readonly text?: boolean;
+		/**
+		 * The pair's second argument repeats until the next argument that starts with `-`, and each
+		 * gives one value with the same first: `--tab Shots a.png b.png` gives `{ label: 'Shots',
+		 * file: 'a.png' }` and `{ label: 'Shots', file: 'b.png' }`. Only for a command without
+		 * positional parameters, which the repeated arguments would swallow.
+		 */
+		readonly more?: boolean;
 	};
 };
 
@@ -98,8 +105,8 @@ export function usage(name: string, params: readonly Param[]): string {
 		if (cli.positional) return param.required ? `<${label}>` : `[<${label}>]`;
 		if (cli.switches) return `[${Object.keys(cli.switches).map((flag) => `--${flag}`).join(' | ')}]`;
 		const flag = cli.short ? `-${cli.short}` : `--${cli.flag ?? kebab(param.name)}`;
-		const spelled = param.type === 'boolean' ? flag : cli.pair ? `${flag} ${cli.pair.map((name) => `<${name}>`).join(' ')}` : `${flag} <${label}>`;
-		const shown = param.required ? spelled : `[${spelled}]`;
+		const spelled = param.type === 'boolean' ? flag : cli.pair ? `${flag} ${cli.pair.map((name) => `<${name}>`).join(' ')}${cli.more ? '...' : ''}` : `${flag} <${label}>`;
+		const shown = param.required ? (cli.more ? `(${spelled})` : spelled) : `[${spelled}]`;
 		return param.many ? `${shown}...` : shown;
 	});
 	// Flags first, positionals last, as the CLI reads them.

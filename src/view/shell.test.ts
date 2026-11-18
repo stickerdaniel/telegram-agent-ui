@@ -23,10 +23,11 @@ type Lib = {
 	markdownBlocks(text: string): Node[];
 	diffLines(text: string): Node[];
 	contextNodes(body: unknown, htmlText: (html: string) => string): Node[];
+	galleryItems(gallery: unknown, urls: (string | undefined)[]): { kind: 'image' | 'video'; src: string; caption: string }[];
 	TAGS: string[];
 	PLACEHOLDER: string;
 };
-const names = ['fetchRetry', 'fetchContext', 'pagePrefix', 'themeBlocks', 'resolveVars', 'mediaIndexes', 'mapIndexes', 'resolveMedia', 'imageSource', 'safeLink', 'markdownBlocks', 'diffLines', 'contextNodes', 'TAGS', 'PLACEHOLDER'];
+const names = ['fetchRetry', 'fetchContext', 'pagePrefix', 'themeBlocks', 'resolveVars', 'mediaIndexes', 'mapIndexes', 'resolveMedia', 'imageSource', 'safeLink', 'markdownBlocks', 'diffLines', 'contextNodes', 'galleryItems', 'TAGS', 'PLACEHOLDER'];
 const lib = new Function(`'use strict';\n${SHELL_LIB}\nreturn { ${names.join(', ')} };`)() as Lib;
 
 /** Every text node of a tree, in order. */
@@ -173,6 +174,23 @@ test('a diff is one text line each, classed by its kind', () => {
 	const lines = lib.diffLines('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n same\n-old <b>\n+new\n');
 	expect(lines.map((line) => (typeof line === 'string' ? line : line.k))).toEqual(['meta', 'meta', 'meta', 'hunk', 'ctx', 'del', 'add']);
 	expect(texts(lines)).toContain('-old <b>');
+});
+
+test('a gallery item is a video or an image from its URL, and the placeholder image when its probe found it missing', () => {
+	const gallery = [
+		{ media: 0, type: 'image/png', caption: 'Before <b>' },
+		{ media: 1, type: 'video/mp4', caption: 'The run' },
+		{ media: 2, type: 'video/mp4' },
+		{ media: 3, type: 'image/jpeg' },
+		{ media: 'x', type: 'image/png' },
+	];
+	expect(lib.galleryItems(gallery, ['https://a/0', 'https://a/1', ''])).toEqual([
+		{ kind: 'image', src: 'https://a/0', caption: 'Before <b>' },
+		{ kind: 'video', src: 'https://a/1', caption: 'The run' },
+		{ kind: 'image', src: lib.PLACEHOLDER, caption: '' },
+		{ kind: 'image', src: lib.PLACEHOLDER, caption: '' },
+	]);
+	expect(lib.galleryItems(undefined, [])).toEqual([]);
 });
 
 test('a context draws Markdown, and HTML and blocks as plain text', () => {

@@ -5,6 +5,7 @@
 - The result comes first
 - Facts form a table
 - Work with several steps has one status line
+- A file goes with the message it shows
 - A message carries what the user asked for
 
 ---
@@ -72,6 +73,24 @@ telegram-agent-ui send --silent - <<<'Deploying auth: 1 of 3.'
 telegram-agent-ui edit '{"chat":111,"message":632,"files":[]}' - <<<'Deploying billing: 2 of 3.'
 telegram-agent-ui edit '{"chat":111,"message":632,"files":[]}' - <<<'Deploying search: 3 of 3.'
 telegram-agent-ui send - <<<'auth, billing and search are live.'
+```
+
+---
+
+## A file goes with the message it shows
+
+A screenshot, a recording or a report that shows the result goes out with `--file` on the message that states the result. It arrives as a reply to that message, and the body says what it shows.
+
+**Incorrect:**
+
+```sh
+telegram-agent-ui send - <<<'The header is fixed. The screenshot is at shots/header-after.png.'
+```
+
+**Correct:**
+
+```sh
+telegram-agent-ui send --file shots/header-after.png - <<<'The header keeps the logo at 32 px on phones now.'
 ```
 
 ---

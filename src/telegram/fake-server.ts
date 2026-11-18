@@ -2,11 +2,14 @@
 // shows, long-polls getUpdates, confirms updates below an offset, ends an older poll with 409
 // when a newer one arrives, refuses getUpdates with 409 while a webhook is set, answers 401 to a
 // revoked token, and answers a call from a script, such as 429 with `retry_after`. The messages
-// and updates follow facts/records/: a bot 222, a private chat 111 with user 111, and the
-// replied-to message inside a reply with its keyboard, as Telegram for iOS sends it. getFile
-// answers for the files `file` registers, and `/file/bot<token>/<path>` serves them, records each
-// download as the method `download`, and can redirect, hide the size or cut a transfer off.
-// getMe reports topic mode while `setTopics(true)` holds.
+// and updates follow facts/records/: a bot 222, a private chat 111 with user 111, the replied-to
+// message inside a reply with its keyboard, as Telegram for iOS sends it, a file message with
+// its photo, video or document, its caption and the message it replies to, one message per file
+// of an album with one `media_group_id`, and record 08's refusal of a caption over 1,024
+// characters. getFile answers for the files `file` registers, and `/file/bot<token>/<path>`
+// serves them, records each download as the method `download`, and can redirect, hide the size
+// or cut a transfer off. getMe reports topic mode while `setTopics(true)` holds.
+import captionRefused from '../../facts/records/08-caption-1025.json';
 import { isRecord } from '../core/check.ts';
 import { NOT_MODIFIED } from '../core/classify.ts';
 
@@ -16,7 +19,9 @@ const PERSON = { id: 111, is_bot: false, first_name: 'Dana' };
 const DATE = 1794908513;
 const CONFLICT = 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running';
 const WEBHOOK_CONFLICT = "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first";
-const SENDS = new Set(['sendPhoto', 'sendVideo', 'sendDocument', 'sendRichMessage']);
+// The file methods and the kind of file each sends.
+const FILE_SENDS: Record<string, 'photo' | 'video' | 'document'> = { sendPhoto: 'photo', sendVideo: 'video', sendDocument: 'document' };
+const CAPTION_LIMIT = 1_024;
 
 /** One call as the server received it. `at` is the time it arrived, `files` the uploaded parts. */
 export type Received = { method: string; payload: Record<string, unknown>; files: { field: string; name: string; type: string; bytes: Uint8Array }[]; at: number };
@@ -37,6 +42,31 @@ const parsed = (value: string): unknown => {
 		return value;
 	}
 };
+
+type Upload = Received['files'][number];
+/** One file a files call sends: its kind, its caption and its uploaded part. */
+type Item = { kind: string; caption: unknown; file: Upload | undefined };
+
+/** The files a call of `method` sends, in order: the items of an album's `media`, else the one file of its field. */
+function itemsOf(method: string, payload: Record<string, unknown>, files: Upload[]): Item[] {
+	const single = FILE_SENDS[method];
+	if (single) return [{ kind: single, caption: payload.caption, file: files.find((file) => file.field === single) }];
+	const media = Array.isArray(payload.media) ? payload.media : [];
+	return media.map((entry: unknown) => {
+		const item = isRecord(entry) ? entry : {};
+		const field = typeof item.media === 'string' ? item.media.replace(/^attach:\/\//, '') : '';
+		return { kind: String(item.type), caption: item.caption, file: files.find((file) => file.field === field) };
+	});
+}
+
+/** The content of a file message as records 06 and 07 show it: a photo as its sizes, a video or a document with its name. */
+function contentOf(item: Item, id: string): Record<string, unknown> {
+	const size = item.file?.bytes.length ?? 0;
+	const named = { file_id: id, file_unique_id: id, file_name: item.file?.name ?? '', mime_type: item.file?.type ?? '', file_size: size };
+	if (item.kind === 'photo') return { photo: [{ file_id: id, file_unique_id: id, file_size: size, width: 64, height: 64 }] };
+	if (item.kind === 'video') return { video: { ...named, width: 64, height: 64, duration: 1 } };
+	return { document: named };
+}
 
 /** The request's fields and files: JSON, or multipart with each field's JSON read back. */
 async function read(request: Request): Promise<Pick<Received, 'payload' | 'files'>> {
@@ -72,6 +102,7 @@ export function fakeBotApi() {
 	let nextUpdate = 125546275;
 	let nextMessage = 1000;
 	let nextTopic = 40;
+	let nextGroup = 14359268162828234;
 	let webhook = '';
 	let revoked = false;
 	let topics = false;
@@ -89,6 +120,27 @@ export function fakeBotApi() {
 		const stored: Message = { message_id: ++nextMessage, from: BOT, chat: chatOf(payload.chat_id), date: DATE, ...content };
 		messages.set(stored.message_id, stored);
 		return stored;
+	}
+
+	/**
+	 * A files call: one message per file, each replying to the message `reply_parameters` names
+	 * when it exists, an album's under one `media_group_id`. A caption over 1,024 characters
+	 * refuses the whole call, as record 08 shows.
+	 */
+	function sendFiles(method: string, payload: Record<string, unknown>, files: Upload[]): Response {
+		const items = itemsOf(method, payload, files);
+		if (items.some((item) => typeof item.caption === 'string' && item.caption.length > CAPTION_LIMIT)) return refusal(captionRefused.status, captionRefused.body.description);
+		const replyTo = isRecord(payload.reply_parameters) ? messages.get(Number(payload.reply_parameters.message_id)) : undefined;
+		const group = method === 'sendMediaGroup' ? { media_group_id: String(++nextGroup) } : {};
+		const sent = items.map((item) =>
+			newMessage(payload, {
+				...(replyTo ? { reply_to_message: structuredClone(replyTo) } : {}),
+				...group,
+				...contentOf(item, `${item.kind}-${nextMessage + 1}`),
+				...(typeof item.caption === 'string' ? { caption: item.caption } : {}),
+			}),
+		);
+		return ok(method === 'sendMediaGroup' ? sent : sent[0]);
 	}
 
 	/** Answers the open poll with every queued update. */
@@ -148,11 +200,10 @@ export function fakeBotApi() {
 				if (before === JSON.stringify([stored.rich_message, stored.reply_markup])) return refusal(400, `Bad Request: ${NOT_MODIFIED}: specified new message content and reply markup are exactly the same`);
 				return ok({ ...stored, edit_date: DATE + 1 });
 			}
-			case 'sendMediaGroup':
-				return ok(files.map((file) => newMessage(payload, { document: { file_id: file.field, file_name: file.name, file_size: file.bytes.length } })));
+			case 'sendRichMessage':
+				return ok(newMessage(payload, { rich_message: payload.rich_message, ...(payload.reply_markup !== undefined ? { reply_markup: payload.reply_markup } : {}) }));
 			default:
-				if (method === 'sendRichMessage') return ok(newMessage(payload, { rich_message: payload.rich_message, ...(payload.reply_markup !== undefined ? { reply_markup: payload.reply_markup } : {}) }));
-				if (SENDS.has(method)) return ok(newMessage(payload, { document: { file_id: files[0]?.field ?? '', file_name: files[0]?.name ?? '', file_size: files[0]?.bytes.length ?? 0 } }));
+				if (method === 'sendMediaGroup' || method in FILE_SENDS) return sendFiles(method, payload, files);
 				return ok(true);
 		}
 	}

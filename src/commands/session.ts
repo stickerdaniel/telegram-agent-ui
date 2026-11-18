@@ -13,8 +13,8 @@ import { type Chat, createChat, type Delivered } from '../chat/create.ts';
 import { writeListener } from '../chat/listener.ts';
 import { isNat, isRecord, isString } from '../core/check.ts';
 import { LIMITS } from '../core/shape.ts';
-import type { Call, CallResponse, Store, Update, ViewClient } from '../core/types.ts';
-import { readTextInRoots } from '../files/roots.ts';
+import type { Call, CallResponse, Readable, Store, Update, ViewClient } from '../core/types.ts';
+import { openPublishable, readTextInRoots } from '../files/roots.ts';
 import { fileStore } from '../store/file.ts';
 import { type Download, fetchCall, fileDownload, scrubber, type Transport } from '../telegram/fetch.ts';
 import { isUpdate } from '../telegram/listen.ts';
@@ -178,6 +178,15 @@ function personAnswer(ref: string, message: number, answer: { kind: 'choice' } |
 	return update;
 }
 
+/**
+ * The file reader `attach` goes through: every path opened under `roots` with the refusals of
+ * 4.7, as `readPublishable` does, with the home directory of `env`. The command table resolves
+ * each path before, so `cwd` only resolves what a library caller passes.
+ */
+function fileReader(roots: readonly string[], context: Pick<Context, 'env' | 'cwd'>): (paths: string[]) => Promise<Readable> {
+	return (paths) => openPublishable(paths, { roots, cwd: context.cwd ?? '/', home: context.env.HOME || homedir() });
+}
+
 /** The session of fake mode in `dir`. */
 async function fakeSession(context: Context, dir: string, onAnswer: ((answer: Delivered) => Promise<void>) | undefined): Promise<Session> {
 	const name = context.env.TELEGRAM_AGENT_UI_FAKE_SCENARIO;
@@ -192,7 +201,8 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 	const call = recorder(join(dir, 'calls.jsonl'), store, scenario, context.command);
 	const views = scenario === 'no-view-host' ? undefined : fakeViews(join(dir, 'views'), join(dir, 'views.jsonl'), context.command);
 	const config: Config = views ? FAKE_CONFIG : { ...FAKE_CONFIG, views: {} };
-	const chat = createChat({ call, store, chat: config.chat, allow: config.users, ...(views ? { viewOrigin: FAKE_VIEW_ORIGIN, views } : {}), ...(onAnswer ? { onAnswer } : {}) });
+	const roots = await rootsOf(context);
+	const chat = createChat({ call, store, chat: config.chat, allow: config.users, files: fileReader(roots, context), ...(views ? { viewOrigin: FAKE_VIEW_ORIGIN, views } : {}), ...(onAnswer ? { onAnswer } : {}) });
 	return {
 		config,
 		where: { config: 'built in: fake mode', store: join(dir, 'store') },
@@ -202,7 +212,7 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 		scrub: (text) => text,
 		chat,
 		...(views ? { views } : {}),
-		roots: await rootsOf(context),
+		roots,
 		fake: {
 			async answer(ref) {
 				const question = await chat.get(ref);
@@ -264,6 +274,7 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 	const { origin } = config.views;
 	const uploadKey = origin !== undefined ? await findSecret(env, KEY_NAMES.upload) : undefined;
 	const views = origin !== undefined && uploadKey !== undefined ? viewClient({ origin, uploadKey }) : undefined;
+	const roots = [...context.roots, ...config.publishRoots];
 	const chat = createChat({
 		call,
 		store,
@@ -272,8 +283,9 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 		labels: config.labels,
 		...(origin !== undefined ? { viewOrigin: origin } : {}),
 		...(views ? { views } : {}),
+		files: fileReader(roots, context),
 		fileLimit: apiUrl !== undefined ? FILE_LIMITS.local : FILE_LIMITS.cloud,
 		...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
 	});
-	return { config, where, store, call, origin: originOf(env, config), download, scrub: scrubber(token), chat, ...(views ? { views } : {}), roots: [...context.roots, ...config.publishRoots] };
+	return { config, where, store, call, origin: originOf(env, config), download, scrub: scrubber(token), chat, ...(views ? { views } : {}), roots };
 }

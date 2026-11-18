@@ -22,6 +22,23 @@ test('flags, short aliases, switches, lists and file arguments', () => {
 	expect(parse(['send', '--', '--literal.md'])).toEqual({ raw: {}, files: { body: '--literal.md' } });
 });
 
+test('--file repeats, and --tab takes its label and every file up to the next flag', () => {
+	expect(parse(['send', '--file', 'a.png', '--file', 'report.pdf', 'm.md'])).toEqual({ raw: { files: ['a.png', 'report.pdf'] }, files: { body: 'm.md' } });
+	expect(parse(['view', 'put', '--tab', 'Notes', 'notes.md', '--tab', 'Shots', 'a.png', 'b.png', 'run.mp4', '--ttl', '3'])).toEqual({
+		raw: {
+			tabs: [
+				{ label: 'Notes', file: 'notes.md' },
+				{ label: 'Shots', file: 'a.png' },
+				{ label: 'Shots', file: 'b.png' },
+				{ label: 'Shots', file: 'run.mp4' },
+			],
+			ttl: 3,
+		},
+		files: {},
+	});
+	expect(parse(['view', 'put', '--tab', 'Shots'])).toBe('--tab needs <label> <file>');
+});
+
 test('optional positionals fill from the left once the required ones have theirs', () => {
 	expect(parse(['close', 'merge1'])).toEqual({ raw: { ref: 'merge1' }, files: {} });
 	expect(parse(['close', 'merge1', 'done.md'])).toEqual({ raw: { ref: 'merge1' }, files: { body: 'done.md' } });

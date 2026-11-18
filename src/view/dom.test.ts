@@ -35,30 +35,37 @@ async function until<T>(read: () => T | null | undefined | false): Promise<T> {
 /** A binding of `ask1` to the Markdown tab and the page tab. */
 const BINDING = { options: [{ index: 0, label: 'Keep notes', tab: 'Notes' }, { index: 1, label: 'Use mock', tab: 'Mock' }], once: false };
 
+// The view most tests open: a Markdown tab and a page tab with one image each.
+const NOTES_AND_MOCK = {
+	media: [{ type: 'image/png', bytes: MEDIA.png }],
+	tabs: [
+		// The image's destination in a table cell carries an escaped pipe; the code example names the same file.
+		{ label: 'Notes', content: { markdown: '# Notes\n\n<script>alert(1)</script>\n\n| Image |\n| --- |\n| ![shot](a\\|b.png) |\n\n`![example](a|b.png)`', media: { 'a|b.png': 0 } } },
+		{ label: 'Mock', content: { page: '<h1>Mock</h1><img src="media:0">' } },
+	],
+};
+
 /**
- * A published view of a Markdown tab and a page tab with one image each, the context of `ask1`
- * hidden from its first read, and the shell opened at `path` with launch data. With `binding`
- * the context carries it, and with `diff` the view ends with a diff tab no option names.
- * `answer(status)` makes the next POST of a choice get that status before the host sees it.
+ * A published view of `published`'s tabs and media, NOTES_AND_MOCK by default, the context of
+ * `ask1` hidden from its first read, and the shell opened at `path` with launch data. With
+ * `binding` the context carries it, and with `diff` the view ends with a diff tab no option
+ * names. `answer(status)` makes the next POST of a choice get that status before the host sees it.
  */
-async function openShell(path: string, hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1, options: { binding?: unknown; diff?: boolean } = {}) {
+async function openShell(
+	path: string,
+	hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1,
+	options: { binding?: unknown; diff?: boolean; published?: { media: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; tabs: unknown[] } } = {},
+) {
+	const published = options.published ?? NOTES_AND_MOCK;
 	const memory = memoryStorage({ hidden });
 	const handle = createViewHandler({ storage: memory.storage, botId: BOT, allowedUsers: [USER], uploadKey: UPLOAD_KEY, mediaKey: MEDIA_KEY, publicKey: hex });
 	const expiresAt = Date.now() + 86_400_000;
 	const upload = (target: string, body: string | Uint8Array<ArrayBuffer>, type = 'application/json') =>
 		handle(new Request(`${ORIGIN}${target}`, { method: 'PUT', headers: { Authorization: `Bearer ${UPLOAD_KEY}`, 'Content-Type': type }, body }));
-	await upload(`/api/media/${ID}/g1/0?e=${expiresAt}`, MEDIA.png, 'image/png');
-	const view = {
-		v: 1,
-		title: 'Release 0.1',
-		tabs: [
-			// The image's destination in a table cell carries an escaped pipe; the code example names the same file.
-			{ label: 'Notes', content: { markdown: '# Notes\n\n<script>alert(1)</script>\n\n| Image |\n| --- |\n| ![shot](a\\|b.png) |\n\n`![example](a|b.png)`', media: { 'a|b.png': 0 } } },
-			{ label: 'Mock', content: { page: '<h1>Mock</h1><img src="media:0">' } },
-			...(options.diff ? [{ label: 'Diff', content: { diff: '+a' } }] : []),
-		],
-	};
-	await upload(`/api/view/${ID}`, JSON.stringify({ generation: 'g1', expiresAt, media: [{ type: 'image/png', size: MEDIA.png.byteLength }], view }));
+	for (const [index, { type, bytes }] of published.media.entries()) expect((await upload(`/api/media/${ID}/g1/${index}?e=${expiresAt}`, bytes, type)).status).toBe(200);
+	const view = { v: 1, title: 'Release 0.1', tabs: [...published.tabs, ...(options.diff ? [{ label: 'Diff', content: { diff: '+a' } }] : [])] };
+	const media = published.media.map(({ type, bytes }) => ({ type, size: bytes.byteLength }));
+	expect((await upload(`/api/view/${ID}`, JSON.stringify({ generation: 'g1', expiresAt, media, view }))).status).toBe(200);
 	const body = { markdown: 'Ship **it**?' };
 	expect((await upload(`/api/view/${ID}/context/ask1`, JSON.stringify(options.binding ? { body, choice: options.binding } : body))).status).toBe(200);
 
@@ -171,6 +178,88 @@ test('an object the probe already misses shows as the placeholder in Markdown an
 	expect(frame.getAttribute('srcdoc')).toEndWith(`<img src="${placeholderUrl}">`);
 	const notes = await until(() => shell.document.querySelector('.markdown img'));
 	expect(notes.getAttribute('src')).toBe(placeholderUrl);
+});
+
+test('a gallery tab draws its images and an mp4 video that plays inline, each caption as text, and the video seeks through Range', async () => {
+	const missingKey = `m:${ID}:g1:2`;
+	const shell = await openShell(`/?v=${ID}&t=Shots`, (key) => key === missingKey, {
+		published: {
+			media: [
+				{ type: 'image/png', bytes: MEDIA.png },
+				{ type: 'video/mp4', bytes: MEDIA.mp4 },
+				{ type: 'image/jpeg', bytes: MEDIA.jpeg },
+			],
+			tabs: [
+				{ label: 'Diff', content: { diff: '+a' } },
+				{ label: 'Shots', content: { gallery: [{ media: 0, type: 'image/png', caption: 'Before <b>x</b>' }, { media: 1, type: 'video/mp4', caption: 'The run' }, { media: 2, type: 'image/jpeg' }] } },
+			],
+		},
+	});
+	const gallery = await until(() => shell.document.querySelector('.gallery'));
+	expect([...shell.document.querySelectorAll('#tabs button')].map((button) => button.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+	const figures = [...gallery.querySelectorAll('figure')];
+	expect(figures.map((figure) => [figure.firstElementChild?.tagName, figure.querySelector('figcaption')?.textContent ?? null])).toEqual([
+		['IMG', 'Before <b>x</b>'],
+		['VIDEO', 'The run'],
+		['IMG', null],
+	]);
+	expect(gallery.querySelector('b')).toBeNull();
+	const [image, video, missing] = figures.map((figure) => figure.firstElementChild);
+	expect(image?.getAttribute('src')).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
+	// The object the probe found missing shows as the placeholder image.
+	expect(missing?.getAttribute('src')).toBe(placeholderUrl);
+	expect([video?.getAttribute('controls'), video?.getAttribute('playsinline'), video?.getAttribute('preload')]).toEqual(['', '', 'metadata']);
+	expect(shell.document.querySelector('iframe')).toBeNull();
+
+	// The player reads the video in parts: the first bytes, then a seek to the middle.
+	const source = video?.getAttribute('src') ?? '';
+	expect(source).toStartWith(`${ORIGIN}/m/${ID}/g1/1?`);
+	const size = MEDIA.mp4.byteLength;
+	for (const [range, start, end] of [
+		['bytes=0-1', 0, 1],
+		['bytes=16-', 16, size - 1],
+	] as const) {
+		const part = await shell.fetchHost(source, { headers: { Range: range } });
+		expect(part.status, range).toBe(206);
+		expect([part.headers.get('Content-Type'), part.headers.get('Accept-Ranges'), part.headers.get('Content-Range')], range).toEqual(['video/mp4', 'bytes', `bytes ${start}-${end}/${size}`]);
+		expect(new Uint8Array(await part.arrayBuffer()), range).toEqual(MEDIA.mp4.slice(start, end + 1));
+	}
+});
+
+test('a gallery video whose object goes missing after its probe shows the placeholder image above its caption', async () => {
+	// The probe's read finds the video; every later read misses it.
+	const videoKey = `m:${ID}:g1:0`;
+	const shell = await openShell(`/?v=${ID}`, (key, read) => key === videoKey && read > 1, {
+		published: { media: [{ type: 'video/mp4', bytes: MEDIA.mp4 }], tabs: [{ label: 'Run', content: { gallery: [{ media: 0, type: 'video/mp4', caption: 'The run' }] } }] },
+	});
+	const video = await until(() => shell.document.querySelector('.gallery video'));
+	const figure = video.parentElement;
+	// The player's own load: the host answers the placeholder image, which no video element plays.
+	const loaded = await shell.fetchHost(video.getAttribute('src') ?? '', { headers: { Range: 'bytes=0-1' } });
+	expect([loaded.status, loaded.headers.get('Content-Type'), await loaded.text()]).toEqual([200, 'image/svg+xml', PLACEHOLDER_SVG]);
+	video.dispatchEvent(new shell.window.Event('error'));
+	expect([...(figure?.children ?? [])].map((child) => child.tagName)).toEqual(['IMG', 'FIGCAPTION']);
+	expect(figure?.querySelector('img')?.getAttribute('src')).toBe(placeholderUrl);
+	expect(figure?.querySelector('figcaption')?.textContent).toBe('The run');
+	expect(shell.document.querySelector('.gallery video')).toBeNull();
+});
+
+test('a diff tab draws one text line per line of the diff, classed by its kind', async () => {
+	const diff = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n same\n-old <b>x</b>\n+new\n';
+	const shell = await openShell(`/?v=${ID}`, undefined, { published: { media: [], tabs: [{ label: 'Diff', content: { diff } }] } });
+	const drawn = await until(() => shell.document.querySelector('.diff'));
+	expect([...drawn.children].map((line) => [line.className, line.textContent])).toEqual([
+		['meta', 'diff --git a/x b/x'],
+		['meta', '--- a/x'],
+		['meta', '+++ b/x'],
+		['hunk', '@@ -1,2 +1,2 @@'],
+		['ctx', ' same'],
+		['del', '-old <b>x</b>'],
+		['add', '+new'],
+	]);
+	expect(drawn.querySelector('b')).toBeNull();
+	// One tab needs no tab row.
+	expect(shell.document.querySelector('#tabs')).toBeNull();
 });
 
 test('a context that shows after the view is added to the open view', async () => {

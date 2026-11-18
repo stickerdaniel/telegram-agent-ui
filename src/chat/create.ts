@@ -457,6 +457,28 @@ export function createChat(io: ChatIO): Chat {
 	}
 
 	/**
+	 * What a held ref answers: `stated`, or `partial` when the stored message holds fewer file
+	 * messages than its steps send. Each file arrives as one message, an album as one per file, so
+	 * the files steps cover the stored ids in order and the first one they do not cover failed.
+	 * Its class is `uncertain`: the step was refused, lost its answer, or still runs in the first
+	 * send, and the retry sends nothing either way.
+	 */
+	function held(question: Question, steps: Step[], warnings: Warning[]): Outcome {
+		const sent = sentOf(question);
+		let covered = sent?.files.length ?? 0;
+		for (const [index, step] of steps.entries()) {
+			if (step.role !== 'files' || !sent) continue;
+			const count = step.call.files?.length ?? 0;
+			if (covered < count) {
+				const reason = `message ${sent.message} holds ${sent.files.length} of ${(question.spec.attach ?? []).length} files: files step ${index} was refused, lost its answer or still runs, and a retry sends no file again`;
+				return { kind: 'partial', sent, ref: question.ref, failed: { step: index, class: 'uncertain', reason }, warnings: [...warnings, ...stateWarnings(question)] };
+			}
+			covered -= count;
+		}
+		return stated(question, warnings);
+	}
+
+	/**
 	 * Opens every attachment through `io.files` and checks its size, before anything is sent.
 	 * Every handle the reader returns joins `owned`, which the caller closes once whatever the
 	 * outcome. The map names one handle per path, the first returned for it, and every multipart
@@ -535,12 +557,13 @@ export function createChat(io: ChatIO): Chat {
 
 	/**
 	 * Sends a question. Under its lock, a held ref answers from the stored question before any
-	 * check that only a new send needs: the expiry, the listener, the view's tabs, the files. A
-	 * question answered in its view then passes `bindView`, which stores its context with the
-	 * binding before the question exists. A new question is stored as `sending`, gets its view's
-	 * context, its body, `sent` and its reply index. The files go out after the lock, so a long
-	 * upload never holds a tap back. The outcome reports the question as the store holds it after
-	 * the last step.
+	 * check that only a new send needs: the expiry, the listener, the view's tabs, the files. It
+	 * sends nothing, and reports `partial` while the stored message lacks files, see `held`. A new
+	 * question has every file opened and checked first. A question answered in its view then
+	 * passes `bindView`, which stores its context with the binding before the question exists. A
+	 * new question is stored as `sending`, gets its view's context, its body, `sent` and its reply
+	 * index. The files go out after the lock, so a long upload never holds a tap back. The outcome
+	 * reports the question as the store holds it after the last step.
 	 */
 	async function ask(asked: Question, steps: Step[], warnings: Warning[], needsListener: boolean): Promise<Outcome> {
 		const { ref } = asked;
@@ -550,8 +573,8 @@ export function createChat(io: ChatIO): Chat {
 		try {
 			const first = await store.lock(questionKey(ref), async (): Promise<Outcome | { kind: 'sent'; sent: Sent; shown: Question; files: Map<string, Publishable> }> => {
 				if ((await store.get(tombstoneKey(ref))) !== undefined) return refused('ref-conflict', `the ref ${ref} belonged to a question that is gone`);
-				const { question: held, held: taken } = await load(ref);
-				if (taken) return held && sameJson(held.spec, asked.spec) ? stated(held, warnings) : refused('ref-conflict', `the ref ${ref} belongs to another question`);
+				const { question: stored, held: taken } = await load(ref);
+				if (taken) return stored && sameJson(stored.spec, asked.spec) ? held(stored, steps, warnings) : refused('ref-conflict', `the ref ${ref} belongs to another question`);
 				if (asked.status === 'closed') return refused('closed', 'expiresAt has passed');
 				if (needsListener && !listenerStatus(await store.get(LISTENER_KEY), now()).alive) return refused('no-listener', 'no listener is alive to receive the answer');
 				const viewOnly = inView(asked.spec.answer);
@@ -614,7 +637,8 @@ export function createChat(io: ChatIO): Chat {
 	 * Sends a spec. Shape, `strict` and guards refuse before the store is read; a question then
 	 * goes to `ask`, which answers a held ref from the store before the checks of a new send. A
 	 * question's `ref` is unique for the life of the store: a held ref with an equal spec sends
-	 * nothing and returns what the question says.
+	 * nothing and returns what the question says. A dry run opens and checks every attachment as a
+	 * send would, closes them and sends nothing.
 	 */
 	async function send(spec: Spec, options: SendOptions = {}): Promise<Outcome> {
 		const { topic, meta, expiresAt, strict, dryRun, needsListener } = options;
@@ -648,7 +672,15 @@ export function createChat(io: ChatIO): Chat {
 			}
 			if (!asked) throw new Error('ask left no question');
 		}
-		if (dryRun) return { kind: 'dry', steps, warnings };
+		if (dryRun) {
+			const owned: Publishable[] = [];
+			try {
+				const opened = await open(spec, owned);
+				return opened.kind === 'refused' ? opened : { kind: 'dry', steps, warnings };
+			} finally {
+				await closeAll(owned);
+			}
+		}
 		return asked ? ask(asked, steps, warnings, needsListener === true) : post(spec, steps, warnings, topic);
 	}
 

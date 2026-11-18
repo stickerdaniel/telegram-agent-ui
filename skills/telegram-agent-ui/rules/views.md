@@ -6,6 +6,7 @@
 - Each option repeats its tab's label
 - A view holds the files the user asked to see
 - A page is a static HTML file
+- Screenshots and recordings form a gallery tab
 
 ---
 
@@ -91,4 +92,23 @@ A `.html` tab shows in a frame that runs no script, follows no link and loads im
 ```html
 <style>body { font: 15px/1.5 system-ui, sans-serif; }</style>
 <img src="shots/compact.png">
+```
+
+---
+
+## Screenshots and recordings form a gallery tab
+
+A gallery tab shows png, jpg, webp and gif images and plays mp4 recordings in the view. `view put --tab <label> <file>...` takes the files of one gallery in order. A Markdown tab shows images alone.
+
+**Incorrect:**
+
+```sh
+# run.md holds ![The run](run.mp4)
+telegram-agent-ui view put --tab Diff changes.patch --tab Run run.md
+```
+
+**Correct:**
+
+```sh
+telegram-agent-ui view put --tab Diff changes.patch --tab Run shots/before.png shots/after.png run.mp4
 ```

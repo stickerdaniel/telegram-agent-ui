@@ -12,6 +12,7 @@ import { parseQuestion } from '../core/parse.ts';
 import type { Store } from '../core/types.ts';
 import { fileStore } from '../store/file.ts';
 import { type FakeBotApi, fakeBotApi, TOKEN } from '../telegram/fake-server.ts';
+import { MEDIA } from '../view/fixtures.ts';
 
 // A loaded machine starts a Bun process in seconds; every wait below has its own deadline.
 setDefaultTimeout(240_000);
@@ -347,6 +348,63 @@ test('a body file outside the roots, through a link that leaves them or with a s
 	expect(at.server.calls('sendRichMessage')[0]?.payload.rich_message).toEqual({ markdown: 'a shared note' });
 });
 
+test('send and ask with --file send each file as a reply to the body, after the roots and limits passed', async () => {
+	const at = await machine();
+	const bytes = (name: string, length: number) => {
+		writeFileSync(join(at.work, name), new Uint8Array(length).fill(length));
+		return name;
+	};
+	const files = ['a.png', 'b.png', 'report.pdf'].map((name, index) => bytes(name, index + 1));
+	const sent = await run(at, ['send', ...files.flatMap((name) => ['--file', name]), file(at, 'm.md', 'The run of `main`: 2 screens and the report.')]);
+	expect(sent).toMatchObject({ code: 0, out: { chat: 111, message: 1001, files: [1002, 1003, 1004] } });
+	expect(at.server.received.map((call) => call.method)).toEqual(['sendRichMessage', 'sendMediaGroup', 'sendDocument']);
+	expect([1002, 1003, 1004].map((id) => at.server.messages.get(id)?.reply_to_message)).toMatchObject([{ message_id: 1001 }, { message_id: 1001 }, { message_id: 1001 }]);
+	expect(at.server.received.flatMap((call) => call.files.map((part) => [part.name, part.bytes.length]))).toEqual([
+		['a.png', 1],
+		['b.png', 2],
+		['report.pdf', 3],
+	]);
+
+	// A heartbeat in the store stands for a live listener.
+	await at.store.set('listener', { v: 1, heartbeat: Date.now() });
+	const asked = await run(at, ['ask', '--yes-no', '--file', bytes('run.mp4', 4), file(at, 'q.md', 'Ship the recording?')]);
+	expect(asked).toMatchObject({ code: 0, out: { status: 'pending' } });
+	expect(at.server.calls('sendVideo')[0]?.payload).toMatchObject({ reply_parameters: { message_id: 1005 }, supports_streaming: true });
+	expect(await at.question(String(asked.out.ref))).toMatchObject({ status: 'open', sent: { message: 1005, files: [1006] } });
+
+	// A dry run names the files it would upload and sends nothing.
+	const calls = at.server.received.length;
+	expect(await run(at, ['send', '--dry-run', '--file', 'a.png', 'm.md'])).toMatchObject({ code: 0, out: { dryRun: true, files: [join(realpathSync(at.work), 'a.png')] } });
+	expect(at.server.received).toHaveLength(calls);
+});
+
+test('a file outside the roots or with a secret name is refused before the body, and a files step the server refuses exits 4', async () => {
+	const at = await machine();
+	writeFileSync(join(at.root, 'outside.png'), 'OUTSIDE_SENTINEL');
+	writeFileSync(join(at.work, '.env'), 'SECRET_SENTINEL');
+	writeFileSync(join(at.work, 'a.png'), 'png');
+	writeFileSync(join(at.work, 'report.pdf'), 'pdf');
+	const body = file(at, 'm.md', 'The screens.');
+	await at.store.set('listener', { v: 1, heartbeat: Date.now() });
+	for (const [args, code] of [
+		[['send', '--file', '../outside.png', body], 'outside-roots'],
+		[['send', '--file', 'a.png', '--file', '.env', body], 'secret-file'],
+		[['ask', '--yes-no', '--file', '../outside.png', body], 'outside-roots'],
+	] as const) {
+		const result = await run(at, [...args]);
+		expect(result, args.join(' ')).toMatchObject({ code: EXIT.refused, out: { error: 'refused', code } });
+		expect(JSON.stringify(result)).not.toContain('SENTINEL');
+	}
+	expect(at.server.received).toEqual([]);
+
+	at.server.fail('sendDocument', { status: 400, description: 'Bad Request: file is too big' });
+	const ask = ['ask', '--yes-no', '--ref', 'part1', '--file', 'a.png', '--file', 'report.pdf', body];
+	expect(await run(at, ask)).toMatchObject({ code: EXIT.uncertain, out: { error: 'uncertain', ref: 'part1', message: expect.stringContaining('files step 2') } });
+	// The retry sends nothing and still reports the missing report.
+	expect(await run(at, ask)).toMatchObject({ code: EXIT.uncertain, out: { error: 'uncertain', ref: 'part1' } });
+	expect(at.server.received.map((call) => call.method)).toEqual(['sendRichMessage', 'sendPhoto', 'sendDocument']);
+});
+
 test('a link retargeted between the checks of a body file, or during its read, refuses the file', async () => {
 	const at = await machine();
 	// The real path of the work directory, as realpath gives it: the preload compares exact paths.
@@ -459,6 +517,30 @@ test('view put --replace without --ttl refuses a view whose open question lives 
 	await store.set(`q:${ref}`, question);
 	expect(parseQuestion(await store.get(`q:${ref}`))).not.toHaveProperty('expiresAt');
 	expect(await invoke('view put', { replace: id, tabs, ttl: 365 })).toMatchObject({ ok: false, failure: { code: 'shape', message: expect.stringContaining(ref) } });
+});
+
+test('view put makes one gallery tab of the images and mp4 videos given under one label', async () => {
+	const at = await machine();
+	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.work, 'fake') };
+	file(at, 'notes.md', '# Notes');
+	writeFileSync(join(at.work, 'a.png'), MEDIA.png);
+	writeFileSync(join(at.work, 'run.mp4'), MEDIA.mp4);
+	const put = await run(at, ['view', 'put', '--tab', 'Notes', 'notes.md', '--tab', 'Shots', 'a.png', 'run.mp4'], { env });
+	expect(put).toMatchObject({ code: 0, out: { files: [{ bytes: 7 }, { bytes: MEDIA.png.length }, { bytes: MEDIA.mp4.length }] } });
+	// The media go up first, the view last.
+	const uploads = await lines(at, 'fake/views.jsonl', 3);
+	expect(uploads.slice(0, 2).map((upload) => upload.type).sort()).toEqual(['image/png', 'video/mp4']);
+	expect(uploads[2]?.path).toBe(`/api/view/${String(put.out.id)}`);
+	expect(uploads[2]?.body).toMatchObject({
+		view: {
+			tabs: [
+				{ label: 'Notes', content: { markdown: '# Notes' } },
+				{ label: 'Shots', content: { gallery: [{ media: 0, type: 'image/png' }, { media: 1, type: 'video/mp4' }] } },
+			],
+		},
+	});
+	// A label of a gallery and of a text tab is one label used twice.
+	expect(await run(at, ['view', 'put', '--tab', 'Shots', 'a.png', '--tab', 'Shots', 'notes.md'], { env })).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining('used twice') } });
 });
 
 test('an identical ask with its ref returns the stored question after its view lost the tab labels, and a changed body still conflicts', async () => {

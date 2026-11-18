@@ -5,27 +5,29 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { within } from '../chat/calls.ts';
 import { deliveryKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
-import { choice, message, text } from '../core/builders.ts';
+import { choice, message, text, yesNo } from '../core/builders.ts';
 import { isRecord, isString, optional } from '../core/check.ts';
 import { isSent } from '../core/guards.ts';
 import { mergeLabels } from '../core/labels.ts';
 import { parseQuestion } from '../core/parse.ts';
 import { bindingOf } from '../core/render.ts';
 import { REF, VIEW_ID } from '../core/shape.ts';
-import type { Option, Outcome, Question, ViewClient, Warning } from '../core/types.ts';
+import type { Attachment, Option, Outcome, Question, ViewClient, Warning } from '../core/types.ts';
+import { typeOf } from '../files/roots.ts';
 import { fetchFile, type FileSource } from '../telegram/fetch-file.ts';
 import { CURSOR_KEY, listen, parseCursor } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
 import { createTopic, setTopicIcon, type TopicRefused, type TopicUncertain, topicIcons, topicMode } from '../telegram/topics.ts';
 import { parseStoredUpdate, type StoredUpdate, UPDATE_ATTEMPTS, UPDATE_PREFIX } from '../telegram/updates.ts';
 import { VIEW_TTL } from '../view/client.ts';
-import { prepareView } from '../view/prepare.ts';
+import { prepareView, type TabInput } from '../view/prepare.ts';
+import { isMediaType } from '../view/stored.ts';
 import { apiUrlOf, KEY_NAMES, localFilesOf } from './config.ts';
 import { viewDeploy } from './deploy.ts';
 import { init } from './init.ts';
 import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
 import { type InputOf, inputIssue, isInput, type Param, usage } from './params.ts';
-import { done, Failed, failed, failureOf, fromOutcome, type Result } from './result.ts';
+import { done, Failed, type Failure, failed, failureOf, fromOutcome, type Result } from './result.ts';
 import { type Context, openSession, type Session } from './session.ts';
 import { runShell } from './shell.ts';
 
@@ -77,15 +79,24 @@ const TABS = {
 	type: 'json',
 	many: true,
 	required: true,
-	description: 'The tabs in order, 1 to 8, each { label, file }: a label of 1 to 46 characters, and a .md, .diff, .patch or .html file below the roots, as an absolute path for an MCP client.',
-	schema: { type: 'object', properties: { label: { type: 'string' }, file: { type: 'string' } }, required: ['label', 'file'], additionalProperties: false },
-	cli: { flag: 'tab', pair: ['label', 'file'] },
+	description:
+		'The tabs in order, 1 to 8, each { label, file, caption? }: a label of 1 to 46 characters, and a file below the roots, as an absolute path for an MCP client. A .md, .diff, .patch or .html file is a tab of its own. A png, jpg, jpeg, webp, gif or mp4 file is one picture of a gallery tab: the entries of one label form one gallery in order, and caption is the text below its picture.',
+	schema: { type: 'object', properties: { label: { type: 'string' }, file: { type: 'string' }, caption: { type: 'string' } }, required: ['label', 'file'], additionalProperties: false },
+	cli: { flag: 'tab', pair: ['label', 'file'], more: true },
 } as const;
 const TOPIC = {
 	name: 'topic',
 	type: 'integer',
 	description: 'The id of a topic of the private chat, as topic create printed it: the message goes into that topic. Needs topic mode, which info shows.',
 	cli: { label: 'id' },
+} as const;
+const FILES = {
+	name: 'files',
+	type: 'string',
+	many: true,
+	description:
+		'A file below the roots that goes out as a reply to the message, 1 to 10 of them, as an absolute path for an MCP client: png, jpg, jpeg and webp as photos, mp4 as videos, any other file as a document. 2 or more photos and videos form one album, 2 or more documents another.',
+	cli: { flag: 'file', label: 'path' },
 } as const;
 const STRICT = { name: 'strict', type: 'boolean', description: 'Turns every warning into a refusal before anything is sent.' } as const;
 const DRY_RUN = { name: 'dryRun', type: 'boolean', description: 'Prints what would be sent and the roots files would come from, and sends nothing.' } as const;
@@ -143,11 +154,63 @@ type OptionInput = string | { label: string; tab?: string };
 const isOptionInput = (value: unknown): value is OptionInput =>
 	isString(value) || (isRecord(value) && Object.keys(value).every((key) => key === 'label' || key === 'tab') && isString(value.label) && optional(isString)(value.tab));
 
-/** A tab of `view put`: the label and the file as the input names them. */
-const isTab = (value: unknown): value is { label: string; file: string } => isRecord(value) && Object.keys(value).length === 2 && isString(value.label) && isString(value.file);
+/** A tab entry of `view put`: the label and the file as the input names them, and the caption of a gallery picture. */
+type TabEntry = { label: string; file: string; caption?: string };
+const isTab = (value: unknown): value is TabEntry =>
+	isRecord(value) && isString(value.label) && isString(value.file) && optional(isString)(value.caption) && Object.keys(value).every((key) => key === 'label' || key === 'file' || key === 'caption');
+
+/**
+ * The tabs of `view put` from its entries, in the order of each label's first entry. A media
+ * file, by its ending, is one picture of the gallery of its label; any other file is a tab of
+ * its own, whose kind `prepareView` reads from its ending. A path resolves against the CLI's
+ * working directory. A failure: a relative path without one, or a caption on a file that is no
+ * picture. A label of a gallery and of another tab is refused by `prepareView` as used twice.
+ */
+function tabInputs(entries: readonly TabEntry[], context: Context): { ok: true; tabs: TabInput[] } | { ok: false; failure: Failure } {
+	const tabs: TabInput[] = [];
+	const galleries = new Map<string, { path: string; caption?: string }[]>();
+	for (const { label, file, caption } of entries) {
+		if (!isAbsolute(file) && context.cwd === undefined) return { ok: false, failure: { error: 'usage', message: `the file of tab "${label}" needs an absolute path` } };
+		const path = resolve(context.cwd ?? '/', file);
+		if (!isMediaType(typeOf(path))) {
+			if (caption !== undefined) return { ok: false, failure: { error: 'usage', message: `tab "${label}": a caption belongs to a png, jpg, jpeg, webp, gif or mp4 file of a gallery, and ${file} is none` } };
+			tabs.push({ label, content: { file: path } });
+			continue;
+		}
+		let gallery = galleries.get(label);
+		if (!gallery) {
+			gallery = [];
+			galleries.set(label, gallery);
+			tabs.push({ label, content: { gallery } });
+		}
+		gallery.push({ path, ...(caption !== undefined ? { caption } : {}) });
+	}
+	return { ok: true, tabs };
+}
+
+/**
+ * The attachments of `--file`, each resolved against the CLI's working directory. A relative
+ * path without one, as from an MCP client, is a usage failure: it would resolve against the
+ * server's own directory. `createChat` opens each through the roots before the body is sent.
+ */
+function attachOf(paths: readonly string[] | undefined, context: Context): { attach?: Attachment[] } {
+	if (paths === undefined) return {};
+	return {
+		attach: paths.map((path) => {
+			if (!isAbsolute(path) && context.cwd === undefined) throw new Failed({ error: 'usage', message: `the file ${path} needs an absolute path` });
+			return { path: resolve(context.cwd ?? '/', path) };
+		}),
+	};
+}
 
 /** What a dry run prints: the calls it would make, the roots files would come from and the files it would upload. */
-const dry = (outcome: Extract<Outcome, { kind: 'dry' }>, session: Session) => ({ dryRun: true, steps: outcome.steps, warnings: outcome.warnings, roots: session.roots, files: [] });
+const dry = (outcome: Extract<Outcome, { kind: 'dry' }>, session: Session) => ({
+	dryRun: true,
+	steps: outcome.steps,
+	warnings: outcome.warnings,
+	roots: session.roots,
+	files: outcome.steps.flatMap((step) => (step.call.files ?? []).map((file) => file.path)),
+});
 
 /**
  * `push` when the listener runs an answer command and the meta of the stored question, which
@@ -245,12 +308,13 @@ const info = command({
 
 const send = command({
 	name: 'send',
-	description: 'Sends a message that asks nothing, from Markdown. Prints its Sent, which edit takes.',
+	description: 'Sends a message that asks nothing, from Markdown, with its files as replies. Prints its Sent, which edit takes.',
 	tool: 'send_message',
-	params: [VIEW, TOPIC, { name: 'silent', type: 'boolean', description: 'Sends without a notification sound.' }, STRICT, DRY_RUN, BODY],
+	params: [FILES, VIEW, TOPIC, { name: 'silent', type: 'boolean', description: 'Sends without a notification sound.' }, STRICT, DRY_RUN, BODY],
 	async run(input, context) {
+		const attach = attachOf(input.files, context);
 		const session = await openSession(context);
-		const spec = message({ markdown: input.body }, { ...viewHost(session, input.view), ...(input.silent ? { silent: true } : {}) });
+		const spec = message({ markdown: input.body }, { ...attach, ...viewHost(session, input.view), ...(input.silent ? { silent: true } : {}) });
 		const outcome = await session.chat.send(spec, { ...(input.topic !== undefined ? { topic: input.topic } : {}), ...(input.strict ? { strict: true } : {}), ...(input.dryRun ? { dryRun: true } : {}) });
 		if (outcome.kind === 'ok' || outcome.kind === 'dry') report(context, outcome.warnings);
 		return fromOutcome(outcome, (result) => (result.kind === 'dry' ? dry(result, session) : { ...result.sent }));
@@ -284,7 +348,7 @@ const edit = command({
 
 const ask = command({
 	name: 'ask',
-	description: 'Asks a question with options, yes or no, or a text answer. Prints its ref, its status and next: push when the answer command receives it, else wait.',
+	description: 'Asks a question with options, yes or no, or a text answer, with its files as replies. Prints its ref, its status and next: push when the answer command receives it, else wait.',
 	tool: 'ask_question',
 	params: [
 		{ name: 'answer', type: ['choice', 'yesNo', 'text'], description: 'How the question is answered: a tap on an option, a tap on yes or no, or a reply.', cli: { switches: { 'yes-no': 'yesNo', text: 'text' } } },
@@ -297,6 +361,7 @@ const ask = command({
 			cli: { short: 'o', flag: 'option', label: 'option', text: true },
 		},
 		{ name: 'once', type: 'boolean', description: 'Forbids a correction after the first answer.' },
+		FILES,
 		VIEW,
 		ANSWER_IN,
 		TOPIC,
@@ -315,9 +380,10 @@ const ask = command({
 		const inView = input.answerIn === 'view';
 		if (inView && kind === 'text') return failed({ error: 'refused', code: 'shape', message: 'a text question is answered by a reply in the chat, never in a view' });
 		if (inView && input.view === undefined) return failed({ error: 'refused', code: 'shape', message: '--answer-in view needs --view with the view whose tabs the options name' });
+		const attach = attachOf(input.files, context);
 		const session = await openSession(context);
 		const body = { markdown: input.body };
-		const extras = { ...viewHost(session, input.view), ...(input.once ? { once: true } : {}) };
+		const extras = { ...attach, ...viewHost(session, input.view), ...(input.once ? { once: true } : {}) };
 		// An option named like a tab of the view opens that tab once picked. A held ref keeps the tabs
 		// its first ask bound, so an identical retry equals the stored spec whatever the view holds
 		// now. Only a new question reads the view's tabs; a dry run makes no request, so it reads none.
@@ -512,7 +578,7 @@ async function warnReplaced(views: ViewClient, id: string, labels: readonly stri
 const viewPut = command({
 	name: 'view put',
 	description:
-		'Publishes a view: uploads each file below the roots as a tab, with the local images it names, to the view host in your Cloudflare account. Prints its id, its url, its files and its expiry. send and ask open it with --view <id>.',
+		'Publishes a view: uploads each file below the roots as a tab, with the local images it names, and images and mp4 videos as a gallery tab, to the view host in your Cloudflare account. Prints its id, its url, its files and its expiry. send and ask open it with --view <id>.',
 	tool: 'publish_view',
 	params: [
 		{ name: 'title', type: 'string', description: 'The title above the tabs.', cli: { label: 'text' } },
@@ -522,12 +588,9 @@ const viewPut = command({
 		DRY_RUN,
 	],
 	async run(input, context) {
-		if (!input.tabs.every(isTab)) return failed({ error: 'usage', message: 'each tab is { label, file }' });
-		const files: { label: string; file: string }[] = [];
-		for (const tab of input.tabs.filter(isTab)) {
-			if (!isAbsolute(tab.file) && context.cwd === undefined) return failed({ error: 'usage', message: `the file of tab "${tab.label}" needs an absolute path` });
-			files.push({ label: tab.label, file: resolve(context.cwd ?? '/', tab.file) });
-		}
+		if (!input.tabs.every(isTab)) return failed({ error: 'usage', message: 'each tab is { label, file, caption? }' });
+		const read = tabInputs(input.tabs.filter(isTab), context);
+		if (!read.ok) return failed(read.failure);
 		if (input.ttl !== undefined && (input.ttl < 1 || input.ttl > VIEW_TTL.most)) return failed({ error: 'usage', message: `--ttl takes 1 to ${VIEW_TTL.most} days` });
 		if (input.replace !== undefined && !VIEW_ID.test(input.replace)) return failed({ error: 'usage', message: `the view id "${input.replace}" is not 22 base64url characters` });
 		const session = await openSession(context);
@@ -535,7 +598,7 @@ const viewPut = command({
 			// The store holds the questions answered in this view: a tab one of them binds stays, and
 			// the view lives at least as long as each of them. The put takes its expiry a moment
 			// later than this one, so a check that passes here holds for it too.
-			const labels = new Set(files.map((tab) => tab.label));
+			const labels = new Set(read.tabs.map((tab) => tab.label));
 			const bound = await openBindings(session.store, input.replace);
 			const dropped = bound.flatMap(({ ref, tabs }) => tabs.filter((tab) => !labels.has(tab)).map((tab) => `"${tab}" of question ${ref}`));
 			if (dropped.length > 0) {
@@ -549,10 +612,10 @@ const viewPut = command({
 		}
 		// A dry run makes no request and needs no view host.
 		const views = input.dryRun ? undefined : viewsOf(session);
-		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: files.map(({ label, file }) => ({ label, content: { file } })) }, { roots: session.roots });
+		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: read.tabs }, { roots: session.roots });
 		if (ready.kind === 'refused') return failed({ error: 'refused', code: ready.code, message: ready.reason });
 		report(context, ready.warnings);
-		const labels = files.map((tab) => tab.label);
+		const labels = read.tabs.map((tab) => tab.label);
 		if (!views) return done({ dryRun: true, roots: session.roots, tabs: labels, files: ready.files, media: ready.prepared.media.length, warnings: ready.warnings });
 		if (input.replace !== undefined) await warnReplaced(views, input.replace, labels, context);
 		const put = await views.put(ready.prepared, { ...(input.replace !== undefined ? { id: input.replace } : {}), ...(input.ttl !== undefined ? { ttlDays: input.ttl } : {}) });

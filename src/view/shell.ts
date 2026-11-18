@@ -3,9 +3,10 @@
 // fragment, fetches `/api/view`, asking again for 10 s after a 404, and draws the title, the
 // question's context, the tab row and one panel per tab. A view opened with `q` that shows no
 // context yet asks again for 10 s and adds the context once it shows, else shows
-// `labels.viewLate`. The panels draw Markdown and diff as text nodes, and a page in an
-// `<iframe sandbox>` whose `srcdoc` starts with the page policy and the resolved theme. A gallery
-// tab arrives in a later release and shows `labels.viewError` until then.
+// `labels.viewLate`. The panels draw Markdown and diff as text nodes, a gallery as its images
+// and `mp4` videos from the host with each caption as a text node, and a page in an
+// `<iframe sandbox>` whose `srcdoc` starts with the page policy and the resolved theme. A video
+// plays inline with the native controls, and seeks through the host's `Range` answers.
 //
 // Telegram's main button: on a tab that the context's binding names, `MainButton` reads
 // `labels.choose` and the option's label, spans the bar alone and posts the choice to
@@ -104,6 +105,10 @@ pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .del { background: color-mix(in srgb, var(--destructive) 18%, transparent); }
 .hunk { color: var(--muted-foreground); background: var(--muted); }
 .meta { font-weight: 600; }
+.gallery { display: grid; gap: 20px; padding-top: 4px; }
+.gallery figure { margin: 0; }
+.gallery img, .gallery video { display: block; width: 100%; height: auto; max-height: 70vh; object-fit: contain; border-radius: var(--radius); background: var(--muted); }
+.gallery figcaption { margin-top: 6px; color: var(--muted-foreground); font-size: 14px; overflow-wrap: anywhere; }
 .hint { flex: none; margin: 0; padding: 8px 16px 12px; color: var(--muted-foreground); font-size: 13px; text-align: center; }
 .hint[hidden] { display: none; }
 .state { margin: auto; padding: 24px; color: var(--muted-foreground); text-align: center; }
@@ -477,6 +482,20 @@ function diffLines(text) {
 	});
 }
 
+// The items of a gallery tab, in order, as { kind, src, caption }: a video with its probed URL,
+// an image with its probed URL, and the placeholder image for an item whose probe found it
+// missing or whose index has no URL. urls holds the probed URL of each media index, '' for one
+// found missing.
+function galleryItems(gallery, urls) {
+	return (Array.isArray(gallery) ? gallery : []).filter(function (item) {
+		return item && typeof item.media === 'number';
+	}).map(function (item) {
+		var url = urls[item.media];
+		var video = /^video\//.test(String(item.type));
+		return { kind: url && video ? 'video' : 'image', src: url || PLACEHOLDER, caption: typeof item.caption === 'string' ? item.caption : '' };
+	});
+}
+
 // The words of a rich text value: a string, a list, or an object with text.
 function richText(value) {
 	if (typeof value === 'string') return value;
@@ -712,9 +731,54 @@ function probeAll(indexes, media) {
 	});
 }
 
+// The image of a gallery item at src, which falls back to the placeholder when its load fails.
+function galleryImage(src, caption) {
+	var image = document.createElement('img');
+	image.addEventListener('error', function () { if (image.src !== PLACEHOLDER) image.src = PLACEHOLDER; });
+	image.alt = caption;
+	image.src = src;
+	return image;
+}
+
+// A gallery as one figure per item: a video plays inline with the native controls and loads its
+// metadata alone until played, an image falls back to the placeholder when its load fails, and a
+// caption is a text node. A video whose load fails, such as an object that went missing after
+// its probe, for which the host answers the placeholder image, becomes the placeholder image in
+// its figure, above its caption.
+function drawGallery(items) {
+	var list = element('div', 'gallery');
+	items.forEach(function (item) {
+		var figure = element('figure');
+		var shown;
+		if (item.kind === 'video') {
+			var video = document.createElement('video');
+			video.setAttribute('controls', '');
+			video.setAttribute('playsinline', '');
+			video.setAttribute('preload', 'metadata');
+			video.addEventListener('error', function () { if (video.isConnected) video.replaceWith(galleryImage(PLACEHOLDER, item.caption)); });
+			video.src = item.src;
+			shown = video;
+		} else {
+			shown = galleryImage(item.src, item.caption);
+		}
+		figure.append(shown);
+		if (item.caption) figure.append(element('figcaption', '', item.caption));
+		list.append(figure);
+	});
+	return list;
+}
+
 function fill(panel, content, media) {
 	if (typeof content.diff === 'string') {
 		panel.append(build({ t: 'div', k: 'diff', c: diffLines(content.diff) }));
+		return;
+	}
+	if (Array.isArray(content.gallery)) {
+		var indexes = [];
+		content.gallery.forEach(function (item) { if (item && typeof item.media === 'number' && indexes.indexOf(item.media) < 0) indexes.push(item.media); });
+		probeAll(indexes, media).then(function (urls) {
+			if (!expired) panel.append(drawGallery(galleryItems(content.gallery, urls)));
+		});
 		return;
 	}
 	var text = typeof content.markdown === 'string' ? content.markdown : typeof content.page === 'string' ? content.page : null;

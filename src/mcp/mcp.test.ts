@@ -81,7 +81,7 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const ask = tools.find((tool) => tool.name === 'ask_question');
 	// The fake view host ships in the tarball too.
 	expect(tools.find((tool) => tool.name === 'publish_view')?.inputSchema.properties).toHaveProperty('tabs.items.required', ['label', 'file']);
-	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'answerIn', 'topic', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
+	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'files', 'view', 'answerIn', 'topic', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
 
 	const asked = json(await client.callTool({ name: 'ask_question', arguments: { answer: 'choice', options: ['Merge', 'Wait'], body: 'Merge `fix/lock` now?', strict: true } }));
 	expect(asked).toMatchObject({ status: 'pending', next: 'wait' });
@@ -165,6 +165,61 @@ test('publish_view uploads files below the roots to the view host and refuses a 
 	const uploads = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8');
 	expect(uploads.trim().split('\n').map((line) => JSON.parse(line).path)).toEqual([`/api/view/${id}`]);
 	expect(uploads).not.toContain('SENTINEL');
+});
+
+test('send_message and ask_question send files below the roots as replies to the body, and refuse a relative path, one outside the roots and a .env', async () => {
+	const root = temp('tau-mcp-');
+	const project = join(root, 'project');
+	mkdirSync(project);
+	writeFileSync(join(project, 'shot.png'), 'png');
+	writeFileSync(join(project, 'run.mp4'), 'mp4');
+	writeFileSync(join(project, '.env'), 'TOKEN=ENV_SENTINEL');
+	writeFileSync(join(root, 'outside.png'), 'OUTSIDE_SENTINEL');
+	const client = await fake(root, project, { roots: [project] });
+
+	const sent = json(await client.callTool({ name: 'send_message', arguments: { body: 'The new header.', files: [join(project, 'shot.png')] } }));
+	expect(sent).toMatchObject({ chat: 111, files: [expect.any(Number)] });
+	const asked = json(await client.callTool({ name: 'ask_question', arguments: { answer: 'yesNo', body: 'Ship the recording?', files: [join(project, 'run.mp4'), join(project, 'shot.png')] } }));
+	expect(asked).toMatchObject({ status: 'pending' });
+	for (const [files, failure] of [
+		[['shot.png'], { error: 'usage' }],
+		[[join(root, 'outside.png')], { error: 'refused', code: 'outside-roots' }],
+		[[join(project, '.env')], { error: 'refused', code: 'secret-file' }],
+	] as const) {
+		const refused = await client.callTool({ name: 'send_message', arguments: { body: 'The file.', files: [...files] } });
+		expect(refused.isError).toBe(true);
+		expect(json(refused)).toMatchObject(failure);
+	}
+
+	const calls = readFileSync(join(root, 'fake', 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+	expect(calls.map((call) => [call.method, call.files, call.payload.reply_parameters?.message_id])).toEqual([
+		['sendRichMessage', undefined, undefined],
+		['sendPhoto', [join(project, 'shot.png')], sent.message],
+		['sendRichMessage', undefined, undefined],
+		['sendMediaGroup', [join(project, 'run.mp4'), join(project, 'shot.png')], calls[2]?.response.result.message_id],
+	]);
+	expect(JSON.stringify(calls)).not.toContain('SENTINEL');
+});
+
+test('publish_view makes a gallery tab of the pictures of one label, each with its caption', async () => {
+	const root = temp('tau-mcp-');
+	const project = join(root, 'project');
+	mkdirSync(project);
+	// The leading bytes of a PNG and of an MP4 `ftyp` box: the host checks them.
+	writeFileSync(join(project, 'a.png'), Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]));
+	writeFileSync(join(project, 'run.mp4'), Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 1, 2]));
+	writeFileSync(join(project, 'notes.md'), '# Notes');
+	const client = await fake(root, project, { roots: [project] });
+	const tabs = [
+		{ label: 'Shots', file: join(project, 'a.png'), caption: 'The new header' },
+		{ label: 'Shots', file: join(project, 'run.mp4'), caption: 'The run' },
+	];
+	const published = json(await client.callTool({ name: 'publish_view', arguments: { tabs } }));
+	expect(published).toMatchObject({ files: [{ path: join(project, 'a.png') }, { path: join(project, 'run.mp4') }] });
+	const view = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).at(-1);
+	expect(view.body.view.tabs).toEqual([{ label: 'Shots', content: { gallery: [{ media: 0, type: 'image/png', caption: 'The new header' }, { media: 1, type: 'video/mp4', caption: 'The run' }] } }]);
+	// A caption belongs to a picture.
+	expect(json(await client.callTool({ name: 'publish_view', arguments: { tabs: [{ label: 'Notes', file: join(project, 'notes.md'), caption: 'x' }] } }))).toMatchObject({ error: 'usage' });
 });
 
 test('a warning reaches the agent as a second text block, and an unknown argument is a usage failure', async () => {
