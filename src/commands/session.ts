@@ -36,6 +36,8 @@ export type Context = {
 	signal: AbortSignal;
 	/** One line a person types, such as a token. Undefined when nobody can type. */
 	readLine?: () => Promise<string | undefined>;
+	/** All of stdin as text, such as the JSON a harness hands a hook. Undefined without a stdin, as for an MCP client. */
+	stdin?: () => Promise<string>;
 	/** The name of the running command, set by the table; fake mode records it beside each call. */
 	command?: string;
 };

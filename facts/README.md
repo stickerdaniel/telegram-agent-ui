@@ -66,6 +66,17 @@ The first open of a Mini App asks the person once to accept Telegram's terms.
 
 On 2026-11-18 the CLI of the stage 3 branch ran against the cloud Bot API with the QA bot and an iPhone: `init` paired through `/start <code>`, `listen` ran with an answer command, a three-option `ask` arrived with its table, a tap on the first option came back from `wait` and reached the answer command with its `meta`, a text reply answered a `--text` question and got the reaction, and `close` showed the resolved form with the question folded below. `screens/ios-round-trip.png` shows the end state.
 
+## Harness sources
+
+The hook tests of stage 9 read these files as the harnesses write and read them, checked on 2026-11-19.
+
+| File | Source |
+| --- | --- |
+| `harness/claude-permission-request.json` | The `PermissionRequest` input example of https://code.claude.com/docs/en/hooks, "PermissionRequest input" |
+| `harness/claude-notification.json` | The `Notification` input example of the same page, "Notification input" |
+| `harness/codex-permission-request.command.input.schema.json` | `codex-rs/hooks/schema/generated/` of openai/codex at `59ac39add`, unchanged at `daa59eb` and at `rust-v0.170.0` |
+| `harness/codex-permission-request.command.output.schema.json` | The same directory. It rejects unknown fields, and Codex fails closed on `updatedInput`, `updatedPermissions` and `interrupt` (`hooks/src/engine/output_parser.rs`) |
+
 ## Open
 
 - The Android screen above.

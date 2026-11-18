@@ -2,7 +2,7 @@
 // small call through each, and runs the bin. Run after the build: `bun run test:node`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -156,7 +156,7 @@ assert.deepEqual((await version.json()).formats, [1, 'answers']);
 // ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'mcp init'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'hook permission-request', 'hook notification', 'hook init', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');
@@ -166,6 +166,19 @@ const { ref } = run(['ask', '--yes-no', '-'], 'Deploy now?');
 assert.deepEqual(run(['wait', ref]).answer, { kind: 'choice', index: 0, label: 'Yes', value: 'yes' });
 // mcp init parses Codex's TOML under Node too.
 assert.equal(run(['mcp', 'init', '--client', 'codex']).changed, true);
+// The permission hook reads stdin under Node and denies an input it cannot read, with exit 0.
+const hooked = spawnSync(process.execPath, [bin, 'hook', 'permission-request', '--client', 'claude'], { env, input: 'not json', encoding: 'utf8' });
+assert.equal(hooked.status, 0);
+assert.equal(JSON.parse(hooked.stdout).hookSpecificOutput.decision.behavior, 'deny');
+// hook init finds claude on the PATH of its environment and writes ~/.claude/settings.json.
+const claudeBin = join(root, 'claude-bin');
+mkdirSync(claudeBin);
+writeFileSync(join(claudeBin, 'claude'), '#!/bin/sh\necho "2.1.327 (Claude Code)"\n', { mode: 0o755 });
+const hookEnv = { ...env, PATH: `${claudeBin}:${process.env.PATH}` };
+assert.equal(JSON.parse(execFileSync(process.execPath, [bin, 'hook', 'init', '--client', 'claude'], { env: hookEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).changed, true);
+// The entry runs this Node and the built bin by their absolute paths.
+const settings = JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8'));
+assert.equal(settings.hooks.PermissionRequest[0].hooks[0].command, `'${process.execPath}' '${realpathSync(bin)}' hook permission-request --client claude --seconds 570`);
 // A body file outside the roots is refused before anything is sent.
 const outside = spawnSync(process.execPath, [bin, 'send', '/etc/hosts'], { env, encoding: 'utf8' });
 assert.equal(outside.status, 1);

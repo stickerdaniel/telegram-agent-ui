@@ -24,6 +24,8 @@ import { prepareView, type TabInput } from '../view/prepare.ts';
 import { isMediaType } from '../view/stored.ts';
 import { apiUrlOf, KEY_NAMES, localFilesOf } from './config.ts';
 import { viewDeploy } from './deploy.ts';
+import { denial, HOOK_CLIENTS, HOOK_REF_PREFIX, HOOK_SECONDS, isHookRef, notification, permissionRequest } from './hook.ts';
+import { hookInit } from './hook-init.ts';
 import { init } from './init.ts';
 import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
 import { type InputOf, inputIssue, isInput, type Param, usage } from './params.ts';
@@ -41,15 +43,28 @@ export type Command = {
 	params: readonly Param[];
 	/** Runs the command on an input as JSON. A thrown error becomes its failure, so it always resolves. */
 	invoke(raw: unknown, context: Context): Promise<Result>;
+	/**
+	 * What the CLI prints with exit 0 in place of any failure of this command, a usage error
+	 * included: a harness that reads the output then never reads a failure as a decision.
+	 */
+	failClosed?: (failure: Failure) => Record<string, unknown>;
 };
 
 /** A command whose handler receives the input typed by its own params. */
-function command<const Ps extends readonly Param[]>(spec: { name: string; description: string; tool?: string; params: Ps; run(input: InputOf<Ps>, context: Context): Promise<Result> }): Command {
-	const { name, description, tool, params } = spec;
+function command<const Ps extends readonly Param[]>(spec: {
+	name: string;
+	description: string;
+	tool?: string;
+	params: Ps;
+	run(input: InputOf<Ps>, context: Context): Promise<Result>;
+	failClosed?: (failure: Failure) => Record<string, unknown>;
+}): Command {
+	const { name, description, tool, params, failClosed } = spec;
 	return {
 		name,
 		description,
 		...(tool !== undefined ? { tool } : {}),
+		...(failClosed ? { failClosed } : {}),
 		params,
 		async invoke(raw, context) {
 			if (!isInput(params, raw)) return failed({ error: 'usage', message: `${inputIssue(params, raw) ?? 'the input breaks its schema'}. Usage: ${usage(name, params)}` });
@@ -149,6 +164,22 @@ async function openBindings(store: Session['store'], id: string): Promise<{ ref:
 	return found;
 }
 
+/**
+ * The refusal of a hook question's ref. Only the hook that asked the question reads its answer
+ * and changes it, so the agent it gates cannot edit what the human approves.
+ */
+const hookRefused = (ref: string) => failed({ error: 'refused', code: 'shape', message: `the ref ${ref} belongs to a permission hook, which alone reads and changes its question` });
+
+/** True when message `at` is the message of a stored hook question, found by its `sent`, whatever the reply index holds. */
+async function isHookMessage(store: Session['store'], at: { chat: number; message: number }): Promise<boolean> {
+	for (const key of await store.list(`q:${HOOK_REF_PREFIX}`)) {
+		const question = parseQuestion(await store.get(key));
+		const sent = question && 'sent' in question ? question.sent : undefined;
+		if (sent && sent.chat === at.chat && sent.message === at.message) return true;
+	}
+	return false;
+}
+
 /** An option of `ask` as the input names it: a label, or a label with the tab it binds. */
 type OptionInput = string | { label: string; tab?: string };
 const isOptionInput = (value: unknown): value is OptionInput =>
@@ -240,7 +271,8 @@ const info = command({
 		const questions: Question[] = [];
 		for (const key of await store.list('q:')) {
 			const question = parseQuestion(await store.get(key));
-			if (question) questions.push(question);
+			// A hook question belongs to its hook alone.
+			if (question && !isHookRef(question.ref)) questions.push(question);
 		}
 		const messages: StoredMessage[] = [];
 		for (const key of await store.list(MESSAGE_PREFIX)) {
@@ -332,6 +364,7 @@ const edit = command({
 	],
 	async run(input, context) {
 		if ((input.sent === undefined) === (input.ref === undefined)) return failed({ error: 'usage', message: 'edit takes a Sent or --ref, exactly one of them' });
+		if (input.ref !== undefined && isHookRef(input.ref)) return hookRefused(input.ref);
 		const session = await openSession(context);
 		let sent = input.sent;
 		if (input.ref !== undefined) {
@@ -341,6 +374,8 @@ const edit = command({
 			sent = question.sent;
 		}
 		if (!isSent(sent)) return failed({ error: 'refused', code: 'shape', message: 'the Sent breaks its type: pass the JSON that send printed' });
+		if (sent.ref !== undefined && isHookRef(sent.ref)) return hookRefused(sent.ref);
+		if (await isHookMessage(session.store, sent)) return failed({ error: 'refused', code: 'shape', message: `message ${sent.message} belongs to a permission hook, which alone changes it` });
 		const outcome = await session.chat.edit(sent, { markdown: input.body });
 		return fromOutcome(outcome, ({ kind: _kind, ...result }) => result);
 	},
@@ -380,6 +415,7 @@ const ask = command({
 		const inView = input.answerIn === 'view';
 		if (inView && kind === 'text') return failed({ error: 'refused', code: 'shape', message: 'a text question is answered by a reply in the chat, never in a view' });
 		if (inView && input.view === undefined) return failed({ error: 'refused', code: 'shape', message: '--answer-in view needs --view with the view whose tabs the options name' });
+		if (input.ref !== undefined && isHookRef(input.ref)) return hookRefused(input.ref);
 		const attach = attachOf(input.files, context);
 		const session = await openSession(context);
 		const body = { markdown: input.body };
@@ -434,6 +470,7 @@ const wait = command({
 	],
 	async run(input, context) {
 		if (!REF.test(input.ref)) return failed({ error: 'usage', message: `the ref "${input.ref}" is not 1 to 32 characters of [A-Za-z0-9_-]` });
+		if (isHookRef(input.ref)) return hookRefused(input.ref);
 		const session = await openSession(context);
 		await session.fake?.answer(input.ref);
 		const waited = await session.chat.wait(input.ref, input.seconds !== undefined ? { seconds: input.seconds } : {});
@@ -450,6 +487,7 @@ const close = command({
 		{ ...BODY, required: false, description: 'The resolved form of the question, in Markdown.' },
 	],
 	async run(input, context) {
+		if (isHookRef(input.ref)) return hookRefused(input.ref);
 		const session = await openSession(context);
 		const outcome = await session.chat.close(input.ref, ...(input.body !== undefined ? [{ markdown: input.body }] : []));
 		return fromOutcome(outcome, ({ kind: _kind, ...result }) => result);
@@ -660,6 +698,31 @@ const mcpInitCommand = command({
 	run: (input, context) => mcpInit(input.client, context.env),
 });
 
+const HOOK_CLIENT = { name: 'client', type: HOOK_CLIENTS, required: true, description: 'The harness that runs the hook: Claude Code or Codex.', cli: { label: HOOK_CLIENTS.join('|') } } as const;
+
+const hookPermissionRequest = command({
+	name: 'hook permission-request',
+	description:
+		"The PermissionRequest hook of Claude Code and Codex: reads the tool call on stdin, asks on Telegram with Allow and Deny, and prints the decision. Any failure prints a denial. An input too long for a question prints {} for Claude Code, which then asks at its terminal, and a denial for Codex.",
+	params: [HOOK_CLIENT, { name: 'seconds', type: 'integer', description: `How long the question takes answers: ${HOOK_SECONDS.most} by default and at most, 30 s inside the hook timeout of ${HOOK_SECONDS.timeout}.`, cli: { label: 'n' } }],
+	run: (input, context) => permissionRequest(input, context),
+	failClosed: (failure) => denial(failure.message),
+});
+
+const hookNotification = command({
+	name: 'hook notification',
+	description: 'The Notification hook of Claude Code: sends its text to Telegram when an agent waits for input or a permission, and nothing for other notifications.',
+	params: [{ name: 'client', type: ['claude'], required: true, description: 'The harness that runs the hook: Codex has no notification hook.', cli: { label: 'claude' } }],
+	run: (_input, context) => notification(context),
+});
+
+const hookInitCommand = command({
+	name: 'hook init',
+	description: "Writes the hook entries into the harness's user settings, keeping every other entry. Tool input then leaves the machine for Telegram.",
+	params: [HOOK_CLIENT],
+	run: (input, context) => hookInit(input.client, context),
+});
+
 /** The commands of this stage, in the order of section 5. */
 export const commands: readonly Command[] = [
 	command({ name: 'init', description: 'Pairs a bot with your private chat and writes the config.', params: [], run: (_input, context) => init(context) }),
@@ -677,6 +740,9 @@ export const commands: readonly Command[] = [
 	topicCreate,
 	topicIconsCommand,
 	topicIcon,
+	hookPermissionRequest,
+	hookNotification,
+	hookInitCommand,
 	mcpInitCommand,
 ];
 

@@ -7,14 +7,14 @@
 // parsed result holds every other setting unchanged. A linked config is written at its real
 // path, and a link to a file that does not exist is refused. A config that cannot be edited so
 // is refused and left untouched. A second run changes nothing.
-import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { isRecord } from '../core/check.ts';
 import type { Json } from '../core/types.ts';
 import type { Env } from './config.ts';
 import { done, failed, type Result } from './result.ts';
+import { canonical, parsedJson, readText, type UserConfig as Config, writeKept, writeTarget } from './user-file.ts';
 
 export const MCP_CLIENTS = ['claude', 'cursor', 'vscode', 'codex', 'opencode'] as const;
 export type McpClient = (typeof MCP_CLIENTS)[number];
@@ -25,7 +25,6 @@ const NAME = 'telegram-agent-ui';
 const COMMAND = ['npx', 'telegram-agent-ui@latest', 'mcp'] as const;
 const [command, ...args] = COMMAND;
 
-type Config = Record<string, unknown>;
 /** A JSON config with the entry in place, or why the file cannot take it. */
 type Placed = { kind: 'ok'; next: Config; entry: Json } | { kind: 'refused'; reason: string };
 
@@ -93,48 +92,6 @@ export function mcpTarget(client: McpClient, env: Env): Target {
 	}
 }
 
-/** The text of a file, or undefined when it does not exist. */
-async function readText(path: string): Promise<string | undefined> {
-	try {
-		return await readFile(path, 'utf8');
-	} catch (error) {
-		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
-		throw error;
-	}
-}
-
-/**
- * The file a write of `path` replaces, the one a read of `path` opens: the real path of an
- * existing file, or `path` itself when nothing is there. A link whose target does not exist is
- * refused, since only the operating system can tell where its target would be.
- */
-async function writeTarget(path: string): Promise<{ kind: 'ok'; path: string } | { kind: 'refused'; reason: string }> {
-	const real = await realpath(path).catch(() => undefined);
-	if (real !== undefined) return { kind: 'ok', path: real };
-	const found = await lstat(path).catch(() => undefined);
-	if (!found?.isSymbolicLink()) return { kind: 'ok', path };
-	return { kind: 'refused', reason: `is a link to ${await readlink(path)}, which does not exist. Create the target or remove the link, then run mcp init again` };
-}
-
-/** Writes `text` to the file `real`, which `writeTarget` found, through a temp file beside it. The mode stays, a new file gets 0600. */
-async function writeKept(real: string, text: string): Promise<void> {
-	const mode = await stat(real).then((found) => found.mode & 0o777, () => 0o600);
-	await mkdir(dirname(real), { recursive: true });
-	const temp = `${real}.${process.pid}.tmp`;
-	try {
-		await writeFile(temp, text, { mode });
-		await chmod(temp, mode);
-		await rename(temp, real);
-	} catch (error) {
-		await rm(temp, { force: true });
-		throw error;
-	}
-}
-
-/** A parsed TOML value as text with sorted keys, so two documents compare by meaning. Dates print through `toJSON`. */
-const canonical = (value: unknown) =>
-	JSON.stringify(value, (_key, item: unknown) => (isRecord(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item));
-
 /** A parsed Codex config without this server's entry: what an edit must keep. An `mcp_servers` left empty counts as absent. */
 function withoutEntry(config: Config): Config {
 	const { mcp_servers: servers, ...others } = config;
@@ -189,17 +146,6 @@ function withCodexEntry(text: string, block: string): string | undefined {
 		const after = parsedToml(candidate);
 		return after !== undefined && holdsEntry(after) && canonical(withoutEntry(after)) === kept;
 	});
-}
-
-/** A JSON text as a config object: empty for no text, undefined for anything but an object. */
-function parsedJson(text: string | undefined): Config | undefined {
-	if (text === undefined || text.trim() === '') return {};
-	try {
-		const value: unknown = JSON.parse(text);
-		return isRecord(value) ? value : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 /**

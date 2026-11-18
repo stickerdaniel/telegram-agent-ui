@@ -151,3 +151,25 @@ telegram-agent-ui mcp init --client claude
 | `vscode` | `mcp-config.json` in `$COPILOT_HOME`, default `~/.copilot` |
 | `codex` | `config.toml` in `$CODEX_HOME`, default `~/.codex` |
 | `opencode` | `opencode/opencode.json` in `$XDG_CONFIG_HOME`, default `~/.config` |
+
+## Harness
+
+`hook permission-request --client <claude|codex>` is the `PermissionRequest` hook of Claude Code and Codex. It reads the tool call on stdin, asks on Telegram with `Allow` and `Deny`, and prints the decision with exit 0. The message names the tool and shows the whole call: a shell command, a file tool's paths and its whole change, each with its other fields as JSON, and any other tool's input as JSON. An input too long for a question gets no approval: the command sends `labels.tooLong`. For Claude Code it prints `{}`, no decision, and Claude Code asks at its terminal. For Codex it prints a denial that says the input was too long to approve on Telegram. The question takes answers for `--seconds`, 570 by default and at most. Then it closes and the command prints a denial, 30 s before the harness cancels the hook at 600 s. No listener, no config, stdin it cannot read, a refused send and every error also print a denial. Each run asks its own question and reads only that question's answer. Its ref starts with `hook-`: `edit`, `close`, `wait`, `ask --ref` and their tools refuse such a ref in any letter case, and `info` leaves the question out. A question whose stored body changed after the send is denied.
+
+`hook notification --client claude` sends Claude Code's notification text when an agent waits for input, `agent_needs_input`, or for a permission, `permission_prompt`, and nothing for other types. Codex has no notification hook.
+
+`hook init --client <claude|codex>` writes the hooks into the harness's user settings and keeps every other key and handler of the file. It refuses with `other-hook` while that file, or another layer the harness loads for the directory you run it in, holds another `PermissionRequest` handler, and so does an entry of this package in another layer, which it does not change: both harnesses let another handler's allow stand when this hook gives no decision. For Claude Code it reads `.claude/settings.json` and `.claude/settings.local.json` there and the local file at the repository root; for Codex `config.toml` in `$CODEX_HOME` and `hooks.json` and `config.toml` in each `.codex` from the repository root down to that directory. Its output lists them as `checked`. Run it again in each project you use with the hook. Each entry runs the absolute paths of the runtime and of the installed package's bin, so a release changes the hook only once you install it, and no npm or project npm config runs on the way. Run it from an install, `npm i -g telegram-agent-ui` or a project's own: from an npx cache it refuses with `npx-cache`. From then on the input of every tool call that asks for a permission goes to Telegram, and `hook init` says so before it writes. A second run changes nothing.
+
+```sh
+telegram-agent-ui hook init --client claude
+# {"client":"claude","path":"/Users/you/.claude/settings.json","hooks":{"PermissionRequest":[...],"Notification":[...]},"changed":true}
+```
+
+| Client | File | Hooks |
+| --- | --- | --- |
+| `claude` | `~/.claude/settings.json`, or `settings.json` in `$CLAUDE_CONFIG_DIR` | `PermissionRequest` with `timeout: 600` and `onFailure: "block"` for every tool except `AskUserQuestion` and `ExitPlanMode`, and `Notification` for the two types above. Needs Claude Code 2.1.295 or later: `hook init` refuses an older one with `client-version` |
+| `codex` | `hooks.json` in `$CODEX_HOME`, default `~/.codex` | `PermissionRequest` with `timeout: 600`. Codex runs a new hook once you trust it in `/hooks` |
+
+The supported setup has this hook as the only `PermissionRequest` handler that can allow, in every settings file the harness reads. A hook that fails or times out then allows nothing: Claude Code denies the call through `onFailure: "block"`, and Codex goes on with its own approval flow. Claude Code applies its deny and ask rules after an allow from the hook.
+
+The hook guards the approval against an agent that reaches Telegram only through this package's commands and MCP tools, or that the harness's sandbox confines. A process of the same user that can write the store or read the bot token can forge an approval.

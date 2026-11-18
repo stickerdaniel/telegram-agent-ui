@@ -5,9 +5,12 @@ import type { Stopped } from '../telegram/listen.ts';
 
 /**
  * The codes of a refusal: those of `createChat`, plus those of pairing, of an edit by ref, of
- * `mcp init`, of `view deploy`, and of the view host: `view-host` for a request it refused,
- * `unknown-view` for a view it does not hold. `fetch` adds `forbidden` for a file id no allowed
- * message carried and `too-large` for a file past its cap, the topic commands `no-topics`.
+ * `mcp init` and `hook init`, of `view deploy`, and of the view host: `view-host` for a request
+ * it refused, `unknown-view` for a view it does not hold. `fetch` adds `forbidden` for a file id
+ * no allowed message carried and `too-large` for a file past its cap, the topic commands
+ * `no-topics`. `client-version` is a harness too old for the hook entry, `other-hook` a harness
+ * file with another PermissionRequest handler, and `npx-cache` a `hook init` run from an npx
+ * cache, which a hook entry must not point into.
  */
 export type RefusedCode =
 	| Extract<Outcome, { kind: 'refused' }>['code']
@@ -16,6 +19,9 @@ export type RefusedCode =
 	| 'not-paired'
 	| 'unconfirmed-message'
 	| 'client-config'
+	| 'client-version'
+	| 'other-hook'
+	| 'npx-cache'
 	| 'wrangler'
 	| 'view-host'
 	| 'unknown-view'

@@ -113,6 +113,11 @@ const refused = (code: Refused['code'], reason: string): Refused => ({ kind: 're
 const sentOf = (question: Question): Sent | undefined => ('sent' in question ? question.sent : undefined);
 const statusOf = (question: Question) => (question.status === 'answered' || question.status === 'closed' ? question.status : 'pending');
 const isQuestionSpec = (spec: Spec): spec is Question['spec'] => spec.answer !== undefined;
+/** A stored value as the question of `ref`: undefined unless it parses and names `ref` itself. */
+function sameRef(ref: string, value: unknown): Question | undefined {
+	const question = parseQuestion(value);
+	return question?.ref === ref ? question : undefined;
+}
 /** The question with `shown.recheckAt` set to `recheckAt`, or without one. */
 function withRecheck(question: Question, recheckAt: number | undefined): Question {
 	const { recheckAt: _recheckAt, ...shown } = question.shown;
@@ -173,10 +178,20 @@ export function createChat(io: ChatIO): Chat {
 	/** One event against one question at the current time. */
 	const apply = (question: Question, event: QuestionEvent): Question => reduce(question, event, { now: now(), labels }).question ?? question;
 
-	/** The stored question of `ref`. `held` tells a stored value that does not parse from no value at all. */
+	/**
+	 * The stored question of `ref`, or undefined. A question whose stored `ref` is another one
+	 * counts as absent: a store on a case-insensitive volume returns the question of `abc` for
+	 * `ABC`, and that alias must reach no other question.
+	 */
+	const questionOf = async (ref: string) => sameRef(ref, await store.get(questionKey(ref)));
+
+	/**
+	 * The stored question of `ref`, as `questionOf` reads it. `held` tells a stored value that
+	 * does not parse or names another ref from no value at all, so a send never writes over it.
+	 */
 	async function load(ref: string): Promise<{ question: Question | undefined; held: boolean }> {
 		const value = await store.get(questionKey(ref));
-		return { question: parseQuestion(value), held: value !== undefined };
+		return { question: sameRef(ref, value), held: value !== undefined };
 	}
 
 	/** Stores `next` unless it equals `previous`. A question that would not read back after a JSON round trip is never stored. */
@@ -921,7 +936,7 @@ export function createChat(io: ChatIO): Chat {
 		if (typeof seconds !== 'number' || Number.isNaN(seconds)) throw new ShapeError('seconds is not a number');
 		const deadline = Date.now() + Math.min(Math.max(seconds, 0), WAIT_SECONDS.most) * 1000;
 		for (;;) {
-			const question = parseQuestion(await store.get(questionKey(ref)));
+			const question = await questionOf(ref);
 			const listener = listenerStatus(await store.get(LISTENER_KEY), now());
 			if (!question || question.status === 'answered' || question.status === 'closed') {
 				const answer = question && 'answer' in question ? question.answer : undefined;
@@ -942,7 +957,7 @@ export function createChat(io: ChatIO): Chat {
 		choose,
 		wait,
 		flush,
-		get: async (ref) => parseQuestion(await store.get(questionKey(ref))),
+		get: questionOf,
 		updates: UPDATES,
 	};
 }
