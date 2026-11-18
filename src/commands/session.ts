@@ -16,11 +16,11 @@ import { LIMITS } from '../core/shape.ts';
 import type { Call, CallResponse, Store, Update, ViewClient } from '../core/types.ts';
 import { readTextInRoots } from '../files/roots.ts';
 import { fileStore } from '../store/file.ts';
-import { fetchCall, type Transport } from '../telegram/fetch.ts';
+import { type Download, fetchCall, fileDownload, scrubber, type Transport } from '../telegram/fetch.ts';
 import { isUpdate } from '../telegram/listen.ts';
 import { viewClient } from '../view/client.ts';
 import { createViewHandler, type ViewStorage } from '../view/handler.ts';
-import { apiUrlOf, type Config, type Env, FILE_LIMITS, findSecret, findToken, KEY_NAMES, paths, readConfig } from './config.ts';
+import { apiUrlOf, type Config, type Env, FILE_LIMITS, findSecret, findToken, KEY_NAMES, originOf, paths, readConfig } from './config.ts';
 import { Failed, type Failure } from './result.ts';
 
 /** What a command gets from its caller: the CLI's process, or an MCP server's. */
@@ -46,6 +46,12 @@ export type Session = {
 	where: { config: string; store: string };
 	store: Store;
 	call: Transport;
+	/** The effective Bot API URL behind `call`, after TELEGRAM_AGENT_UI_API_URL: the listener stores it with its cursor. */
+	origin: string;
+	/** Reads a file of the Bot API server by its relative `file_path`. Fake mode has none. */
+	download?: Download;
+	/** Replaces the bot token in a text, for what a command prints from a server's answer or a consumer's error. */
+	scrub: (text: string) => string;
 	chat: Chat;
 	/** The client of the view host, once `view deploy` recorded its origin and its upload key is found. */
 	views?: ViewClient;
@@ -65,6 +71,8 @@ const isScenario = (value: string): value is Scenario => FAKE_SCENARIOS.some((sc
 
 /** The origin of fake mode's view host. Nothing serves it: its client calls the handler in the same process. */
 export const FAKE_VIEW_ORIGIN = 'https://views.fake.invalid';
+/** The Bot API URL fake mode names. Nothing serves it: the recorder answers every call. */
+const FAKE_API = 'https://api.fake.invalid';
 const FAKE_KEYS = { upload: 'fake-upload-key-0123456789', media: 'fake-media-key-0123456789' } as const;
 const FAKE_CONFIG: Config = { v: 1, bot: { id: 1, username: 'fake_bot' }, chat: 111, users: [111], labels: {}, publishRoots: [], views: { origin: FAKE_VIEW_ORIGIN } };
 const CHANGES = new Set(['sendRichMessage', 'sendPhoto', 'sendVideo', 'sendDocument', 'sendMediaGroup', 'editMessageText']);
@@ -90,8 +98,8 @@ function reserve(store: Store, count: number): Promise<number> {
  * The recorder of fake mode: every call becomes one line of `log`, `{ at, method, payload,
  * files?, response, command? }`, so a reader links an edit to the send whose message it names
  * and to the command that made it, such as `edit` or `close`. It answers like the cloud Bot API
- * on success, with message ids from `reserve`, one per message an album returns, or as
- * `scenario` says.
+ * on success, with message ids from `reserve`, one per message an album returns, and getMe with
+ * the fake bot without topic mode, or as `scenario` says.
  */
 function recorder(log: string, store: Store, scenario: Scenario | undefined, command: string | undefined): Transport {
 	const answer = async ({ method, payload }: Call): Promise<CallResponse> => {
@@ -99,6 +107,8 @@ function recorder(log: string, store: Store, scenario: Scenario | undefined, com
 		if (CHANGES.has(method) && scenario === 'refused') return { ok: false, status: 400, description: 'Bad Request: chat not found' };
 		if (CHANGES.has(method) && scenario === 'uncertain') return { noAnswer: true };
 		const message = (id: number) => ({ message_id: id, date: Math.floor(Date.now() / 1000), chat: { id: payload.chat_id, type: 'private' } });
+		// A bot without topic mode, as BotFather makes one.
+		if (method === 'getMe') return { ok: true, result: { id: FAKE_CONFIG.bot.id, is_bot: true, first_name: 'Fake', username: FAKE_CONFIG.bot.username } };
 		if (SENDS.has(method)) return { ok: true, result: message(await reserve(store, 1)) };
 		if (method === 'sendMediaGroup' && Array.isArray(payload.media)) {
 			const first = await reserve(store, payload.media.length);
@@ -188,6 +198,8 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 		where: { config: 'built in: fake mode', store: join(dir, 'store') },
 		store,
 		call,
+		origin: FAKE_API,
+		scrub: (text) => text,
 		chat,
 		...(views ? { views } : {}),
 		roots: await rootsOf(context),
@@ -246,6 +258,7 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 	if (!token) throw new Failed({ error: 'no-config', message: `no bot token: set TELEGRAM_BOT_TOKEN or run telegram-agent-ui init, which writes ${paths(env).envFile}` });
 	const apiUrl = apiUrlOf(env, config);
 	const call = fetchCall({ token, ...(apiUrl !== undefined ? { apiUrl } : {}) });
+	const download = fileDownload({ token, ...(apiUrl !== undefined ? { apiUrl } : {}) });
 	const where = { config: paths(env).configFile, store: paths(env).store(config.bot.id) };
 	const store = fileStore(where.store);
 	const { origin } = config.views;
@@ -262,5 +275,5 @@ export async function openSession(context: Context, options: { onAnswer?: (answe
 		fileLimit: apiUrl !== undefined ? FILE_LIMITS.local : FILE_LIMITS.cloud,
 		...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
 	});
-	return { config, where, store, call, chat, ...(views ? { views } : {}), roots: [...context.roots, ...config.publishRoots] };
+	return { config, where, store, call, origin: originOf(env, config), download, scrub: scrubber(token), chat, ...(views ? { views } : {}), roots: [...context.roots, ...config.publishRoots] };
 }

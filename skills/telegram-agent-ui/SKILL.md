@@ -1,7 +1,7 @@
 ---
 name: telegram-agent-ui
 description: Telegram messages, questions and views to the user through the telegram-agent-ui CLI. Use it when the user asks to hear a result on Telegram, when work with several steps runs while the user follows on Telegram, when the next step needs the user's pick, yes or no, or typed answer while they are away from the terminal, when a diff, HTML mocks or a long document should reach their phone, and when an answer from Telegram has been acted on. A user at the terminal gets the answer in the terminal.
-allowed-tools: Bash(telegram-agent-ui info *), Bash(telegram-agent-ui send *), Bash(telegram-agent-ui edit *), Bash(telegram-agent-ui ask *), Bash(telegram-agent-ui wait *), Bash(telegram-agent-ui close *), Bash(telegram-agent-ui view put *), Bash(true)
+allowed-tools: Bash(telegram-agent-ui info *), Bash(telegram-agent-ui send *), Bash(telegram-agent-ui edit *), Bash(telegram-agent-ui ask *), Bash(telegram-agent-ui wait *), Bash(telegram-agent-ui close *), Bash(telegram-agent-ui view put *), Bash(telegram-agent-ui fetch *), Bash(true)
 ---
 
 # telegram-agent-ui
@@ -91,6 +91,8 @@ Done when: the command exits 0 and prints a `ref` for a question, a Sent for a m
 ## 5. Wait for the answer
 
 Run `telegram-agent-ui wait <ref> --seconds 50`, again while `status` is `pending` and the listener is alive. `"next": "push"` means that the listener hands the answer to its configured answer command. It replaces `wait` only when you know that this command routes the answer into this session.
+
+A file the user sends reaches the session as a file id, in the message the listener's message command passes on. `telegram-agent-ui fetch <file id>` downloads it and prints its local `path`, which the next step reads.
 
 Done when: `status` is `answered`, and `answer` holds the user's pick or text.
 

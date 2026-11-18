@@ -1,7 +1,8 @@
 // The command table of section 5. Each entry has a name, a description, its input schema, the
 // MCP tool that serves it, and a handler over `createChat`. The CLI parser reads the schema
 // to parse arguments, and a handler gets its input typed after `inputIssue` checked it.
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { within } from '../chat/calls.ts';
 import { deliveryKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
 import { choice, message, text } from '../core/builders.ts';
@@ -12,11 +13,14 @@ import { parseQuestion } from '../core/parse.ts';
 import { bindingOf } from '../core/render.ts';
 import { REF, VIEW_ID } from '../core/shape.ts';
 import type { Option, Outcome, Question, ViewClient, Warning } from '../core/types.ts';
-import { listen } from '../telegram/listen.ts';
+import { fetchFile, type FileSource } from '../telegram/fetch-file.ts';
+import { CURSOR_KEY, listen, parseCursor } from '../telegram/listen.ts';
 import { MESSAGE_PREFIX, parseStoredMessage, type StoredMessage, storedKey } from '../telegram/messages.ts';
+import { createTopic, setTopicIcon, type TopicRefused, type TopicUncertain, topicIcons, topicMode } from '../telegram/topics.ts';
+import { parseStoredUpdate, type StoredUpdate, UPDATE_ATTEMPTS, UPDATE_PREFIX } from '../telegram/updates.ts';
 import { VIEW_TTL } from '../view/client.ts';
 import { prepareView } from '../view/prepare.ts';
-import { apiUrlOf, KEY_NAMES } from './config.ts';
+import { apiUrlOf, KEY_NAMES, localFilesOf } from './config.ts';
 import { viewDeploy } from './deploy.ts';
 import { init } from './init.ts';
 import { MCP_CLIENTS, mcpInit } from './mcp-init.ts';
@@ -77,10 +81,18 @@ const TABS = {
 	schema: { type: 'object', properties: { label: { type: 'string' }, file: { type: 'string' } }, required: ['label', 'file'], additionalProperties: false },
 	cli: { flag: 'tab', pair: ['label', 'file'] },
 } as const;
+const TOPIC = {
+	name: 'topic',
+	type: 'integer',
+	description: 'The id of a topic of the private chat, as topic create printed it: the message goes into that topic. Needs topic mode, which info shows.',
+	cli: { label: 'id' },
+} as const;
 const STRICT = { name: 'strict', type: 'boolean', description: 'Turns every warning into a refusal before anything is sent.' } as const;
 const DRY_RUN = { name: 'dryRun', type: 'boolean', description: 'Prints what would be sent and the roots files would come from, and sends nothing.' } as const;
 
 const DAY = 86_400_000;
+/** How long `info` waits for getMe to tell topic mode. */
+const TOPIC_MODE_WAIT = 5_000;
 
 /** Writes each warning as a line of progress. */
 const report = (context: Context, warnings: Warning[]) => {
@@ -153,7 +165,8 @@ async function nextOf(session: Session, ref: string | undefined): Promise<'push'
 
 const info = command({
 	name: 'info',
-	description: 'Prints the config, the bot, the roots, the listener, the open, unconfirmed and undelivered questions, the undelivered messages and the view host.',
+	description:
+		'Prints the config, the bot, the roots, the listener, the open, unconfirmed and undelivered questions, the undelivered messages, the refused and undelivered updates, topic mode and the view host.',
 	tool: 'get_status',
 	params: [{ name: 'json', type: 'boolean', description: 'Prints JSON, which every command does.', cli: { only: true } }],
 	async run(_input, context) {
@@ -171,6 +184,19 @@ const info = command({
 			const stored = parseStoredMessage(await store.get(key));
 			if (stored) messages.push(stored);
 		}
+		const receipts: StoredUpdate[] = [];
+		for (const key of await store.list(UPDATE_PREFIX)) {
+			const stored = parseStoredUpdate(await store.get(key));
+			if (stored) receipts.push(stored);
+		}
+		const cursor = parseCursor(await store.get(CURSOR_KEY));
+		// Topic mode comes from getMe alone; a server without an answer leaves it unknown.
+		const topics = await within(
+			topicMode(session.call).catch(() => undefined),
+			TOPIC_MODE_WAIT,
+			undefined,
+		);
+		const localFiles = context.env.TELEGRAM_AGENT_UI_FAKE ? undefined : context.env.TELEGRAM_AGENT_UI_LOCAL_FILES || config.localFiles;
 		const refs = (keep: (question: Question) => boolean) => questions.filter(keep).map((question) => question.ref);
 		// The baselines the delivery workers count from: only the attempts after them count.
 		const answerBase = (question: Question) => record?.renewed?.answers[deliveryKey(question)];
@@ -182,6 +208,8 @@ const info = command({
 			chat: config.chat,
 			users: config.users,
 			...(apiUrl !== undefined ? { apiUrl } : {}),
+			...(localFiles !== undefined ? { localFiles } : {}),
+			topics: topics ?? null,
 			store: where.store,
 			roots: session.roots,
 			listener: { ...listenerStatus(raw, Date.now()), ...(record ? { heartbeat: record.heartbeat } : {}), ...(record?.push ? { answerCommand: record.push } : {}) },
@@ -201,6 +229,15 @@ const info = command({
 					.filter((stored) => spent(stored.attempts, messageBase(stored)))
 					.map((stored) => ({ chat: stored.chat, message: stored.message.message, update: stored.update, attempts: attemptsSince(stored.attempts, messageBase(stored)), ...(stored.error !== undefined ? { error: stored.error } : {}) })),
 			},
+			// The updates for an update command: those the gate refused, and the receipts still owed.
+			// A receipt with 5 failed deliveries is listed; the listener retries it all the same.
+			updates: {
+				refused: cursor?.refused ?? 0,
+				pending: receipts.length,
+				undelivered: receipts
+					.filter((stored) => stored.attempts >= UPDATE_ATTEMPTS)
+					.map(({ key, epoch, updateId, attempts, retryAt, error }) => ({ key, epoch, updateId, attempts, ...(retryAt !== undefined ? { retryAt } : {}), ...(error !== undefined ? { error: session.scrub(error) } : {}) })),
+			},
 			viewHost: config.views.origin !== undefined ? { origin: config.views.origin } : null,
 		});
 	},
@@ -210,11 +247,11 @@ const send = command({
 	name: 'send',
 	description: 'Sends a message that asks nothing, from Markdown. Prints its Sent, which edit takes.',
 	tool: 'send_message',
-	params: [VIEW, { name: 'silent', type: 'boolean', description: 'Sends without a notification sound.' }, STRICT, DRY_RUN, BODY],
+	params: [VIEW, TOPIC, { name: 'silent', type: 'boolean', description: 'Sends without a notification sound.' }, STRICT, DRY_RUN, BODY],
 	async run(input, context) {
 		const session = await openSession(context);
 		const spec = message({ markdown: input.body }, { ...viewHost(session, input.view), ...(input.silent ? { silent: true } : {}) });
-		const outcome = await session.chat.send(spec, { ...(input.strict ? { strict: true } : {}), ...(input.dryRun ? { dryRun: true } : {}) });
+		const outcome = await session.chat.send(spec, { ...(input.topic !== undefined ? { topic: input.topic } : {}), ...(input.strict ? { strict: true } : {}), ...(input.dryRun ? { dryRun: true } : {}) });
 		if (outcome.kind === 'ok' || outcome.kind === 'dry') report(context, outcome.warnings);
 		return fromOutcome(outcome, (result) => (result.kind === 'dry' ? dry(result, session) : { ...result.sent }));
 	},
@@ -262,6 +299,7 @@ const ask = command({
 		{ name: 'once', type: 'boolean', description: 'Forbids a correction after the first answer.' },
 		VIEW,
 		ANSWER_IN,
+		TOPIC,
 		{ name: 'meta', type: 'json', description: 'JSON that comes back with the answer, such as the session that asked.' },
 		{ name: 'ref', type: 'string', description: 'The question id: 1 to 32 characters of [A-Za-z0-9_-]. Asking again with it sends nothing.' },
 		STRICT,
@@ -308,6 +346,7 @@ const ask = command({
 				: choice(body, options, { ...extras, ...(labels ? { layout: 'row' as const } : {}), ...(inView ? { in: 'view' as const } : {}) });
 		const outcome = await session.chat.send(spec, {
 			needsListener: true,
+			...(input.topic !== undefined ? { topic: input.topic } : {}),
 			...(input.ref !== undefined ? { ref: input.ref } : {}),
 			...(input.meta !== undefined ? { meta: input.meta } : {}),
 			...(input.strict ? { strict: true } : {}),
@@ -358,27 +397,104 @@ const listenCommand = command({
 		{ name: 'onAnswer', type: 'string', description: 'A shell command that gets each answer as JSON on stdin and exits 0 within 30 s.', cli: { label: 'cmd' } },
 		{ name: 'metaKey', type: 'string', many: true, description: 'A key of meta the answer command needs to route an answer. ask prints next: push only for a meta with all of them.', cli: { label: 'key' } },
 		{ name: 'onMessage', type: 'string', description: 'A shell command that gets each message that answers nothing as JSON on stdin and exits 0 within 30 s.', cli: { label: 'cmd' } },
+		{
+			name: 'onUpdate',
+			type: 'string',
+			description: 'A shell command that gets each update of your chat as JSON on stdin, { key, epoch, updateId, update, handled }, and exits 0 once it stored it: within 10 s for a tap, 30 s for anything else.',
+			cli: { label: 'cmd' },
+		},
 	],
 	async run(input, context) {
-		const { onAnswer, onMessage } = input;
+		const { onAnswer, onMessage, onUpdate } = input;
 		if (input.metaKey && onAnswer === undefined) return failed({ error: 'usage', message: '--meta-key belongs to --on-answer' });
 		if (context.env.TELEGRAM_AGENT_UI_FAKE) return failed({ error: 'usage', message: 'fake mode has a built-in listener' });
 		const session = await openSession(context, onAnswer !== undefined ? { onAnswer: (answer) => runShell(onAnswer, answer) } : {});
 		const { chat, call, store, config } = session;
-		const base = {
+		context.log(`listening for @${config.bot.username}`);
+		const stopped = await listen({
 			chat,
+			target: config.chat,
+			origin: session.origin,
+			allow: config.users,
 			call,
 			store,
 			signal: context.signal,
 			labels: config.labels,
 			log: context.log,
 			...(onAnswer !== undefined ? { push: { metaKeys: input.metaKey ?? [] } } : {}),
-		};
-		const messages = onMessage === undefined ? {} : { allow: config.users, onMessage: (inbound: unknown) => runShell(onMessage, inbound) };
-		context.log(`listening for @${config.bot.username}`);
-		const stopped = await listen({ ...base, ...(session.views ? { views: session.views } : {}), ...messages });
+			...(session.views ? { views: session.views } : {}),
+			...(onMessage !== undefined ? { onMessage: (inbound: unknown) => runShell(onMessage, inbound) } : {}),
+			...(onUpdate !== undefined ? { onUpdate: (update: unknown, deadline: number) => runShell(onUpdate, update, deadline) } : {}),
+		});
 		if (stopped.reason === 'signal') return done({ stopped: 'signal' });
 		return failed({ error: 'stopped', code: stopped.reason, message: stopped.message });
+	},
+});
+
+/** The file a fake session reads nothing from: fake mode has no Bot API server. */
+const NO_DOWNLOAD: FileSource = {
+	download: () => Promise.reject(new Error('fake mode downloads no file')),
+};
+
+const fetchCommand = command({
+	name: 'fetch',
+	description:
+		'Downloads a file the user sent in the chat into a cache on this machine, by the file id that a message or update command received. Prints { id, path, bytes, cached }. A file id that no message of an allowed user carried is refused.',
+	tool: 'fetch_file',
+	params: [{ name: 'id', type: 'string', required: true, description: "Telegram's file id of the file, as a message or update command received it.", cli: { positional: true, label: 'file id' } }],
+	async run(input, context) {
+		const session = await openSession(context);
+		const { config, store, call } = session;
+		const localFiles = context.env.TELEGRAM_AGENT_UI_FAKE ? undefined : await localFilesOf(context.env, config);
+		const from: FileSource = localFiles !== undefined ? { localFiles } : session.download ? { download: session.download } : NO_DOWNLOAD;
+		const fetched = await fetchFile({ id: input.id, store, call, cache: join(session.where.store, 'media'), chat: config.chat, allow: config.users, from, scrub: session.scrub });
+		if (fetched.kind === 'ok') return done({ id: fetched.id, path: fetched.path, bytes: fetched.bytes, cached: fetched.cached });
+		if (fetched.code === 'token') return failed({ error: 'no-config', message: `${fetched.reason}. Run init with a new token` });
+		return failed({ error: 'refused', code: fetched.code, message: fetched.reason });
+	},
+});
+
+/** A topic call that did nothing, as a failure: a rejected token is a config to fix, a lost answer is uncertain. */
+function topicFailure(result: TopicRefused | TopicUncertain, uncertain: string): Result {
+	if (result.kind === 'uncertain') return failed({ error: 'uncertain', message: `${result.reason}: ${uncertain}` });
+	if (result.code === 'token') return failed({ error: 'no-config', message: `${result.reason}. Run init with a new token` });
+	return failed({ error: 'refused', code: result.code, message: result.reason });
+}
+
+const topicCreate = command({
+	name: 'topic create',
+	description: 'Makes a topic in the private chat and prints its id, which send and ask take as --topic. Needs topic mode.',
+	params: [{ name: 'name', type: 'string', required: true, description: 'The name of the topic: 1 to 128 characters.', cli: { positional: true } }],
+	async run(input, context) {
+		const session = await openSession(context);
+		const made = await createTopic(session.call, session.config.chat, input.name);
+		if (made.kind === 'ok') return done({ topic: made.topic, name: made.name });
+		return topicFailure(made, 'the topic may exist; it is not made again, since a second call could make a second one');
+	},
+});
+
+const topicIconsCommand = command({
+	name: 'topic icons',
+	description: 'Lists the icons a topic may have, each { id, emoji }, which topic icon takes. Needs topic mode.',
+	params: [],
+	async run(_input, context) {
+		const session = await openSession(context);
+		const listed = await topicIcons(session.call);
+		return listed.kind === 'ok' ? done({ icons: listed.icons }) : topicFailure(listed, 'run topic icons again');
+	},
+});
+
+const topicIcon = command({
+	name: 'topic icon',
+	description: 'Sets the icon of a topic, one of topic icons. Needs topic mode. A client may draw the new icon later.',
+	params: [
+		{ name: 'id', type: 'integer', required: true, description: 'The id of the topic, as topic create printed it.', cli: { positional: true } },
+		{ name: 'icon', type: 'string', required: true, description: 'The custom emoji id of the icon, as topic icons lists it.', cli: { positional: true, label: 'custom emoji id' } },
+	],
+	async run(input, context) {
+		const session = await openSession(context);
+		const set = await setTopicIcon(session.call, session.config.chat, input.id, input.icon);
+		return set.kind === 'ok' ? done({ topic: input.id, icon: input.icon, changed: set.changed }) : topicFailure(set, 'the icon may be set: run topic icon again, which changes nothing then');
 	},
 });
 
@@ -494,6 +610,10 @@ export const commands: readonly Command[] = [
 	viewDelete,
 	viewDeployCommand,
 	listenCommand,
+	fetchCommand,
+	topicCreate,
+	topicIconsCommand,
+	topicIcon,
 	mcpInitCommand,
 ];
 

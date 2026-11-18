@@ -3,7 +3,10 @@
 // when a newer one arrives, refuses getUpdates with 409 while a webhook is set, answers 401 to a
 // revoked token, and answers a call from a script, such as 429 with `retry_after`. The messages
 // and updates follow facts/records/: a bot 222, a private chat 111 with user 111, and the
-// replied-to message inside a reply with its keyboard, as Telegram for iOS sends it.
+// replied-to message inside a reply with its keyboard, as Telegram for iOS sends it. getFile
+// answers for the files `file` registers, and `/file/bot<token>/<path>` serves them, records each
+// download as the method `download`, and can redirect, hide the size or cut a transfer off.
+// getMe reports topic mode while `setTopics(true)` holds.
 import { isRecord } from '../core/check.ts';
 import { NOT_MODIFIED } from '../core/classify.ts';
 
@@ -68,8 +71,16 @@ export function fakeBotApi() {
 	const stalls = new Map<string, Promise<void>>();
 	let nextUpdate = 125546275;
 	let nextMessage = 1000;
+	let nextTopic = 40;
 	let webhook = '';
 	let revoked = false;
+	let topics = false;
+	/** The files getFile knows, by file id: the path it names, the bytes the download serves, and how a download ends. */
+	const served = new Map<string, { unique: string; path: string; bytes: Uint8Array; size?: number; end?: 'redirect' | 'cut' | 'unsized' }>();
+	const ICONS = [
+		{ custom_emoji_id: '5312536423851630001', emoji: '💡' },
+		{ custom_emoji_id: '5312241539987020022', emoji: '✅' },
+	];
 	let poll: { respond: (response: Response) => void; timer: ReturnType<typeof setTimeout> } | undefined;
 
 	const chatOf = (id: unknown) => ({ id: typeof id === 'number' ? id : 111, first_name: PERSON.first_name, type: 'private' });
@@ -113,7 +124,16 @@ export function fakeBotApi() {
 	function answer(method: string, payload: Record<string, unknown>, files: Received['files']): Response | Promise<Response> {
 		switch (method) {
 			case 'getMe':
-				return ok(BOT);
+				return ok({ ...BOT, ...(topics ? { has_topics_enabled: true } : {}) });
+			case 'getFile': {
+				const file = served.get(String(payload.file_id));
+				if (!file) return refusal(400, 'Bad Request: invalid file_id');
+				return ok({ file_id: payload.file_id, file_unique_id: file.unique, file_size: file.size ?? file.bytes.length, file_path: file.path });
+			}
+			case 'createForumTopic':
+				return ok({ message_thread_id: ++nextTopic, name: payload.name, icon_color: 7322096 });
+			case 'getForumTopicIconStickers':
+				return ok(ICONS.map((icon) => ({ ...icon, file_id: `icon-${icon.custom_emoji_id}`, file_unique_id: `u-${icon.custom_emoji_id}`, type: 'custom_emoji', width: 512, height: 512, is_animated: false, is_video: false })));
 			case 'getWebhookInfo':
 				return ok({ url: webhook, has_custom_certificate: false, pending_update_count: queue.length });
 			case 'getUpdates':
@@ -137,12 +157,48 @@ export function fakeBotApi() {
 		}
 	}
 
+	/** A download: the file of `path`, a redirect to another route, the file as a stream without its size, or the first half of it and a cut connection. */
+	async function serveFile(token: string, path: string): Promise<Response> {
+		received.push({ method: 'download', payload: { path }, files: [], at: Date.now() });
+		await stalls.get('download');
+		if (revoked || token !== TOKEN) return json(401, { ok: false, error_code: 401, description: 'Unauthorized' });
+		const file = [...served.values()].find((candidate) => candidate.path === path);
+		if (!file) return json(404, { ok: false, error_code: 404, description: 'Not Found' });
+		if (file.end === 'redirect') return new Response(null, { status: 302, headers: { location: `${url}/file/bot${TOKEN}/elsewhere` } });
+		if (file.end === 'unsized') {
+			// A stream whose second part comes later goes out chunked: no Content-Length names its
+			// size, which shows only as the bytes arrive. Bun gives a stream it can read at once,
+			// such as a Blob's, the header.
+			const parts = [file.bytes.slice(0, 8), file.bytes.slice(8)];
+			const body = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					const part = parts.shift();
+					if (!part) return controller.close();
+					controller.enqueue(part);
+					await Bun.sleep(20);
+				},
+			});
+			return new Response(body, { headers: { 'content-type': 'application/octet-stream' } });
+		}
+		if (file.end !== 'cut') return new Response(file.bytes, { headers: { 'content-type': 'application/octet-stream' } });
+		const half = file.bytes.slice(0, Math.floor(file.bytes.length / 2));
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(half);
+				setTimeout(() => controller.error(new Error('the connection was cut')), 50);
+			},
+		});
+		return new Response(body, { headers: { 'content-type': 'application/octet-stream', 'content-length': String(file.bytes.length) } });
+	}
+
 	const server = Bun.serve({
 		port: 0,
 		hostname: '127.0.0.1',
 		// A long poll holds its request for up to 50 s.
 		idleTimeout: 0,
 		async fetch(request) {
+			const download = /^\/file\/bot([^/]+)\/(.+)$/.exec(new URL(request.url).pathname);
+			if (download?.[1] && download[2]) return serveFile(download[1], decodeURIComponent(download[2]));
 			const match = /^\/bot([^/]+)\/(\w+)$/.exec(new URL(request.url).pathname);
 			if (!match?.[1] || !match[2]) return json(404, { ok: false, error_code: 404, description: 'Not Found' });
 			const [, token, method] = match;
@@ -164,8 +220,21 @@ export function fakeBotApi() {
 		return full;
 	}
 
+	const url = `http://127.0.0.1:${server.port}`;
 	return {
-		url: `http://127.0.0.1:${server.port}`,
+		url,
+		/**
+		 * Registers a file for getFile and its download. `path` is what getFile names: relative for the
+		 * cloud, absolute for a local server. `size` is the file_size getFile names, the length of
+		 * `bytes` by default.
+		 */
+		file(id: string, options: { unique: string; path: string; bytes: Uint8Array; size?: number; end?: 'redirect' | 'cut' | 'unsized' }) {
+			served.set(id, options);
+		},
+		/** Turns topic mode in private chats on or off, as getMe reports it. */
+		setTopics(on: boolean) {
+			topics = on;
+		},
 		/** Every call in arrival order. */
 		received,
 		messages,

@@ -41,9 +41,10 @@ export function tap(options: { button: number; ref?: string; id?: string; messag
 /**
  * A reply as Telegram for iOS sent it. The replied-to message carries the recorded keyboard
  * with `markupRef` as its ref, or no keyboard when `markupRef` is null. `text: null` drops
- * the text, so `caption` alone or nothing remains.
+ * the text, so `caption` alone or nothing remains. `forwarded` makes it a forward of a hidden
+ * user's message.
  */
-export function reply(options: { id?: number; replyTo?: number; markupRef?: string | null; text?: string | null; caption?: string; chat?: number; user?: number } = {}): Update {
+export function reply(options: { id?: number; replyTo?: number; markupRef?: string | null; text?: string | null; caption?: string; chat?: number; user?: number; forwarded?: boolean } = {}): Update {
 	// The clone is edited in place: grammY's ReplyMessage type cannot be rebuilt by a spread.
 	const update = structuredClone(replyRecord);
 	const message = update.message;
@@ -61,6 +62,7 @@ export function reply(options: { id?: number; replyTo?: number; markupRef?: stri
 	if (options.text === null) delete message.text;
 	else if (options.text !== undefined) message.text = options.text;
 	if (options.caption !== undefined) message.caption = options.caption;
+	if (options.forwarded) message.forward_origin = { type: 'hidden_user', sender_user_name: 'Someone', date: message.date - 60 };
 	return update;
 }
 

@@ -108,6 +108,35 @@ export function readAnswer(status: number, text: string, at: number, scrub: (tex
 }
 
 /**
+ * Reads a file of a Bot API server by the relative `file_path` of getFile. The response is the
+ * server's, unread: a redirect comes back as it is and is never followed.
+ */
+export type Download = (path: string, signal: AbortSignal) => Promise<Response>;
+
+/**
+ * A Download from the Bot API at `apiUrl`, the cloud by default: a GET of
+ * `<apiUrl>/file/bot<token>/<file_path>` without redirects. Each segment of `path` is URL-encoded,
+ * and a path that is absolute, empty or has a `.` or `..` segment rejects before any request,
+ * so a server's answer never steers the request to another route. A request that fails rejects
+ * with a message without the URL, which carries the token.
+ *
+ *   const download = fileDownload({ token });
+ *   const response = await download('documents/file_7.pdf', AbortSignal.timeout(120_000));
+ */
+export function fileDownload(options: { token: string; apiUrl?: string }): Download {
+	const root = (options.apiUrl ?? CLOUD_API).replace(/\/+$/, '');
+	return async (path, signal) => {
+		const segments = path.split('/');
+		if (path.startsWith('/') || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) throw new Error('the file path is no relative path of the server');
+		try {
+			return await fetch(`${root}/file/bot${options.token}/${segments.map(encodeURIComponent).join('/')}`, { redirect: 'manual', signal });
+		} catch {
+			throw new Error(signal.aborted ? 'the download passed its deadline' : 'the download got no answer');
+		}
+	};
+}
+
+/**
  * A transport over `fetch` to the Bot API at `apiUrl`, the cloud by default. A request that
  * fails, or that the transport cuts after its deadline, is no answer. The token travels only in
  * the URL and never into a response.

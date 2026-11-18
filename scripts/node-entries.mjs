@@ -75,7 +75,7 @@ const upload = received.at(-1).form.get('document');
 assert.equal(upload.name, 'report.pdf');
 assert.equal(upload.size, 1_000_000);
 const listener = core.createChat({ call, store: memoryStore(), chat: 111 });
-const stopped = await listen({ chat: listener, call, store: memoryStore(), signal: AbortSignal.timeout(30_000) });
+const stopped = await listen({ chat: listener, target: 111, origin: apiUrl, allow: [111], call, store: memoryStore(), signal: AbortSignal.timeout(30_000) });
 assert.equal(stopped.reason, 'conflict');
 
 // ./grammy: the bot's Api is the transport, and its middleware answers a tap.
@@ -156,7 +156,7 @@ assert.deepEqual((await version.json()).formats, [1, 'answers']);
 // ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'mcp init'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');
@@ -193,7 +193,7 @@ const memory = new Client({ name: 'node', version: '1.0.0' });
 await memory.connect(clientSide);
 assert.deepEqual(
 	(await memory.listTools()).tools.map((tool) => tool.name),
-	['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view'],
+	['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view', 'fetch_file'],
 );
 await memory.close();
 const stdio = new Client({ name: 'node', version: '1.0.0' });
@@ -202,6 +202,8 @@ const shipIt = await stdio.callTool({ name: 'ask_question', arguments: { answer:
 assert.deepEqual(JSON.parse(shipIt.content[0].text), shipIt.structuredContent);
 const waited = await stdio.callTool({ name: 'get_answer', arguments: { ref: shipIt.structuredContent.ref } });
 assert.equal(waited.structuredContent.status, 'answered');
+// A file id that no allowed message carried is refused before any read.
+assert.equal((await stdio.callTool({ name: 'fetch_file', arguments: { id: 'BQACAgIAAxkBAAI' } })).structuredContent.code, 'forbidden');
 await stdio.close();
 rmSync(root, { recursive: true, force: true });
 

@@ -169,7 +169,8 @@ async function fence(held: Held): Promise<void> {
  * A Store in the directory `dir`, created with mode 0700 when missing: one JSON file per key,
  * named `encodeURIComponent(key)`. Keys whose name would start with "." are refused. `lockWait`
  * is how long one holder may keep a lock, as a waiting `lock` observes it, before the waiter
- * rejects with LockTimeout, 10 s by default. A lock that changes hands restarts the wait.
+ * rejects with LockTimeout, 10 s by default; the `wait` of one `lock` call replaces it for that
+ * call. A lock that changes hands restarts the wait.
  * A `set` or `delete` inside `lock` rejects with LockLost once a task no longer holds its lock.
  * `lock` rejects with IdentityUnknown in a process that cannot read its own start time with ps.
  *
@@ -199,7 +200,7 @@ export function fileStore(dir: string, options: { lockWait?: number } = {}): Sto
 		for (const held of holding.getStore() ?? []) await fence(held);
 	}
 
-	async function acquire(key: string): Promise<Held> {
+	async function acquire(key: string, lockWait: number): Promise<Held> {
 		const start = thisStart();
 		const lockDir = join(dir, LOCKS, fileName(key));
 		await mkdir(lockDir, { recursive: true, mode: 0o700 });
@@ -297,9 +298,9 @@ export function fileStore(dir: string, options: { lockWait?: number } = {}): Sto
 			});
 			return keys.filter((key) => key.startsWith(prefix)).sort();
 		},
-		async lock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		async lock<T>(key: string, fn: () => Promise<T>, options: { wait?: number } = {}): Promise<T> {
 			await prepare();
-			const held = await acquire(key);
+			const held = await acquire(key, options.wait ?? lockWait);
 			try {
 				return await holding.run([...(holding.getStore() ?? []), held], fn);
 			} finally {

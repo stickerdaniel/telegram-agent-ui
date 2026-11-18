@@ -228,7 +228,7 @@ test('a reply to a choice question reaches --on-message with the ref read from t
 	const message = lastMessage(at);
 	at.server.reply(message, 'Merge after the release');
 	const [received] = await lines(at, 'messages.jsonl', 1);
-	expect(received).toEqual({ message: message + 1, text: 'Merge after the release', replyTo: message, ref: asked.out.ref, files: [] });
+	expect(received).toEqual({ kind: 'message', message: message + 1, text: 'Merge after the release', replyTo: message, ref: asked.out.ref, files: [] });
 	listening.child.kill('SIGTERM');
 	await listening.result();
 });
@@ -585,4 +585,122 @@ test('next is push only when the stored question carries every meta key as its o
 	// An inherited property is no key of the meta.
 	await pushing(['toString']);
 	expect(await run(at, ['ask', '--yes-no', body])).toMatchObject({ out: { next: 'wait' } });
+});
+
+const DANA = { id: 111, is_bot: false, first_name: 'Dana' };
+const PRIVATE = { id: 111, type: 'private', first_name: 'Dana' };
+
+test('listen --on-update hands each admitted update to the command once under its key, info counts the refused ones, and fetch reads only an allowed file', async () => {
+	const at = await machine();
+	const listening = await listener(at, ['--on-update', 'cat >> updates.jsonl']);
+	expect(at.server.calls('getUpdates')[0]?.payload.allowed_updates).toEqual(['message', 'edited_message', 'callback_query', 'message_reaction']);
+	const bytes = new TextEncoder().encode('the notes of the release');
+	const document = (id: string) => ({ file_id: id, file_unique_id: `u-${id}`, file_name: 'notes.txt', mime_type: 'text/plain', file_size: bytes.length });
+	at.server.push({ message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, caption: 'notes', document: document('mine') } });
+	const edit = at.server.push({ edited_message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, edit_date: 2, caption: 'release notes', document: document('mine') } });
+	const react = at.server.push({ message_reaction: { chat: PRIVATE, message_id: 600, user: DANA, date: 3, old_reaction: [], new_reaction: [{ type: 'emoji', emoji: '👍' }] } });
+	at.server.push({ callback_query: { id: 'cq-desk', from: DANA, chat_instance: '1', data: 'desk:draft:7', message: { message_id: 600, date: 1, chat: PRIVATE } } });
+	// Refused: another chat, another user, a reaction made as a chat.
+	at.server.push({ message: { message_id: 601, from: DANA, chat: { id: 222, type: 'private', first_name: 'Dana' }, date: 1, text: 'elsewhere' } });
+	at.server.push({ message: { message_id: 602, from: { ...DANA, id: 999 }, chat: PRIVATE, date: 1, document: document('theirs') } });
+	at.server.push({ message_reaction: { chat: PRIVATE, message_id: 600, actor_chat: { id: -100, type: 'channel', title: 'News' }, date: 3, old_reaction: [], new_reaction: [] } });
+	const received = await lines(at, 'updates.jsonl', 4);
+	expect(received.map((line) => line.key).sort()).toEqual(['up:c:cq-desk', 'up:m:111:600', `up:u:1:${edit.update_id}`, `up:u:1:${react.update_id}`].sort());
+	expect(received.find((line) => line.key === 'up:m:111:600')).toMatchObject({ epoch: 1, update: { message: { message_id: 600 } }, handled: { kind: 'ignored' } });
+	await until(async () => {
+		const info = await run(at, ['info', '--json']);
+		return isRecord(info.out.updates) && info.out.updates.refused === 3 && info.out.updates.pending === 0;
+	}, 'three refused updates in info');
+	expect((await run(at, ['info'])).out).toMatchObject({ topics: false, updates: { refused: 3, pending: 0, undelivered: [] } });
+
+	at.server.file('mine', { unique: 'u-mine', path: 'documents/file_1.txt', bytes });
+	at.server.file('theirs', { unique: 'u-theirs', path: 'documents/file_2.txt', bytes });
+	const fetched = await run(at, ['fetch', 'mine']);
+	expect(fetched).toMatchObject({ code: 0, out: { id: 'mine', bytes: bytes.length, cached: false } });
+	expect(readFileSync(String(fetched.out.path), 'utf8')).toBe('the notes of the release');
+	expect(String(fetched.out.path).startsWith(join(paths(at.env).store(222), 'media'))).toBe(true);
+	expect(await run(at, ['fetch', 'mine'])).toMatchObject({ code: 0, out: { cached: true } });
+	expect(await run(at, ['fetch', 'theirs'])).toMatchObject({ code: EXIT.refused, out: { error: 'refused', code: 'forbidden' } });
+	expect(at.server.calls('getFile').map((call) => call.payload.file_id)).toEqual(['mine']);
+	listening.child.kill('SIGTERM');
+	await listening.result();
+});
+
+test('a listener killed after its update command ran and before the receipt was cleared hands the update over again under the same key', async () => {
+	const at = await machine();
+	const first = await listener(at, ['--on-update', 'cat >> updates.jsonl; sleep 60']);
+	at.server.push({ message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, text: 'deploy notes' } });
+	const [once] = await lines(at, 'updates.jsonl', 1);
+	first.child.kill('SIGKILL');
+	await first.child.exited;
+	const second = await listener(at, ['--on-update', 'cat >> updates.jsonl']);
+	const [again, twice] = await lines(at, 'updates.jsonl', 2);
+	expect(again).toEqual(once ?? {});
+	expect(twice).toEqual(once ?? {});
+	await until(async () => (await at.store.list('up:')).length === 0, 'the cleared receipt');
+	second.child.kill('SIGTERM');
+	await second.result();
+});
+
+const DIE = join(import.meta.dir, 'die-at.ts');
+
+for (const point of ['record', 'cursor'] as const) {
+	test(`a listener killed before its ${point === 'record' ? 'receipt' : 'cursor'} write hands the update to --on-update once in effect after its restart`, async () => {
+		const at = await machine();
+		const doomed = spawn(at, ['listen', '--on-update', 'cat >> updates.jsonl'], { preload: DIE, env: { TAU_DIE_AT: point } });
+		await until(() => at.server.calls('getUpdates').length > 0, `the first poll; stderr: ${doomed.err()}`);
+		at.server.push({ message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, text: 'deploy notes' } });
+		await doomed.child.exited;
+		expect(doomed.child.signalCode).toBe('SIGKILL');
+		const keys = async () => (await at.store.list('up:')).length;
+		// Killed before its receipt write, the listener left no receipt; before its cursor write, it left one.
+		expect(await keys()).toBe(point === 'record' ? 0 : 1);
+		const second = await listener(at, ['--on-update', 'cat >> updates.jsonl']);
+		const received = await lines(at, 'updates.jsonl', 1);
+		await until(async () => (await keys()) === 0, 'the cleared receipt');
+		const all = await lines(at, 'updates.jsonl', received.length);
+		for (const line of all) expect(line).toEqual(all[0] ?? {});
+		expect(all[0]).toMatchObject({ key: 'up:m:111:600', update: { message: { text: 'deploy notes' } } });
+		second.child.kill('SIGTERM');
+		await second.result();
+	});
+}
+
+test('an update command that keeps failing is listed in info after 5 failures with its next retry, and is still retried', async () => {
+	const at = await machine();
+	const failing = await listener(at, ['--on-update', 'cat >> attempts.jsonl; exit 1']);
+	at.server.push({ message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, text: 'deploy notes' } });
+	await lines(at, 'attempts.jsonl', 6);
+	const info = await run(at, ['info']);
+	expect(info.out).toMatchObject({ updates: { pending: 1, undelivered: [{ key: 'up:m:111:600', epoch: 1, attempts: expect.any(Number), retryAt: expect.any(Number), error: 'the command exited 1' }] } });
+	await lines(at, 'attempts.jsonl', 8);
+	failing.child.kill('SIGTERM');
+	await failing.result();
+});
+
+test('the topic commands refuse without topic mode, make a topic and set its icon, and send and ask take --topic', async () => {
+	const at = await machine();
+	expect(await run(at, ['topic', 'create', 'growth-desk'])).toMatchObject({ code: EXIT.refused, out: { code: 'no-topics' } });
+	expect(at.server.calls('createForumTopic')).toEqual([]);
+	const revoked = await machine();
+	revoked.server.setTopics(true);
+	revoked.server.revoke();
+	for (const args of [['topic', 'create', 'growth-desk'], ['topic', 'icons'], ['topic', 'icon', '41', '5312536423851630001']]) {
+		expect(await run(revoked, args), args.join(' ')).toMatchObject({ code: EXIT['no-config'], out: { error: 'no-config' } });
+	}
+	at.server.setTopics(true);
+	expect(await run(at, ['info'])).toMatchObject({ out: { topics: true } });
+	const made = await run(at, ['topic', 'create', 'growth-desk']);
+	expect(made).toMatchObject({ code: 0, out: { topic: 41, name: 'growth-desk' } });
+	expect(await run(at, ['topic', 'icons'])).toMatchObject({ code: 0, out: { icons: [{ id: '5312536423851630001', emoji: '💡' }, { id: '5312241539987020022', emoji: '✅' }] } });
+	expect(await run(at, ['topic', 'icon', '41', '5312241539987020022'])).toMatchObject({ code: 0, out: { topic: 41, changed: true } });
+	expect(at.server.calls('editForumTopic')[0]?.payload).toEqual({ chat_id: 111, message_thread_id: 41, icon_custom_emoji_id: '5312241539987020022' });
+	at.server.fail('createForumTopic', { status: 502, description: 'Bad Gateway' });
+	expect(await run(at, ['topic', 'create', 'again'])).toMatchObject({ code: EXIT.uncertain });
+	expect(at.server.calls('createForumTopic')).toHaveLength(2);
+
+	expect(await run(at, ['send', '--topic', '41', file(at, 'm.md', 'Build passed.')])).toMatchObject({ code: 0, out: { topic: 41 } });
+	await at.store.set('listener', { v: 1, heartbeat: Date.now() });
+	expect(await run(at, ['ask', '--yes-no', '--topic', '41', file(at, 'q.md', 'Deploy now?')])).toMatchObject({ code: 0 });
+	expect(at.server.calls('sendRichMessage').map((call) => call.payload.message_thread_id)).toEqual([41, 41]);
 });

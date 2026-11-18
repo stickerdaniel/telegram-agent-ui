@@ -75,7 +75,7 @@ export function faultyStore(inner: Store) {
 		set: (key, value) => run('set', key, () => inner.set(key, value)),
 		delete: (key) => run('delete', key, () => inner.delete(key)),
 		list: (prefix) => run('list', prefix, () => inner.list(prefix)),
-		lock: (key, fn) => run('lock', key, () => inner.lock(key, fn)),
+		lock: (key, fn, options) => run('lock', key, () => inner.lock(key, fn, options)),
 	};
 	return {
 		...store,

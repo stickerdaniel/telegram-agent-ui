@@ -478,7 +478,7 @@ test('the listener applies a choice made in the view within its pass and hands t
 	const delivered: Delivered[] = [];
 	const chat = createChat({ call, store, chat: 111, viewOrigin: ORIGIN, views, onAnswer: async (answer) => void delivered.push(answer) });
 	const controller = new AbortController();
-	const running = listen({ chat, call, store, views, signal: controller.signal });
+	const running = listen({ chat, target: 111, origin: server.url, allow: [111], call, store, views, signal: controller.signal });
 	try {
 		const put = await views.put({ view: { v: 1, tabs: ['Compact', 'Wide', 'Notes'].map((label) => ({ label, content: { markdown: label } })) }, media: [] });
 		if (put.kind !== 'ok') throw new Error('not published');

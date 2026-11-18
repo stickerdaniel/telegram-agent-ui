@@ -3,8 +3,8 @@
 import { isInt, isRecord } from '../core/check.ts';
 import type { Call, CallResponse } from '../core/types.ts';
 
-/** Deadlines in ms: every call, a files step without a video, and a files step with one. */
-export const DEADLINES = { call: 30_000, photo: 30_000, video: 600_000 } as const;
+/** Deadlines in ms: every call, a files step without a video, and a files step with one. The tests of this package shorten them. */
+export const DEADLINES = { call: 30_000, photo: 30_000, video: 600_000 };
 /** A marked edit that cannot start within this many ms of its mark is not sent: its mark covers only this much delay. */
 export const START_WINDOW = 30_000;
 /** A 429 whose retry time lies at most this far ahead is retried once; a later one is given up. */

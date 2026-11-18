@@ -195,7 +195,7 @@ export class TokenRefused extends Error {
 	override name = 'TokenRefused';
 }
 
-/** A `Store.lock` whose lock one holder kept for 10 s of its wait. */
+/** A `Store.lock` whose lock one holder kept for 10 s of its wait, or for the wait the call gave. */
 export class LockTimeout extends Error {
 	override name = 'LockTimeout';
 }
@@ -205,8 +205,13 @@ export type Store = {
 	set(key: string, value: unknown): Promise<void>;
 	delete(key: string): Promise<void>;
 	list(prefix: string): Promise<string[]>;
-	/** Runs `fn` while no other process or task holds the lock of `key`. A held lock never expires while `fn` runs. Rejects with LockTimeout when one holder kept the lock for 10 s of the wait; a lock that is free or changes hands restarts the count. */
-	lock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+	/**
+	 * Runs `fn` while no other process or task holds the lock of `key`. A held lock never expires
+	 * while `fn` runs. Rejects with LockTimeout when one holder kept the lock for 10 s of the wait;
+	 * a lock that is free or changes hands restarts the count. `wait`, in ms, replaces the 10 s
+	 * for this call alone, such as for a lock held through a long download.
+	 */
+	lock<T>(key: string, fn: () => Promise<T>, options?: { wait?: number }): Promise<T>;
 };
 
 /**

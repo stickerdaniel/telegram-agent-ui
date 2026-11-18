@@ -1,13 +1,14 @@
 // The listener of 5.2: the one process that calls getUpdates. It holds the store's `listener`
-// lock for its whole run, so only one listener per store writes `cursor`, `listener` and the
-// stored messages and delivers answers and messages. Per update it runs `chat.handle`, stores a
-// message for `onMessage`, and only then moves the cursor, so a crash in between fetches the
-// update again, and the question's replay check makes the second `handle` a no-op. Answers
-// reach the consumer through `chat.flush` and messages through the courier of messages.ts, both
-// at the start with `restart`, every 30 s and after each new one. With a view client, it applies
-// the choices its view host stored at the start and every 3 s, see `applyChoices`. Every write
-// the listener starts ends before it gives up the lock.
-import type { Message } from '@grammyjs/types';
+// lock for its whole run, so only one listener per store writes `cursor`, `listener`, the stored
+// messages, receipts and file records, and delivers answers, messages and updates. Per update it
+// runs `chat.handle`, and for an update that the gate of inbound.ts admits it stores the file
+// records, a message for `onMessage` and a receipt for `onUpdate`; only then does it move the
+// cursor, so a crash in between fetches the update again, and the question's replay check makes
+// the second `handle` a no-op. Answers reach the consumer through `chat.flush`, messages through
+// the courier of messages.ts and updates through the courier of updates.ts, each at the start
+// with `restart` and after each new one. With a view client, it applies the choices its view
+// host stored at the start and every 3 s, see `applyChoices`. Every write the listener starts
+// ends before it gives up the lock.
 import { message } from '../core/builders.ts';
 import { arrayOf, isInt, isNat, isRecord, isString } from '../core/check.ts';
 import { mergeLabels } from '../core/labels.ts';
@@ -18,9 +19,11 @@ import { NO_ANSWER } from '../chat/calls.ts';
 import { type Chat, indexKey, tombstoneKey } from '../chat/create.ts';
 import { LISTENER_KEY, parseListener, writeListener } from '../chat/listener.ts';
 import type { Transport } from './fetch.ts';
+import { admitted, recordFiles, sourceOf } from './inbound.ts';
 import { courier, type Inbound, inbound, messageKey, type StoredMessage } from './messages.ts';
+import { type InboundUpdate, parseStoredUpdate, type StoredUpdate, updateCourier, type UpdateHandled, updateKey } from './updates.ts';
 
-export type { Inbound };
+export type { Inbound, InboundUpdate };
 
 /**
  * Timing of the listener in ms: `beat` is how often it writes its heartbeat and flushes, `pause`
@@ -46,10 +49,11 @@ const owesHost = (question: Question, at: number): boolean =>
 	question.bindingOwed === true || (bindingOf(question) !== undefined && question.shown.recheckAt !== undefined && question.expiresAt !== undefined && at < question.expiresAt);
 // Telegram picks the next update id at random after a week without updates. An offset from
 // before such a week could lie above the new ids and confirm them unread, so a cursor older
-// than 6 days is not sent.
+// than 6 days is not sent, and the ids after it count in a new epoch.
 const CURSOR_AGE = 6 * 86_400_000;
-const CURSOR_KEY = 'cursor';
+export const CURSOR_KEY = 'cursor';
 const UPDATES = ['message', 'callback_query'] as const;
+const ALL_UPDATES = ['message', 'edited_message', 'callback_query', 'message_reaction'] as const;
 
 /** Why `listen` returned. Every reason but `signal` ends the listener for good: a restart would meet the same cause. */
 export type Stopped = { reason: 'signal' } | { reason: 'conflict' | 'webhook' | 'token' | 'lease'; message: string };
@@ -57,9 +61,26 @@ export type Stopped = { reason: 'signal' } | { reason: 'conflict' | 'webhook' | 
 export type ListenOptions = {
 	/** The chat the updates go to. Its `onAnswer`, if any, receives every answer. */
 	chat: Chat;
+	/** The configured chat id. Consumers and the file records see only its updates. */
+	target: number;
+	/**
+	 * Names the Bot API server behind `call`, such as its URL: a non-empty string. Stored with the
+	 * cursor, so a listener started on another server starts a new epoch without an old offset.
+	 */
+	origin: string;
 	call: Transport;
-	/** The store of `chat`: the lease, `cursor`, `listener` and the stored messages live in it. */
+	/** The store of `chat`: the lease, `cursor`, `listener`, the stored messages, receipts and file records live in it. */
 	store: Store;
+	/** The user ids whose updates consumers and the file records see. A question keeps the allow list it was sent with. */
+	allow: number[];
+	/** Each message that `handle` ignored, at least once, see messages.ts. */
+	onMessage?: (message: Inbound) => Promise<void>;
+	/**
+	 * Each admitted update as Telegram sent it, at least once under a stable key, see updates.ts.
+	 * `deadline` is the lane's in ms: a call that has not resolved by then counts as failed. With
+	 * it, the listener also asks for edits and reactions.
+	 */
+	onUpdate?: (update: InboundUpdate, deadline: number) => Promise<void>;
 	/** Aborting it stops the listener with the reason `signal`. */
 	signal: AbortSignal;
 	/** The labels of `chat`, for the notice about missed taps. */
@@ -72,11 +93,25 @@ export type ListenOptions = {
 	now?: () => number;
 	/** Progress lines: failed polls, failed flushes, skipped updates. */
 	log?: (line: string) => void;
-} & ({ onMessage?: never; allow?: never } | { onMessage: (message: Inbound) => Promise<void>; allow: number[] });
+};
 
-type Cursor = { v: 1; offset: number; at: number };
+/**
+ * The value of `cursor`: the origin whose update ids it counts, the epoch of those ids, the next
+ * offset once an update was taken, the time it moved, and how many updates the gate refused
+ * since the store began. All of it is written in one value, under the lease.
+ */
+export type Cursor = { v: 1; origin: string; epoch: number; offset?: number; at: number; refused: number };
 
-const parseCursor = (value: unknown): Cursor | undefined => (isRecord(value) && value.v === 1 && isNat(value.offset) && isNat(value.at) ? { v: 1, offset: value.offset, at: value.at } : undefined);
+/**
+ * The stored cursor. A cursor of an earlier release, without origin, epoch and count, reads with
+ * epoch 0 and no origin, so the next start counts it as another source.
+ */
+export function parseCursor(value: unknown): (Omit<Cursor, 'origin'> & { origin?: string }) | undefined {
+	if (!isRecord(value) || value.v !== 1 || !isNat(value.at)) return undefined;
+	const { origin, epoch, offset, refused } = value;
+	if ((origin !== undefined && !isString(origin)) || (epoch !== undefined && !isNat(epoch)) || (offset !== undefined && !isNat(offset)) || (refused !== undefined && !isNat(refused))) return undefined;
+	return { v: 1, ...(origin !== undefined ? { origin } : {}), epoch: epoch ?? 0, ...(offset !== undefined ? { offset } : {}), at: value.at, refused: refused ?? 0 };
+}
 const describe = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300);
 /** An update as JSON delivers it. Only its id is checked here: `handle` checks every field it reads and rejects the rest with ShapeError. */
 export const isUpdate = (value: unknown): value is Update => isRecord(value) && isNat(value.update_id);
@@ -150,18 +185,27 @@ function stopFor(response: CallResponse): Exclude<Stopped, { reason: 'signal' | 
  * Polls getUpdates for `chat` until `signal` aborts or Telegram ends it, and returns why it
  * stopped. It holds the store's lock of `listener` from start to end: a second listener on the
  * same store waits for it and returns `lease` once the lock's wait runs out. Throws ShapeError
- * for `push` or `allow` that break their types, before it takes the lock.
+ * for a `target`, `origin`, `allow` or `push` that breaks its type, before it takes the lock.
  *
  * At the start it writes its heartbeat, stops when the bot has a webhook, and renews the spent
- * deliveries with `chat.flush({ restart: true })` and the same for messages. Each long poll asks
- * with `timeout: 50` for messages and callback queries. Per update it runs `chat.handle`, stores
- * a message that `handle` ignored for `onMessage` when its sender is in `allow` and it is in a
- * private chat, and then stores the cursor. After more than 150 s without an answered poll, in
- * this run or since the previous one, the next poll asks with `timeout: 0`, and once it answers
- * the listener sends `labels.missed` while a question takes answers. Every 30 s it writes its
- * heartbeat and delivers what is owed, and once an hour it deletes closed questions older than
- * 30 days whose newest answer was delivered and for which the view host takes no choice,
- * leaving a tombstone. With `views`, it runs
+ * deliveries with `chat.flush({ restart: true })` and the same for messages; every stored
+ * receipt for `onUpdate` is due at once. Before the first poll of a new source of update ids, an
+ * `origin` other than the one stored with the cursor or a cursor older than 6 days, it stores the
+ * origin, a raised epoch and a cursor without offset in one write. Each long poll asks with
+ * `timeout: 50` for messages and callback queries, and with `onUpdate` also for edits and
+ * reactions. An update outside `target` reaches neither `chat.handle` nor a consumer and raises
+ * the stored count `refused`. Every update of `target` goes to `chat.handle`, so a tap of a user
+ * outside a question's allow list still gets its toast. One of a user in `allow` is admitted: the
+ * listener records the files of a message or an edit for `fetchFile`, stores a message that
+ * `handle` ignored for `onMessage`, and stores a receipt for `onUpdate`, with what `handle` did
+ * or, for a shape `handle` refuses, `{ error }`. One of another user reaches no consumer and
+ * raises `refused` too. Then it stores the cursor.
+ *
+ * After more than 150 s without an answered poll, in this run or since the previous one, the
+ * next poll asks with `timeout: 0`, and once it answers the listener sends `labels.missed` while
+ * a question takes answers. Every 30 s it writes its heartbeat and delivers what is owed, and
+ * once an hour it deletes closed questions older than 30 days whose newest answer was delivered
+ * and for which the view host takes no choice, leaving a tombstone. With `views`, it runs
  * `applyChoices` at the start and every 3 s, one pass at a time, and flushes after a pass that
  * applied an answer.
  *
@@ -170,19 +214,23 @@ function stopFor(response: CallResponse): Exclude<Stopped, { reason: 'signal' | 
  * started has ended, and the `listener` key holds the reason.
  *
  *   const chat = createChat({ call, store, chat: 111, onAnswer });
- *   const stopped = await listen({ chat, call, store, signal: AbortSignal.timeout(3_600_000) });
+ *   const stopped = await listen({ chat, target: 111, origin: CLOUD_API, allow: [111], call, store, signal: AbortSignal.timeout(3_600_000) });
  */
 export async function listen(options: ListenOptions): Promise<Stopped> {
 	const { store } = options;
 	if (options.push !== undefined && !(isRecord(options.push) && arrayOf(isString)(options.push.metaKeys))) throw new ShapeError('push.metaKeys is not a list of strings');
-	if (options.allow !== undefined && !arrayOf(isInt)(options.allow)) throw new ShapeError('allow is not a list of user ids');
+	if (!arrayOf(isInt)(options.allow)) throw new ShapeError('allow is not a list of user ids');
+	if (!isInt(options.target)) throw new ShapeError('target is not a chat id');
+	if (!isString(options.origin) || options.origin === '') throw new ShapeError('origin is not a non-empty string');
 	// The stored form: a fresh dense array, whatever the caller does with its own later.
 	const push = options.push && { metaKeys: [...options.push.metaKeys] };
+	// The gate's list: a copy, whatever the caller does with its own later.
+	const allow = [...options.allow];
 	let entered = false;
 	try {
 		return await store.lock(LISTENER_KEY, () => {
 			entered = true;
-			return run(options, push);
+			return run({ ...options, allow }, push);
 		});
 	} catch (error) {
 		if (!entered && error instanceof LockTimeout) return { reason: 'lease', message: `another listener holds this store: ${error.message}` };
@@ -198,6 +246,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 	const now = options.now ?? Date.now;
 	const log = options.log ?? (() => {});
 	const labels = mergeLabels(options.labels);
+	const { target, origin, allow, onUpdate } = options;
 	const messages = options.onMessage ? courier(store, options.onMessage, log) : undefined;
 
 	let stopped: Stopped | undefined;
@@ -221,6 +270,7 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 		pending.add(task);
 		void task.finally(() => pending.delete(task));
 	};
+	const updates = onUpdate ? updateCourier({ store, onUpdate, log, now, track, ended, stopped: () => stopped !== undefined }) : undefined;
 
 	const previous = parseListener(await store.get(LISTENER_KEY));
 	// The time of the last poll Telegram answered, from the previous run until this one polls.
@@ -308,46 +358,83 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 		else if (outcome.kind !== 'ok') log(`the notice about missed taps was not sent: ${outcome.kind}`);
 	}
 
-	/** Stores an ignored private message from a user in `allow` for `onMessage`. False when it could not be stored. */
-	async function keep(update: Update, found: Message): Promise<boolean> {
-		if (!messages || !found.from || !options.allow?.includes(found.from.id) || found.chat.type !== 'private') return true;
-		try {
-			const replyTo = found.reply_to_message?.message_id;
-			// `handle` wrote the index entry of every reply whose question it found.
-			const entry = replyTo === undefined ? undefined : await store.get(indexKey({ chat: found.chat.id, message: replyTo }));
-			const stored: StoredMessage = { v: 1, chat: found.chat.id, update: update.update_id, message: inbound(found, isString(entry) ? entry : undefined), attempts: 0 };
-			// A message fetched again, under its old or a new update id, keeps its entry and its attempts.
-			const key = messageKey({ chat: found.chat.id, message: found.message_id });
-			if ((await store.get(key)) === undefined) await store.set(key, stored);
-		} catch (error) {
-			log(`message of update ${update.update_id} was not stored and is fetched again: ${describe(error)}`);
-			return false;
-		}
+	/** Stores an admitted message that `handle` ignored for `onMessage`. A message fetched again, under its old or a new update id, keeps its entry and its attempts. */
+	async function keep(update: Update): Promise<void> {
+		if (!messages) return;
+		const found: unknown = update.message;
+		const reply = isRecord(found) && isRecord(found.reply_to_message) && isNat(found.reply_to_message.message_id) ? found.reply_to_message.message_id : undefined;
+		// `handle` wrote the index entry of every reply whose question it found.
+		const entry = reply === undefined ? undefined : await store.get(indexKey({ chat: target, message: reply }));
+		const read = inbound(found, isString(entry) ? entry : undefined);
+		if (!read) return log(`the message of update ${update.update_id} has no form onMessage reads; onUpdate gets it as it came`);
+		const stored: StoredMessage = { v: 1, chat: target, update: update.update_id, message: read, attempts: 0 };
+		const key = messageKey({ chat: target, message: read.message });
+		if ((await store.get(key)) === undefined) await store.set(key, stored);
 		deliverMessages();
-		return true;
 	}
 
-	/** One update: `handle`, an answer's flush, an ignored message's storage. False when the update is to be fetched again. */
-	async function take(update: Update): Promise<boolean> {
-		let handled: Handled;
+	/** Stores an admitted update's receipt for `onUpdate` under its key, unless that key holds one already, and hands it to the courier. */
+	async function receive(update: Update, handled: UpdateHandled, epoch: number): Promise<void> {
+		if (!updates) return;
+		const key = updateKey(update, epoch);
+		const held = parseStoredUpdate(await store.get(key));
+		if (held) return updates.add(held);
+		const receipt: StoredUpdate = { v: 1, key, epoch, updateId: update.update_id, update, handled, attempts: 0 };
+		await store.set(key, receipt);
+		updates.add(receipt);
+	}
+
+	/**
+	 * One update. An update outside `target` is refused before `handle`, so it changes no
+	 * question: a question of a former chat takes no answer from it. In `target`, `handle` sees
+	 * every user, so a tap of a user outside a question's allow list still gets its toast; then an
+	 * answer's flush, and for an update of a user in `allow` its file records, its message and its
+	 * receipt. `refused` for an update the gate refused, `again` when the update is to be fetched
+	 * again: a store that failed, a lock held elsewhere, a rejected token.
+	 */
+	async function take(update: Update, epoch: number): Promise<'taken' | 'refused' | 'again'> {
+		if (sourceOf(update)?.chat !== target) return 'refused';
+		let handled: UpdateHandled;
 		try {
 			handled = await chat.handle(update);
 		} catch (error) {
 			if (error instanceof TokenRefused) {
 				halt(tokenStop(error));
-				return false;
+				return 'again';
 			}
-			if (error instanceof ShapeError) {
-				log(`update ${update.update_id} skipped: ${error.message}`);
-				return true;
+			if (!(error instanceof ShapeError)) {
+				log(`update ${update.update_id} failed and is fetched again: ${describe(error)}`);
+				return 'again';
 			}
-			// A lock held elsewhere or a store that failed: the update comes again with the next poll.
-			log(`update ${update.update_id} failed and is fetched again: ${describe(error)}`);
-			return false;
+			log(`update ${update.update_id} breaks its shape: ${error.message}`);
+			handled = { error: error.message };
 		}
-		if (handled.kind === 'answered') flush();
-		if (handled.kind === 'ignored' && update.message) return keep(update, update.message);
-		return true;
+		if ('kind' in handled && handled.kind === 'answered') flush();
+		if (!admitted(update, target, allow)) return 'refused';
+		try {
+			await recordFiles(store, update);
+			if ('kind' in handled && handled.kind === 'ignored' && update.message !== undefined) await keep(update);
+			await receive(update, handled, epoch);
+		} catch (error) {
+			log(`update ${update.update_id} was not stored and is fetched again: ${describe(error)}`);
+			return 'again';
+		}
+		return 'taken';
+	}
+
+	/**
+	 * The cursor to poll with: the stored one, unless its origin is another than `origin` or it
+	 * is older than 6 days, with or without an offset: a cursor without one may still be the
+	 * epoch of a delivered update whose cursor write a crash cut off. Then a raised epoch, `origin`
+	 * and no offset are stored in one write before the poll.
+	 */
+	async function source(cursor: Cursor | undefined): Promise<Cursor> {
+		const stored = cursor ?? parseCursor(await store.get(CURSOR_KEY));
+		if (stored && stored.origin === origin && now() - stored.at < CURSOR_AGE) return { ...stored, origin };
+		const fresh: Cursor = { v: 1, origin, epoch: (stored?.epoch ?? 0) + 1, at: now(), refused: stored?.refused ?? 0 };
+		await store.set(CURSOR_KEY, fresh);
+		log(`update ids count in epoch ${fresh.epoch} from now on`);
+		return fresh;
 	}
 
 	beat();
@@ -372,15 +459,34 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 		if (!stopped) {
 			flush(true);
 			deliverMessages(true);
+			// The stored receipts join the lanes before the first poll, so their order holds against
+			// the new ones. A scan the store fails is run again whole, LISTEN.pause doubling to
+			// LISTEN.beat apart, until it completes or the listener stops.
+			for (let wait = LISTEN.pause; updates && !stopped; wait = Math.min(wait * 2, LISTEN.beat)) {
+				try {
+					await updates.start();
+					break;
+				} catch (error) {
+					log(`the stored receipts were not read and are read again: ${describe(error)}`);
+					await pause(wait);
+				}
+			}
 			cleaning();
 			pick();
 		}
-		let cursor = parseCursor(await store.get(CURSOR_KEY));
+		let cursor: Cursor | undefined;
 		while (!stopped) {
-			const offset = cursor && now() - cursor.at < CURSOR_AGE ? cursor.offset : undefined;
+			try {
+				cursor = await source(cursor);
+			} catch (error) {
+				log(`the cursor was not read or stored: ${describe(error)}`);
+				await pause(LISTEN.pause);
+				continue;
+			}
+			const { offset } = cursor;
 			// After a pause, a poll that answers at once tells that Telegram is reachable again, and the notice goes out then.
 			const missed = polled !== undefined && now() - polled > MISSED_AFTER;
-			const payload = { ...(offset !== undefined ? { offset } : {}), timeout: missed ? 0 : POLL_TIMEOUT, allowed_updates: [...UPDATES] };
+			const payload = { ...(offset !== undefined ? { offset } : {}), timeout: missed ? 0 : POLL_TIMEOUT, allowed_updates: [...(onUpdate ? ALL_UPDATES : UPDATES)] };
 			const response = await unlessStopped(call({ method: 'getUpdates', payload }));
 			if (!response) break;
 			const stop = stopFor(response);
@@ -394,8 +500,8 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 				await pause(wait);
 				continue;
 			}
-			const updates = Array.isArray(response.result) ? response.result : undefined;
-			if (!updates?.every(isUpdate)) {
+			const fetched = Array.isArray(response.result) ? response.result : undefined;
+			if (!fetched?.every(isUpdate)) {
 				log('getUpdates answered with no list of updates');
 				await pause(LISTEN.pause);
 				continue;
@@ -403,22 +509,32 @@ async function run(options: ListenOptions, push: { metaKeys: string[] } | undefi
 			if (missed) await notice().catch((error: unknown) => log(`the notice about missed taps failed: ${describe(error)}`));
 			polled = now();
 			beat();
-			for (const update of updates) {
-				if (stopped || !(await take(update))) break;
-				cursor = { v: 1, offset: update.update_id + 1, at: now() };
+			let taken = true;
+			for (const update of fetched) {
+				const current: Cursor = cursor;
+				const result = stopped ? 'again' : await take(update, current.epoch);
+				if (result === 'again') {
+					taken = false;
+					break;
+				}
+				// The count of refused updates moves with the cursor, so a replay never counts twice.
+				const next: Cursor = { ...current, offset: update.update_id + 1, at: now(), refused: current.refused + (result === 'refused' ? 1 : 0) };
 				try {
-					await store.set(CURSOR_KEY, cursor);
+					await store.set(CURSOR_KEY, next);
+					cursor = next;
 				} catch (error) {
-					// The update was handled; its next fetch is a replay that changes nothing.
+					// The update was handled and its records stored; its next fetch is a replay that changes nothing.
 					log(`the cursor was not stored: ${describe(error)}`);
+					taken = false;
 					break;
 				}
 			}
-			if (!stopped && updates.some((update) => cursor === undefined || update.update_id >= cursor.offset)) await pause(LISTEN.pause);
+			if (!stopped && !taken) await pause(LISTEN.pause);
 		}
 	} finally {
 		clearInterval(timer);
 		clearInterval(choiceTimer);
+		updates?.stop();
 		signal.removeEventListener('abort', onSignal);
 		// No timer starts new work any more; what runs can still start a pass of its own, so drain until nothing is left.
 		while (pending.size > 0) await Promise.allSettled([...pending]);

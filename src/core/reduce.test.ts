@@ -46,6 +46,8 @@ describe('the inputs of 4.6 in every status', () => {
 		['the replayed reply 700', reply({ id: 700, text: 'first', markupRef: null }), ['ignored', 'answered', 'repeat', 'repeat', 'ignored', 'ignored', 'ignored']],
 		['a reply with a caption only', reply({ id: 701, text: null, caption: 'see photo', markupRef: null }), ['ignored', 'answered', 'answered', 'repeat', 'ignored', 'ignored', 'ignored']],
 		['a reply without text', reply({ id: 701, text: null, markupRef: null }), every('ignored')],
+		['a forwarded text that replies', reply({ id: 701, text: 'forwarded words', markupRef: null, forwarded: true }), every('ignored')],
+		['a forwarded caption that replies', reply({ id: 701, text: null, caption: 'forwarded caption', markupRef: null, forwarded: true }), every('ignored')],
 		['a reply to another message', reply({ id: 701, replyTo: 999, markupRef: null }), every('ignored')],
 		['a reply in another chat', reply({ id: 701, chat: 333, markupRef: null }), every('ignored')],
 		['a reply by a user outside allow', reply({ id: 701, user: 999, markupRef: null }), ['ignored', 'forbidden', 'forbidden', 'forbidden', 'forbidden', 'ignored', 'forbidden']],

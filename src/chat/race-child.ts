@@ -57,17 +57,21 @@ export function traced(store: Store, note: (what: string) => void): Store {
 		set: timed('set', store.set),
 		delete: timed('delete', store.delete),
 		list: timed('list', store.list),
-		async lock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		async lock<T>(key: string, fn: () => Promise<T>, options?: { wait?: number }): Promise<T> {
 			note(`lock ${key} wanted`);
 			try {
-				return await store.lock(key, async () => {
-					note(`lock ${key} held`);
-					try {
-						return await fn();
-					} finally {
-						note(`lock ${key} fn done`);
-					}
-				});
+				return await store.lock(
+					key,
+					async () => {
+						note(`lock ${key} held`);
+						try {
+							return await fn();
+						} finally {
+							note(`lock ${key} fn done`);
+						}
+					},
+					options,
+				);
 			} finally {
 				note(`lock ${key} released or failed`);
 			}

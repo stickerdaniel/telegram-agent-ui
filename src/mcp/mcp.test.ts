@@ -77,11 +77,11 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, TELEGRAM_AGENT_UI_FAKE: join(root, 'fake') };
 	const client = await connect({ command: 'node', args: [bin, 'mcp'], cwd: consumer, env });
 	const { tools } = await client.listTools();
-	expect(tools.map((tool) => tool.name)).toEqual(['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view']);
+	expect(tools.map((tool) => tool.name)).toEqual(['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view', 'fetch_file']);
 	const ask = tools.find((tool) => tool.name === 'ask_question');
 	// The fake view host ships in the tarball too.
 	expect(tools.find((tool) => tool.name === 'publish_view')?.inputSchema.properties).toHaveProperty('tabs.items.required', ['label', 'file']);
-	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'answerIn', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
+	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'view', 'answerIn', 'topic', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
 
 	const asked = json(await client.callTool({ name: 'ask_question', arguments: { answer: 'choice', options: ['Merge', 'Wait'], body: 'Merge `fix/lock` now?', strict: true } }));
 	expect(asked).toMatchObject({ status: 'pending', next: 'wait' });
@@ -133,8 +133,9 @@ test.each([
 	const refused = await rootless.callTool({ name: 'send_message', arguments: { bodyFile: join(project, 'q.md') } });
 	expect(json(refused)).toMatchObject({ error: 'refused', code: 'outside-roots' });
 
-	const bodies = readFileSync(join(root, 'fake', 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line).payload.rich_message?.markdown);
-	expect(bodies).toEqual(['Ship `v2` now?']);
+	// get_status reads topic mode with getMe; every send of the run is the one body.
+	const sends = readFileSync(join(root, 'fake', 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.method !== 'getMe');
+	expect(sends.map((call) => call.payload.rich_message?.markdown)).toEqual(['Ship `v2` now?']);
 });
 
 test('publish_view uploads files below the roots to the view host and refuses a path outside them, a .env and a link that leaves them', async () => {

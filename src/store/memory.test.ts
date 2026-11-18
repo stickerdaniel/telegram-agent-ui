@@ -55,6 +55,16 @@ test('a waiter rejects with LockTimeout after lockWait, and the tasks behind it 
 	expect(trace).toEqual(['holder', 'third']);
 });
 
+test('the wait of one lock call replaces lockWait for that call alone', async () => {
+	const store = memoryStore({ lockWait: 100 });
+	const holder = store.lock('media:a', () => pause(300));
+	const patient = store.lock('media:a', async () => 'turn', { wait: 2_000 });
+	const hasty = store.lock('media:a', async () => 'turn');
+	await expect(hasty).rejects.toBeInstanceOf(LockTimeout);
+	expect(await patient).toBe('turn');
+	await holder;
+});
+
 /** `holders` tasks that each hold `q:a` for `holdMs`, one after another, and a waiter with lockWait 10 s behind them. */
 async function behindHolders(holders: number, holdMs: number): Promise<unknown> {
 	jest.useFakeTimers();

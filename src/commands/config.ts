@@ -2,13 +2,14 @@
 // `$XDG_CONFIG_HOME/telegram-agent-ui/.env`, written with mode 0600; the keys of the view host
 // that `view deploy` makes sit in the same file. `config.json` beside it holds the bot, the chat,
 // its users and the view host. The store of a bot is `$XDG_DATA_HOME/telegram-agent-ui/<bot id>/`.
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { arrayOf, isInt, isRecord, isString } from '../core/check.ts';
 import { parseLabels } from '../core/labels.ts';
 import { isOrigin } from '../core/shape.ts';
 import type { Labels } from '../core/types.ts';
+import { CLOUD_API } from '../telegram/fetch.ts';
 import { type CssVars, parseTheme } from '../view/theme.ts';
 import { Failed } from './result.ts';
 
@@ -17,6 +18,8 @@ export type Env = Readonly<Record<string, string | undefined>>;
 /**
  * `config.json`. `view deploy` writes `views`: the origin of the host, the Cloudflare account
  * and the route it was deployed with, and the theme it carries, so a later deploy keeps them.
+ * `apiUrl` points every command at another Bot API server, and `localFiles` names the file
+ * directory of a local one, which switches `fetch` to local mode.
  */
 export type Config = {
 	v: 1;
@@ -26,6 +29,7 @@ export type Config = {
 	labels: Partial<Labels>;
 	publishRoots: string[];
 	apiUrl?: string;
+	localFiles?: string;
 	views: Views;
 };
 export type Views = { origin?: string; account?: string; route?: string; theme?: CssVars };
@@ -80,9 +84,10 @@ const isHttpUrl = (value: unknown): value is string => isString(value) && URL.ca
 /** The stored value of `config.json`, or undefined when any field breaks its type. */
 export function parseConfig(value: unknown): Config | undefined {
 	if (!isRecord(value) || value.v !== 1) return undefined;
-	const { bot, chat, users, publishRoots, apiUrl, views } = value;
+	const { bot, chat, users, publishRoots, apiUrl, localFiles, views } = value;
 	if (!isRecord(bot) || !isInt(bot.id) || !isString(bot.username) || !isInt(chat) || !arrayOf(isInt)(users) || !arrayOf(isString)(publishRoots)) return undefined;
 	if (apiUrl !== undefined && !isHttpUrl(apiUrl)) return undefined;
+	if (localFiles !== undefined && !(isString(localFiles) && isAbsolute(localFiles))) return undefined;
 	const parsedViews = parseViews(views);
 	const labels = parseLabels(value.labels);
 	if (!labels || !parsedViews) return undefined;
@@ -94,6 +99,7 @@ export function parseConfig(value: unknown): Config | undefined {
 		labels,
 		publishRoots: [...publishRoots],
 		...(apiUrl !== undefined ? { apiUrl } : {}),
+		...(isString(localFiles) ? { localFiles } : {}),
 		views: parsedViews,
 	};
 }
@@ -151,6 +157,24 @@ export function apiUrlOf(env: Env, config?: Pick<Config, 'apiUrl'>): string | un
 	const url = env.TELEGRAM_AGENT_UI_API_URL || config?.apiUrl;
 	if (url !== undefined && !isHttpUrl(url)) throw new Failed({ error: 'no-config', message: `the Bot API URL "${url}" is no http or https URL` });
 	return url;
+}
+
+/** The effective Bot API URL, without a trailing slash: `apiUrlOf`, else the cloud. The listener stores it with its cursor. */
+export const originOf = (env: Env, config?: Pick<Config, 'apiUrl'>) => (apiUrlOf(env, config) ?? CLOUD_API).replace(/\/+$/, '');
+
+/**
+ * The file directory of a local Bot API server: TELEGRAM_AGENT_UI_LOCAL_FILES, then the config's
+ * `localFiles`, or undefined for cloud mode. Throws `no-config` for one that is no absolute path
+ * of an existing directory, and for one beside the cloud Bot API, whose files are downloaded.
+ */
+export async function localFilesOf(env: Env, config?: Pick<Config, 'apiUrl' | 'localFiles'>): Promise<string | undefined> {
+	const dir = env.TELEGRAM_AGENT_UI_LOCAL_FILES || config?.localFiles;
+	if (dir === undefined) return undefined;
+	if (!isAbsolute(dir)) throw new Failed({ error: 'no-config', message: `localFiles "${dir}" is no absolute path` });
+	const found = await stat(dir).catch(() => undefined);
+	if (!found?.isDirectory()) throw new Failed({ error: 'no-config', message: `localFiles ${dir} is no existing directory` });
+	if (new URL(originOf(env, config)).origin === new URL(CLOUD_API).origin) throw new Failed({ error: 'no-config', message: 'localFiles names the directory of a local Bot API server, and the Bot API URL is the cloud one: set apiUrl too' });
+	return dir;
 }
 
 /** Writes `text` to `path` with `mode` through a temp file in the same directory, so a reader never sees a part. */

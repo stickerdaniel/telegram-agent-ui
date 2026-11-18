@@ -69,7 +69,8 @@ export type Opened = { kind: 'ok'; handle: FileHandle; path: string; size: numbe
 /**
  * Opens `path`, relative to `cwd`, when it is a regular file below one of `roots` and names no
  * secret, and returns the open handle; the caller reads from it, calls `confirm` and closes it.
- * A link is followed and judged by where it leads.
+ * A link is followed and judged by where it leads. `secrets: false` drops the secret-name rules,
+ * for a file that comes in rather than leaves, such as one a local Bot API server holds.
  *
  * The roots and names are judged on the real path of the opened file, bound to the handle by
  * device and inode before the read. `confirm` resolves the path once more after the read and
@@ -84,11 +85,12 @@ export type Opened = { kind: 'ok'; handle: FileHandle; path: string; size: numbe
  *     const refusal = await opened.confirm(); // undefined: the text may be used
  *   }
  */
-export async function openInRoots(path: string, options: { roots: readonly string[]; cwd: string; home: string }): Promise<Opened | FileRefusal> {
+export async function openInRoots(path: string, options: { roots: readonly string[]; cwd: string; home: string; secrets?: boolean }): Promise<Opened | FileRefusal> {
 	const allowed = await realRoots(options.roots, options.home);
 	if (allowed.kind === 'refused') return allowed;
 	const given = resolve(options.cwd, path);
-	const named = secretIssue(given);
+	const secretOf = options.secrets === false ? () => undefined : secretIssue;
+	const named = secretOf(given);
 	if (named) return refused('secret-file', named);
 	let handle: FileHandle;
 	try {
@@ -107,7 +109,7 @@ export async function openInRoots(path: string, options: { roots: readonly strin
 		if (!opened.isFile()) return keep(refused('shape', `${path} is no regular file`));
 		const before = await bind(given, handle);
 		if (!before) return keep(changed);
-		const secret = secretIssue(before.real);
+		const secret = secretOf(before.real);
 		if (secret) return keep(refused('secret-file', secret));
 		if (!allowed.roots.some((root) => below(before.real, root))) {
 			return keep(refused('outside-roots', `${path} lies outside the roots ${options.roots.join(', ')}. A person adds a directory to publishRoots in the config`));

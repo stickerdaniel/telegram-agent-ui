@@ -152,6 +152,29 @@ test('a live holder is never taken over by age, and a waiter gives up with LockT
 	expect(await fileStore(dir).lock('q:a', async () => 'after the holder died')).toBe('after the holder died');
 }, SPAWNING);
 
+test('the wait of one lock call replaces lockWait for that call alone', async () => {
+	const dir = temp();
+	const store = fileStore(dir, { lockWait: 200 });
+	let release = () => {};
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let entered = () => {};
+	const inside = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const holder = store.lock('media:a', async () => {
+		entered();
+		await held;
+	});
+	await inside;
+	const patient = store.lock('media:a', async () => 'turn', { wait: 20_000 });
+	await expect(store.lock('media:a', async () => 'turn')).rejects.toBeInstanceOf(LockTimeout);
+	release();
+	await holder;
+	expect(await patient).toBe('turn');
+}, SPAWNING);
+
 test('a pid that another process reused does not keep a lock, and the holder with its true start time does', async () => {
 	const dir = temp();
 	const other = Bun.spawn(['sleep', '30']);

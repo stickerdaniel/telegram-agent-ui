@@ -161,7 +161,9 @@ function tap(question: Question, callback: CallbackQuery, now: number, labels: L
 /**
  * A reply. It belongs to the question when it is in the question's chat and replies to the
  * question's message, or, while that message is unknown, to a message whose buttons name the
- * question. Only a text question takes it as an answer; any other reply is `ignored`.
+ * question. Only a text question takes it as an answer, and only with the sender's own words: a
+ * forward, which carries `forward_origin`, answers nothing, its text and its caption alike. Any
+ * other reply is `ignored`.
  */
 function reply(question: Question, message: Message, now: number, labels: Labels): Result {
 	const replyTo = message.reply_to_message;
@@ -170,7 +172,8 @@ function reply(question: Question, message: Message, now: number, labels: Labels
 	if (!message.from || !question.allow.includes(message.from.id)) return stale(question, 'forbidden', []);
 	const current = reveal(question, replyTo.message_id);
 	const text = message.text ?? message.caption;
-	if (current.status === 'closed' || current.status === 'sending' || current.spec.answer.type !== 'text' || text === undefined) return ignored(current);
+	const forwarded = message.forward_origin !== undefined;
+	if (current.status === 'closed' || current.status === 'sending' || current.spec.answer.type !== 'text' || text === undefined || forwarded) return ignored(current);
 	const key = `msg:${message.message_id}`;
 	if (current.applied.includes(key) || (current.status === 'answered' && current.spec.answer.once)) return stale(current, 'repeat', []);
 	const next = answered(current, { kind: 'text', text }, userOf(message.from), now, key);

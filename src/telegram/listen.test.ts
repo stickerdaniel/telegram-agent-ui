@@ -67,8 +67,8 @@ function start(
 	const logs: string[] = [];
 	const { messages } = options;
 	const onMessage = options.onMessage ?? (messages ? async (message: Inbound) => void messages.push(message) : undefined);
-	const base = { chat, call, store, signal: controller.signal, log: (line: string) => void logs.push(line), ...options.extra };
-	const running: Promise<Stopped> | undefined = options.listen === false ? undefined : listen(onMessage ? { ...base, allow: [111], onMessage } : base);
+	const base = { chat, target: 111, origin: server.url, allow: [111], call, store, signal: controller.signal, log: (line: string) => void logs.push(line), ...options.extra };
+	const running: Promise<Stopped> | undefined = options.listen === false ? undefined : listen(onMessage ? { ...base, onMessage } : base);
 	cleanups.push(async () => {
 		controller.abort();
 		await running?.catch(() => {});
@@ -312,7 +312,7 @@ test('a closed question older than 30 days that owes the view host its closed bi
 	const chat = createChat({ call, store, chat: 111, viewOrigin: ORIGIN, views });
 	const run = () => {
 		const controller = new AbortController();
-		const running = listen({ chat, call, store, signal: controller.signal });
+		const running = listen({ chat, target: 111, origin: server.url, allow: [111], call, store, signal: controller.signal });
 		cleanups.push(async () => {
 			controller.abort();
 			await running.catch(() => {});
@@ -362,7 +362,7 @@ test('a closed question older than 30 days answered in its view survives cleanup
 	const chat = createChat({ call, store, chat: 111, viewOrigin: ORIGIN, views: fakeViews().views });
 	const run = () => {
 		const controller = new AbortController();
-		const running = listen({ chat, call, store, signal: controller.signal });
+		const running = listen({ chat, target: 111, origin: server.url, allow: [111], call, store, signal: controller.signal });
 		cleanups.push(async () => {
 			controller.abort();
 			await running.catch(() => {});
@@ -417,7 +417,7 @@ test('a Chat reused by two listeners in a row stops at the budget info reports a
 	try {
 		for (const expected of [6, 7]) {
 			const controller = new AbortController();
-			const running = listen({ chat, call, store, signal: controller.signal });
+			const running = listen({ chat, target: 111, origin: server.url, allow: [111], call, store, signal: controller.signal });
 			await until(async () => (await attemptsStored()) === expected, `attempt ${expected}`);
 			controller.abort();
 			expect(await running).toEqual({ reason: 'signal' });
@@ -463,7 +463,7 @@ test('a closed question older than 30 days whose answer is owed survives cleanup
 	const call = fetchCall({ token: TOKEN, apiUrl: server.url });
 	const refusing = createChat({ call, store, chat: 111, onAnswer: async () => Promise.reject(new Error('consumer down')) });
 	const controller = new AbortController();
-	const first = listen({ chat: refusing, call, store, signal: controller.signal });
+	const first = listen({ chat: refusing, target: 111, origin: server.url, allow: [111], call, store, signal: controller.signal });
 	cleanups.push(async () => {
 		controller.abort();
 		await first.catch(() => {});
@@ -495,9 +495,9 @@ test('an ignored message from an allowed user reaches onMessage with the ref of 
 	server.say('plain words');
 	await until(() => messages.length === 3, 'three forwarded messages');
 	expect(messages).toEqual([
-		{ message: 1002, text: 'Merge after the release', replyTo: 1001, ref: 'q1', files: [] },
-		{ message: 4000, forwarded: { text: 'forwarded words' }, files: [] },
-		{ message: 1004, text: 'plain words', files: [] },
+		{ kind: 'message', message: 1002, text: 'Merge after the release', replyTo: 1001, ref: 'q1', files: [] },
+		{ kind: 'forward', message: 4000, forwarded: { origin: { type: 'hidden_user', sender_user_name: 'A', date: 1 }, text: 'forwarded words', links: [], files: [] } },
+		{ kind: 'message', message: 1004, text: 'plain words', files: [] },
 	]);
 	// The reply answered nothing: a choice question takes only a tap.
 	expect(parseQuestion(await store.get('q:q1'))).toMatchObject({ status: 'open' });
@@ -526,7 +526,7 @@ test('a message whose onMessage fails stays stored after the cursor moved, gets 
 	const received: Inbound[] = [];
 	start({ store, server: first.server, messages: received });
 	await until(() => received.length === 1, 'the delivery after the restart');
-	expect(received[0]).toEqual({ message: 1001, text: 'deploy notes', files: [] });
+	expect(received[0]).toEqual({ kind: 'message', message: 1001, text: 'deploy notes', files: [] });
 	await until(async () => (await store.get('in:111:1001')) === undefined, 'the delivered message to leave the store');
 	expect(received).toHaveLength(1);
 });
@@ -566,7 +566,7 @@ test('a new message under the update id of a stored one gets its own entry, and 
 		},
 	});
 	await until(() => received.length === 2, 'both messages');
-	expect(received.map((message) => [message.message, message.text]).sort()).toEqual([
+	expect(received.map((message) => [message.message, message.kind === 'message' ? message.text : undefined]).sort()).toEqual([
 		[1001, 'the old note'],
 		[1002, 'the new note'],
 	]);
@@ -577,7 +577,7 @@ test('one message fetched again under another update id keeps its entry and its 
 	const store = memoryStore();
 	const key = 'in:111:4001';
 	// 4 rejections so far: the listener's start makes the fifth, which spends the budget.
-	await store.set(key, { v: 1, chat: 111, update: 900, message: { message: 4001, text: 'same note', files: [] }, attempts: 4 });
+	await store.set(key, { v: 1, chat: 111, update: 900, message: { kind: 'message', message: 4001, text: 'same note', files: [] }, attempts: 4 });
 	let callbacks = 0;
 	const { server } = start({
 		store,
@@ -599,7 +599,7 @@ test('one message fetched again under another update id keeps its entry and its 
 	await Bun.sleep(LISTEN.beat * 5);
 	expect(callbacks).toBe(1);
 	expect(await store.list('in:')).toEqual([key]);
-	expect(parseStoredMessage(await store.get(key))).toEqual({ v: 1, chat: 111, update: 900, message: { message: 4001, text: 'same note', files: [] }, attempts: 5, error: 'still unavailable' });
+	expect(parseStoredMessage(await store.get(key))).toEqual({ v: 1, chat: 111, update: 900, message: { kind: 'message', message: 4001, text: 'same note', files: [] }, attempts: 5, error: 'still unavailable' });
 });
 
 test('a hanging onMessage holds up no tap', async () => {
@@ -682,13 +682,43 @@ test('a push with a hole is refused before the lease, and an accepted one reads 
 	expect(listenerStatus(value, Date.now())).toEqual({ alive: true });
 });
 
-test('a cursor older than 6 days is not sent, a younger one is', async () => {
+test('info lists a message and a forward an earlier release queued without kind, and the store keeps their content', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'tau-old-in-'));
+	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	const store = fileStore(join(dir, 'store'));
+	const message = { v: 1, chat: 111, update: 42, message: { message: 600, text: 'queued before stage 8', files: [] }, attempts: 5, error: 'consumer unavailable' };
+	const forward = { v: 1, chat: 111, update: 43, message: { message: 601, forwarded: { text: 'forwarded release instructions' }, files: [{ id: 'forwarded-file', name: 'report.pdf', bytes: 12 }] }, attempts: 5, error: 'consumer unavailable' };
+	await store.set('in:111:600', message);
+	await store.set('in:111:601', forward);
+	const info = commands.find((command) => command.name === 'info');
+	const result = await info?.invoke({}, { env: { TELEGRAM_AGENT_UI_FAKE: dir, HOME: dir }, roots: [dir], log: () => {}, signal: new AbortController().signal });
+	expect(result).toMatchObject({
+		ok: true,
+		output: {
+			messages: {
+				pending: 2,
+				undelivered: [
+					{ chat: 111, message: 600, update: 42, attempts: 5, error: 'consumer unavailable' },
+					{ chat: 111, message: 601, update: 43, attempts: 5, error: 'consumer unavailable' },
+				],
+			},
+		},
+	});
+	expect(await store.get('in:111:601')).toEqual(forward);
+});
+
+test('a cursor older than 6 days is not sent and starts a new epoch, a younger one is sent', async () => {
 	const stale = memoryStore();
-	await stale.set('cursor', { v: 1, offset: 900, at: Date.now() - 7 * 86_400_000 });
-	const old = start({ store: stale });
+	const oldServer = fakeBotApi();
+	await stale.set('cursor', { v: 1, origin: oldServer.url, epoch: 3, offset: 900, at: Date.now() - 7 * 86_400_000, refused: 2 });
+	const old = start({ store: stale, server: oldServer });
 	expect((await old.server.waitFor('getUpdates')).payload).not.toHaveProperty('offset');
+	expect(await stale.get('cursor')).toMatchObject({ origin: oldServer.url, epoch: 4, refused: 2 });
+	expect(await stale.get('cursor')).not.toHaveProperty('offset');
 	const fresh = memoryStore();
-	await fresh.set('cursor', { v: 1, offset: 900, at: Date.now() - 86_400_000 });
-	const young = start({ store: fresh });
+	const youngServer = fakeBotApi();
+	await fresh.set('cursor', { v: 1, origin: youngServer.url, epoch: 3, offset: 900, at: Date.now() - 86_400_000, refused: 0 });
+	const young = start({ store: fresh, server: youngServer });
 	expect((await young.server.waitFor('getUpdates')).payload).toMatchObject({ offset: 900 });
+	expect(await fresh.get('cursor')).toMatchObject({ epoch: 3, offset: 900 });
 });
