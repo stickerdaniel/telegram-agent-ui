@@ -82,3 +82,15 @@ The hook tests of stage 9 read these files as the harnesses write and read them,
 - The Android screen above.
 - The delay of a KV write read within the first seconds and from another region.
 - The view on Android and on desktop.
+
+## Release gates
+
+Run on 2026-11-19 by an agent, on the connected iPhone through ghosthand and on this Mac.
+
+| Gate | Record | Result |
+| --- | --- | --- |
+| A gallery video on iOS (stage 7, before 0.1.0) | `screens/ios-gallery-video-playing.png`, `screens/ios-gallery-video-seek.png` | Telegram for iOS draws the 12 s H.264 clip inline with the native controls and plays it to its end. A seek of minus 10 s from 0:12 lands at 2.000 s, frame 60 |
+| Claude Code 2.1.327 with the hook (stage 9, before 0.2.0) | `screens/ios-hook-approval.png` | `claude -p --restricted --tools Bash --settings <hook settings>` in a test directory. Allow tapped on the iPhone: the command ran. Deny tapped: it did not run, and Claude reported it in `permission_denials`. With `--disallowedTools` matching the command, Claude refused it before any question went out |
+| Codex 0.170.0 with the hook (stage 9, before 0.2.0) | this table | `codex exec` forces `approval: never` (codex-rs `exec/src/lib.rs`), so the hook only runs in the interactive client: `codex -a on-request -s read-only --dangerously-bypass-hook-trust` with a temporary `CODEX_HOME`. With no tap before the deadline, Codex showed "Blocked by hook: no answer on Telegram before the deadline" and ran nothing. Against the package's fake Bot API, which tapped for the human: Allow ran the command, Deny showed "Blocked by hook: Dana denied this on Telegram" and ran nothing |
+
+Not run: a deny rule of Codex's own over an allow from Telegram.
