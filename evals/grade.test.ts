@@ -133,7 +133,7 @@ test('none: a run that sends nothing passes, one that sends fails', async () => 
 	const evalCase = byName('at-the-terminal');
 	const [silent, sent] = await replays(evalCase, [{ args: ['info', '--json'] }], [say('Renamed `foo` to `count` in `main.ts`.')]);
 	expect(silent).toEqual({ pass: true, failures: [] });
-	expect(sent).toEqual({ pass: false, failures: ['1 call reached Telegram, and none was expected', 'an extra message: "Renamed `foo` to `count` in `main.ts`."'] });
+	expect(sent).toEqual({ pass: false, failures: ['1 call changed the chat, and none was expected', 'an extra message: "Renamed `foo` to `count` in `main.ts`."'] });
 });
 
 test('message: one message passes, nothing sent, an extra message or a table candidate fails', async () => {

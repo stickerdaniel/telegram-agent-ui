@@ -178,9 +178,11 @@ export function grade(
 	const order = { never: 0, none: 0, view: 0, status: 1, question: 2, message: 3 } as const;
 	for (const expectation of [...expectations].sort((a, b) => order[a.kind] - order[b.kind])) {
 		switch (expectation.kind) {
-			case 'none':
-				if (calls.length > 0) failures.push(`${calls.length} ${calls.length === 1 ? 'call' : 'calls'} reached Telegram, and none was expected`);
+			case 'none': {
+				const changes = calls.filter((call) => !call.method.startsWith('get')).length;
+				if (changes > 0) failures.push(`${changes} ${changes === 1 ? 'call' : 'calls'} changed the chat, and none was expected`);
 				break;
+			}
 			case 'never': {
 				const { text } = expectation;
 				if (calls.some((call) => JSON.stringify(call.payload).includes(text) || call.files.some((path) => path.includes(text)))) failures.push(`a call carried "${text}"`);
