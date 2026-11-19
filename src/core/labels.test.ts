@@ -48,7 +48,6 @@ describe('a label placed into a body stays text', () => {
 			expect(parseQuestion(JSON.parse(JSON.stringify(closed)))).toEqual(closed);
 			const edit = renderEdit(closed, tricky);
 			const shown = edit.payload.rich_message as Body;
-			// The edit body goes out as a message of its own without a refusal.
 			expect(() => render(message(shown), { chat: 111 })).not.toThrow();
 		});
 	}

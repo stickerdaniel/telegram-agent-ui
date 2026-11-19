@@ -1,14 +1,4 @@
 #!/usr/bin/env bun
-// A stand-in for wrangler 4.164.0 in the tests of `view deploy`; it never reaches Cloudflare. It
-// answers `kv namespace list`, `kv namespace create <title>` and `deploy --config <file>
-// --secrets-file <file>` with the output wrangler prints, transcribed from its
-// wrangler-dist/cli.js: the namespace list as JSON indented by 2 spaces (kvNamespaceListCommand),
-// the create banner and snippet (kvNamespaceCreateCommand, createdResourceConfig), the "already
-// exists" error, and the deploy lines `Uploaded <name> (<time>)`, `Deployed <name> triggers
-// (<time>)` with one target per line, workers.dev with its scheme and a route without, and
-// `Current Version ID: <id>` (deployWorker, triggersDeploy). Every call goes as one JSON line
-// into $WRANGLER_STANDIN_DIR/calls.jsonl with the files it named, and namespaces persist in
-// namespaces.json beside it. WRANGLER_STANDIN_FAIL=list|create|deploy fails that step.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';

@@ -1,5 +1,3 @@
-// The listener against a local Bot API server: the lease, the poll, the cursor after `handle`,
-// the flush at start, every stop reason, the missed-tap notice, the cleanup and `onMessage`.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,19 +21,16 @@ import { type Inbound, KEEP_CLOSED, LISTEN, listen, type ListenOptions, type Sto
 import { parseStoredMessage } from './messages.ts';
 
 PACING.interval = 0;
-// A loaded machine runs these slowly; each wait below has its own deadline.
 setDefaultTimeout(120_000);
 LISTEN.beat = 100;
 LISTEN.pause = 50;
 
 const SPEC = choice({ markdown: 'Merge `fix/lock` now?' }, [{ label: 'Merge' }, { label: 'Wait' }]);
-// Run last first: a listener ends before the directory of its store goes.
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** Resolves once `check` holds, polling every 20 ms; throws after `ms`. */
 async function until(check: () => boolean | Promise<boolean>, what: string, ms = 30_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (!(await check())) {
@@ -44,10 +39,6 @@ async function until(check: () => boolean | Promise<boolean>, what: string, ms =
 	}
 }
 
-/**
- * A server, a chat over fetchCall that records what onAnswer received, and a listener on
- * `store`. `stop()` aborts it and resolves with its reason.
- */
 function start(
 	options: {
 		store?: Store;
@@ -100,7 +91,6 @@ test('a tap answers the question, shows the mark, moves the cursor and reaches o
 	expect(server.calls('answerCallbackQuery')[0]?.payload).toMatchObject({ text: '✓ Wait' });
 	await until(async () => isRecord(await store.get('cursor')), 'the cursor');
 	expect(await store.get('cursor')).toMatchObject({ v: 1, offset: update.update_id + 1 });
-	// The next poll confirms the update, and the polls ask for exactly the 2 update types.
 	await until(() => server.calls('getUpdates').some((call) => call.payload.offset === update.update_id + 1), 'a poll with the new offset');
 	for (const poll of server.calls('getUpdates')) expect(poll.payload).toMatchObject({ timeout: 50, allowed_updates: ['message', 'callback_query'] });
 	expect(await stop()).toEqual({ reason: 'signal' });
@@ -121,7 +111,6 @@ test('the cursor moves only after handle: an update whose handle failed is fetch
 	const root = mkdtempSync(join(tmpdir(), 'tau-listen-'));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const inner = fileStore(join(root, 'store'));
-	// The first write of the answered question fails, as a full disk would.
 	let failed = false;
 	const store: Store = {
 		...inner,
@@ -159,7 +148,6 @@ test('a second listener on one store gets no lease and never polls', async () =>
 test('a 409 from a newer poll stops the listener, which never polls again', async () => {
 	const { server, running, store } = start();
 	await server.waitFor('getUpdates');
-	// Another process polls the same token: Telegram ends the older poll with 409.
 	await fetchCall({ token: TOKEN, apiUrl: server.url })({ method: 'getUpdates', payload: { timeout: 0 } });
 	expect(await running).toMatchObject({ reason: 'conflict', message: expect.stringContaining('terminated by other getUpdates request') });
 	await Bun.sleep(LISTEN.pause * 6);
@@ -194,7 +182,6 @@ test('a rejected token stops the listener, at the start and in handle', async ()
 	server.tap(1001, 0);
 	expect(await running).toMatchObject({ reason: 'token' });
 	expect(await store.get('listener')).toMatchObject({ stopped: 'token' });
-	// The answer was stored before the toast met the 401.
 	expect(parseQuestion(await store.get('q:q1'))).toMatchObject({ status: 'answered' });
 });
 
@@ -212,7 +199,6 @@ test('the start flush renews an answer whose deliveries were spent', async () =>
 	const { delivered } = start({ store, server });
 	await until(() => delivered.length === 1, 'the renewed delivery');
 	expect(delivered[0]).toMatchObject({ delivery: 'q1:1' });
-	// `flush` stores the delivery once onAnswer resolved.
 	await until(async () => parseQuestion(await store.get('q:q1'))?.delivery.seq === 1, 'the stored delivery');
 	expect(parseQuestion(await store.get('q:q1'))?.delivery).toEqual({ seq: 1, attempts: 0 });
 });
@@ -247,7 +233,6 @@ test('a poll after a pause of more than 150 s sends one notice while a question 
 	expect(server.calls('sendRichMessage')).toHaveLength(1);
 	await stop();
 
-	// Without a question that takes answers, no tap can have been lost.
 	const closed = memoryStore();
 	await closed.set('listener', { v: 1, heartbeat: clock.now - HEARTBEAT_AGE * 3 });
 	const none = start({ store: closed });
@@ -283,7 +268,6 @@ test('a closed question older than 30 days that owes the view host its closed bi
 	const store = memoryStore();
 	const old = Date.now() - KEEP_CLOSED - 1_000;
 	const inView = choice({ markdown: 'Which layout should stay?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }], { view: VIEW, in: 'view' });
-	/** A question asked 30 days ago on message `message`, closed then; `expiresAt` lies a day ahead. */
 	const closedOld = (ref: string, message: number, spec: Question['spec']): Question => {
 		const events: Parameters<typeof reduce>[1][] = [{ type: 'sent', sent: { chat: 111, message, files: [], ref, view: { id: VIEW, origin: ORIGIN } } }, { type: 'close' }];
 		const first = reduce(undefined, { type: 'ask', spec, ref, chat: 111, allow: [111], viewOrigin: ORIGIN, expiresAt: Date.now() + 86_400_000 }, { now: old }).question;
@@ -293,10 +277,8 @@ test('a closed question older than 30 days that owes the view host its closed bi
 	};
 	await store.set('q:owing', closedOld('owing', 11, inView));
 	expect(parseQuestion(await store.get('q:owing'))).toMatchObject({ status: 'closed', bindingOwed: true });
-	// A closed question in the chat beside it shows that the cleanup ran.
 	await store.set('q:done', closedOld('done', 12, choice({ markdown: 'Merge?' }, [{ label: 'A' }, { label: 'B' }], { view: VIEW })));
 
-	// The view host takes no write until `up`.
 	let up = false;
 	const host = fakeViews();
 	const views: ViewClient = {
@@ -340,7 +322,6 @@ test('a closed question older than 30 days that owes the view host its closed bi
 test('a closed question older than 30 days answered in its view survives cleanup while a recheck is due, since an earlier context write may still land over the closed one', async () => {
 	const store = memoryStore();
 	const old = Date.now() - KEEP_CLOSED - 1_000;
-	/** A question asked 30 days ago on message `message` and closed then, its closed binding stored, with a recheck a minute ahead. */
 	const rechecking = (ref: string, message: number, spec: Question['spec']): Question => {
 		const events: Parameters<typeof reduce>[1][] = [{ type: 'sent', sent: { chat: 111, message, files: [], ref, view: { id: VIEW, origin: ORIGIN } } }, { type: 'close' }];
 		const first = reduce(undefined, { type: 'ask', spec, ref, chat: 111, allow: [111], viewOrigin: ORIGIN, expiresAt: Date.now() + 86_400_000 }, { now: old }).question;
@@ -353,7 +334,6 @@ test('a closed question older than 30 days answered in its view survives cleanup
 	await store.set('q:late', inView);
 	expect(parseQuestion(await store.get('q:late'))).toMatchObject({ status: 'closed', shown: { recheckAt: expect.any(Number) } });
 	expect(parseQuestion(await store.get('q:late'))).not.toHaveProperty('bindingOwed');
-	// A question answered in the chat with the same recheck goes: its host takes no choice for it.
 	await store.set('q:chat', rechecking('chat', 12, choice({ markdown: 'Merge?' }, [{ label: 'A' }, { label: 'B' }], { view: VIEW })));
 
 	const server = fakeBotApi();
@@ -378,7 +358,6 @@ test('a closed question older than 30 days answered in its view survives cleanup
 	expect(parseQuestion(await store.get('q:late'))).toMatchObject({ status: 'closed' });
 	expect(await store.get('t:late')).toBeUndefined();
 
-	// Once the recheck confirmed the message and its context, the question goes.
 	const { recheckAt: _done, ...shown } = inView.shown;
 	await store.set('q:late', { ...inView, shown });
 	run();
@@ -389,7 +368,6 @@ test('a closed question older than 30 days answered in its view survives cleanup
 test('a Chat reused by two listeners in a row stops at the budget info reports as spent', async () => {
 	const dir = mkdtempSync(join(tmpdir(), 'tau-reuse-'));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-	// The store of fake mode in `dir`, so that the info command reads this very store.
 	const store = fileStore(join(dir, 'store'));
 	const server = fakeBotApi();
 	cleanups.push(() => server.stop());
@@ -411,7 +389,6 @@ test('a Chat reused by two listeners in a row stops at the budget info reports a
 	for (let flush = 0; flush < 6; flush++) await chat.flush().catch(() => {});
 	expect(await attemptsStored()).toBe(5);
 
-	// Each listener run makes only the attempt of its start: the beat would add more.
 	const beat = LISTEN.beat;
 	LISTEN.beat = 600_000;
 	try {
@@ -425,7 +402,6 @@ test('a Chat reused by two listeners in a row stops at the budget info reports a
 	} finally {
 		LISTEN.beat = beat;
 	}
-	// The second start found 2 attempts since the baseline of 5 and kept it.
 	expect(parseListener(await store.get('listener'))?.renewed?.answers).toEqual({ 'reuse:1': 5 });
 	for (let flush = 0; flush < 5; flush++) await chat.flush().catch(() => {});
 	expect(await attemptsStored()).toBe(10);
@@ -439,7 +415,6 @@ test('a Chat reused by two listeners in a row stops at the budget info reports a
 test('a closed question older than 30 days whose answer is owed survives cleanup, and goes once it is delivered', async () => {
 	const store = memoryStore();
 	const old = Date.now() - KEEP_CLOSED - 1_000;
-	/** A question asked 30 days ago, answered by a tap and closed, with its answer delivered or owed. */
 	const closedAnswered = (ref: string, message: number, delivered: boolean): Question => {
 		const events: Parameters<typeof reduce>[1][] = [
 			{ type: 'sent', sent: { chat: 111, message, files: [], ref } },
@@ -455,10 +430,8 @@ test('a closed question older than 30 days whose answer is owed survives cleanup
 	const owed = closedAnswered('owed', 9, false);
 	expect(owed).toMatchObject({ status: 'closed', seq: 1, delivery: { seq: 0 } });
 	await store.set('q:owed', owed);
-	// A delivered one beside it shows that the cleanup ran.
 	await store.set('q:done', closedAnswered('done', 10, true));
 
-	// A listener whose consumer refuses every answer: the answer stays owed.
 	const server = fakeBotApi();
 	const call = fetchCall({ token: TOKEN, apiUrl: server.url });
 	const refusing = createChat({ call, store, chat: 111, onAnswer: async () => Promise.reject(new Error('consumer down')) });
@@ -475,7 +448,6 @@ test('a closed question older than 30 days whose answer is owed survives cleanup
 	controller.abort();
 	expect(await first).toEqual({ reason: 'signal' });
 
-	// A working consumer takes the answer; the next cleanup, an hour later, deletes the question.
 	const clock = { now: Date.now() };
 	const { delivered } = start({ store, server, extra: { now: () => clock.now } });
 	await until(() => delivered.length === 1, 'the delivery');
@@ -499,7 +471,6 @@ test('an ignored message from an allowed user reaches onMessage with the ref of 
 		{ kind: 'forward', message: 4000, forwarded: { origin: { type: 'hidden_user', sender_user_name: 'A', date: 1 }, text: 'forwarded words', links: [], files: [] } },
 		{ kind: 'message', message: 1004, text: 'plain words', files: [] },
 	]);
-	// The reply answered nothing: a choice question takes only a tap.
 	expect(parseQuestion(await store.get('q:q1'))).toMatchObject({ status: 'open' });
 });
 
@@ -518,7 +489,6 @@ test('a message whose onMessage fails stays stored after the cursor moved, gets 
 	await until(() => attempts === 5, 'five attempts');
 	await Bun.sleep(LISTEN.beat * 4);
 	expect(attempts).toBe(5);
-	// Telegram has the update confirmed: the store holds the message.
 	expect(await store.get('cursor')).toMatchObject({ offset: update.update_id + 1 });
 	expect(await store.get('in:111:1001')).toMatchObject({ v: 1, attempts: 5, error: 'consumer unavailable', message: { text: 'deploy notes', files: [] } });
 	expect(await first.stop()).toEqual({ reason: 'signal' });
@@ -549,11 +519,9 @@ test('a new message under the update id of a stored one gets its own entry, and 
 	await first.server.waitFor('getUpdates', (call) => call.payload.offset === old.update_id + 1);
 	expect(await first.stop()).toEqual({ reason: 'signal' });
 
-	// After a week of silence Telegram restarts its update ids, and the listener sends no old offset.
 	await store.set('cursor', { v: 1, offset: old.update_id + 1, at: Date.now() - 7 * 86_400_000 });
 	const fresh = first.server.say('the new note', { update: old.update_id });
 	expect(fresh.update_id).toBe(old.update_id);
-	// The consumer refuses until it was offered 2 messages, so the old entry still waits when the new message arrives.
 	const offered = new Set<number>();
 	const received: Inbound[] = [];
 	start({
@@ -576,7 +544,6 @@ test('a new message under the update id of a stored one gets its own entry, and 
 test('one message fetched again under another update id keeps its entry and its spent budget', async () => {
 	const store = memoryStore();
 	const key = 'in:111:4001';
-	// 4 rejections so far: the listener's start makes the fifth, which spends the budget.
 	await store.set(key, { v: 1, chat: 111, update: 900, message: { kind: 'message', message: 4001, text: 'same note', files: [] }, attempts: 4 });
 	let callbacks = 0;
 	const { server } = start({
@@ -588,14 +555,12 @@ test('one message fetched again under another update id keeps its entry and its 
 	});
 	await until(async () => parseStoredMessage(await store.get(key))?.attempts === 5, 'the fifth rejection');
 	expect(callbacks).toBe(1);
-	// The same chat and message, fetched again under another update id.
 	const person = { id: 111, is_bot: false, first_name: 'Dana' };
 	server.push({ message: { message_id: 4001, from: person, chat: { id: 111, type: 'private', first_name: 'Dana' }, date: 1, text: 'same note' } }, 901);
 	await until(async () => {
 		const cursor = await store.get('cursor');
 		return isRecord(cursor) && cursor.offset === 902;
 	}, 'the acknowledged repeat');
-	// Flushes go on every beat: none of them may find a fresh budget.
 	await Bun.sleep(LISTEN.beat * 5);
 	expect(callbacks).toBe(1);
 	expect(await store.list('in:')).toEqual([key]);
@@ -625,7 +590,6 @@ test('a heartbeat still writing when the listener stops never lands after the st
 	const gate = new Promise<void>((resolve) => {
 		open = resolve;
 	});
-	// Holds the first heartbeat written once armed, as a slow disk would.
 	const store: Store = {
 		...inner,
 		async set(key, value) {
@@ -670,7 +634,6 @@ test('a push with a hole is refused before the lease, and an accepted one reads 
 	await expect(refusedStart.running ?? Promise.resolve()).rejects.toThrow(ShapeError);
 	expect(await inner.get('listener')).toBeUndefined();
 
-	// A store that keeps only what JSON keeps.
 	const store: Store = { ...inner, set: (key, value) => inner.set(key, JSON.parse(JSON.stringify(value))) };
 	const keys = ['session'];
 	const { server } = start({ store, extra: { push: { metaKeys: keys } } });

@@ -1,5 +1,3 @@
-// The MCP server as an MCP client sees it: the SDK's client over stdio, against the bin in fake
-// mode. One test installs the packed tarball into an empty directory and runs it with Node.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -9,7 +7,6 @@ import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
-// The tarball test builds, packs and installs; a loaded machine starts a process in seconds.
 setDefaultTimeout(240_000);
 
 const REPO = join(import.meta.dir, '..', '..');
@@ -20,18 +17,12 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** A temp directory, removed after the test; its real path, since macOS links /var to /private/var. */
 function temp(prefix: string): string {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 	return dir;
 }
 
-/**
- * A connected client of the server that `command` starts. `roots` makes it declare the roots
- * capability and answer with them. `modern` probes for the 2026-07-28 protocol, else the client
- * opens with the 2025 `initialize`.
- */
 async function connect(server: { command: string; args: string[]; cwd: string; env: Record<string, string> }, roots?: string[], modern = false): Promise<Client> {
 	const client = new Client({ name: 'test', version: '1.0.0' }, { ...(roots ? { capabilities: { roots: {} } } : {}), ...(modern ? { versionNegotiation: { mode: 'auto' } } : {}) });
 	if (roots) client.setRequestHandler('roots/list', async () => ({ roots: roots.map((root) => ({ uri: pathToFileURL(root).href })) }));
@@ -40,7 +31,6 @@ async function connect(server: { command: string; args: string[]; cwd: string; e
 	return client;
 }
 
-/** A client of the bin's server in fake mode, started in `cwd`. */
 function fake(root: string, cwd: string, options: { roots?: string[]; scenario?: string; modern?: boolean } = {}) {
 	const { roots, scenario, modern } = options;
 	const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, TELEGRAM_AGENT_UI_FAKE: join(root, 'fake'), ...(scenario ? { TELEGRAM_AGENT_UI_FAKE_SCENARIO: scenario } : {}) };
@@ -49,7 +39,6 @@ function fake(root: string, cwd: string, options: { roots?: string[]; scenario?:
 
 type Called = Awaited<ReturnType<Client['callTool']>>;
 
-/** The JSON of a tool result, after checking that its text and its structured content carry the same object. */
 function json(result: Called): Record<string, unknown> {
 	const [first] = Array.isArray(result.content) ? result.content : [];
 	expect(first?.type).toBe('text');
@@ -63,7 +52,6 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const root = temp('tau-pack-');
 	const pkg = join(root, 'pkg');
 	mkdirSync(pkg);
-	// The package as npm packs it: package.json, README, src and a fresh build in dist.
 	for (const name of ['package.json', 'README.md', 'src']) cpSync(join(REPO, name), join(pkg, name), { recursive: true });
 	execFileSync(process.execPath, ['x', 'tsc', '-p', join(REPO, 'tsconfig.build.json'), '--outDir', join(pkg, 'dist')], { cwd: REPO, stdio: 'pipe' });
 	execFileSync('npm', ['pack', '--silent', '--pack-destination', root], { cwd: pkg, stdio: 'pipe' });
@@ -79,7 +67,6 @@ test('the packed tarball, installed into an empty directory, serves the tools, a
 	const { tools } = await client.listTools();
 	expect(tools.map((tool) => tool.name)).toEqual(['get_status', 'send_message', 'edit_message', 'ask_question', 'get_answer', 'close_question', 'publish_view', 'fetch_file']);
 	const ask = tools.find((tool) => tool.name === 'ask_question');
-	// The fake view host ships in the tarball too.
 	expect(tools.find((tool) => tool.name === 'publish_view')?.inputSchema.properties).toHaveProperty('tabs.items.required', ['label', 'file']);
 	expect(Object.keys(ask?.inputSchema.properties ?? {})).toEqual(['answer', 'options', 'once', 'files', 'view', 'answerIn', 'topic', 'meta', 'ref', 'strict', 'dryRun', 'body', 'bodyFile']);
 
@@ -98,7 +85,6 @@ test('ask_question without a live listener is an isError result, and nothing is 
 	expect(result.isError).toBe(true);
 	expect(json(result)).toMatchObject({ error: 'no-listener' });
 	expect(readdirSync(join(root, 'fake'))).not.toContain('calls.jsonl');
-	// A message that asks nothing needs no listener.
 	const sent = await client.callTool({ name: 'send_message', arguments: { body: 'Build passed.' } });
 	expect(sent.isError).toBeUndefined();
 	expect(json(sent)).toMatchObject({ chat: 111, message: 1001 });
@@ -133,7 +119,6 @@ test.each([
 	const refused = await rootless.callTool({ name: 'send_message', arguments: { bodyFile: join(project, 'q.md') } });
 	expect(json(refused)).toMatchObject({ error: 'refused', code: 'outside-roots' });
 
-	// get_status reads topic mode with getMe; every send of the run is the one body.
 	const sends = readFileSync(join(root, 'fake', 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.method !== 'getMe');
 	expect(sends.map((call) => call.payload.rich_message?.markdown)).toEqual(['Ship `v2` now?']);
 });
@@ -159,7 +144,6 @@ test('publish_view uploads files below the roots to the view host and refuses a 
 	expect(json(await publish(join(root, 'outside.md')))).toMatchObject({ error: 'refused', code: 'outside-roots' });
 	expect(json(await publish(join(project, '.env')))).toMatchObject({ error: 'refused', code: 'secret-file' });
 	expect(json(await publish(join(project, 'notes.md')))).toMatchObject({ error: 'refused', code: 'outside-roots' });
-	// A relative path would resolve against the server's own directory.
 	expect(json(await publish('mock.html'))).toMatchObject({ error: 'usage' });
 
 	const uploads = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8');
@@ -205,7 +189,6 @@ test('publish_view makes a gallery tab of the pictures of one label, each with i
 	const root = temp('tau-mcp-');
 	const project = join(root, 'project');
 	mkdirSync(project);
-	// The leading bytes of a PNG and of an MP4 `ftyp` box: the host checks them.
 	writeFileSync(join(project, 'a.png'), Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]));
 	writeFileSync(join(project, 'run.mp4'), Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 1, 2]));
 	writeFileSync(join(project, 'notes.md'), '# Notes');
@@ -218,7 +201,6 @@ test('publish_view makes a gallery tab of the pictures of one label, each with i
 	expect(published).toMatchObject({ files: [{ path: join(project, 'a.png') }, { path: join(project, 'run.mp4') }] });
 	const view = readFileSync(join(root, 'fake', 'views.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).at(-1);
 	expect(view.body.view.tabs).toEqual([{ label: 'Shots', content: { gallery: [{ media: 0, type: 'image/png', caption: 'The new header' }, { media: 1, type: 'video/mp4', caption: 'The run' }] } }]);
-	// A caption belongs to a picture.
 	expect(json(await client.callTool({ name: 'publish_view', arguments: { tabs: [{ label: 'Notes', file: join(project, 'notes.md'), caption: 'x' }] } }))).toMatchObject({ error: 'usage' });
 });
 

@@ -1,6 +1,3 @@
-// `view deploy` against the wrangler stand-in of wrangler-standin.ts, on a machine of its own:
-// the KV namespace once, the filled template, both secrets kept in .env, the config's `views`,
-// and the refusals before and after the deploy.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +8,6 @@ import { KEY_NAMES } from './deploy.ts';
 import type { Result } from './result.ts';
 import { commands } from './table.ts';
 
-// Each deploy starts the stand-in 3 to 4 times as a Bun process, which takes seconds on a loaded machine.
 setDefaultTimeout(120_000);
 
 const STANDIN = join(import.meta.dir, 'wrangler-standin.ts');
@@ -102,7 +98,6 @@ test('a second deploy finds the namespace and keeps the keys, and --rotate-keys 
 	expect(after.upload).not.toBe(before.upload);
 	expect(after.media).not.toBe(before.media);
 	expect(at.calls().at(-1)?.secrets).toEqual({ UPLOAD_KEY: after.upload, MEDIA_KEY: after.media });
-	// The next ordinary deploy sends the rotated keys, not the ones before.
 	output(await at.deploy());
 	expect(at.calls().at(-1)?.secrets).toEqual({ UPLOAD_KEY: after.upload, MEDIA_KEY: after.media });
 });
@@ -120,7 +115,6 @@ test('keys from the environment are deployed as they are, and --rotate-keys refu
 	}
 	expect(at.calls().length).toBe(calls);
 	expect(readFileSync(paths(at.env).envFile, 'utf8')).toBe(envFile);
-	// The owner of the environment rotates there: the next deploy sends the new pair.
 	output(await at.deploy({}, { [KEY_NAMES.upload]: 'upload-rotated', [KEY_NAMES.media]: 'media-rotated' }));
 	expect(at.calls().at(-1)?.secrets).toEqual({ UPLOAD_KEY: 'upload-rotated', MEDIA_KEY: 'media-rotated' });
 });
@@ -188,7 +182,6 @@ test('a failed namespace step deploys nothing, and a failed deploy is uncertain 
 	expect(uncertain.ok ? undefined : uncertain.failure).toMatchObject({ error: 'uncertain' });
 	expect(uncertain.ok ? '' : uncertain.failure.message).toContain('The Worker may be live');
 	expect((await readConfig(deploying.env)).views).toEqual({});
-	// The keys the failed deploy carried stay, so the next deploy sends the same ones.
 	const sent = deploying.calls().at(-1)?.secrets;
 	expect(sent?.UPLOAD_KEY).toBe(await findSecret(deploying.env, KEY_NAMES.upload));
 });

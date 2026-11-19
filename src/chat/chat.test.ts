@@ -17,7 +17,6 @@ const keyboard = (ref = REF) => ({
 });
 const BODY = 1001;
 
-/** The `Sent` of an outcome, or a failed test. */
 function sentOf(outcome: Outcome): Sent {
 	if ((outcome.kind !== 'ok' && outcome.kind !== 'partial') || !outcome.sent) throw new Error(`no sent in ${JSON.stringify(outcome)}`);
 	return outcome.sent;
@@ -82,7 +81,6 @@ describe('the acceptance of stage 2', () => {
 	});
 
 	test('a refused send leaves its ref taken at every fault point: by the tombstone, or by the question until the tombstone is written', async () => {
-		// The store writes of a refused send: set q (sending), set t, delete q.
 		const points = [
 			['set', 1],
 			['set', 2],
@@ -101,7 +99,6 @@ describe('the acceptance of stage 2', () => {
 			if (bodySent) expect(tombstone !== undefined || question !== undefined, label).toBe(true);
 			if (!(outcome instanceof Error) && outcome.kind === 'refused') expect([tombstone !== undefined, question], label).toEqual([true, undefined]);
 			if (tombstone === undefined && question === undefined) expect(bodySent, label).toBe(false);
-			// A second send of the ref sends no body.
 			const calls = server.calls.length;
 			const again = await chat.send(deploy, { ref: REF });
 			if (bodySent) {
@@ -141,7 +138,6 @@ describe('the acceptance of stage 2', () => {
 		const handled = await chat.handle(reply({ id: 900, replyTo: BODY, text: 'Why not both?' }));
 		expect(handled).toEqual({ kind: 'ignored' });
 		expect(await chat.get(REF)).toMatchObject({ status: 'open', seq: 0, sent: { chat: CHAT, message: BODY, ref: REF } });
-		// What a listener reads to pass the ref to onMessage.
 		expect(await inner.get(`m:${CHAT}:${BODY}`)).toBe(REF);
 		expect(server.calls.map(({ call }) => call.method)).toEqual(['sendRichMessage']);
 		expect(breaches).toEqual([]);
@@ -231,7 +227,6 @@ describe('send', () => {
 		expect(server.calls).toEqual([]);
 		await inner.set('listener', { v: 1, heartbeat: clock.now - 1_000 });
 		expect(await ask()).toMatchObject({ kind: 'ok' });
-		// A message that asks nothing needs no listener.
 		await inner.delete('listener');
 		expect(await chat.send(message({ markdown: 'Done.' }), { needsListener: true })).toMatchObject({ kind: 'ok' });
 	});
@@ -296,13 +291,11 @@ describe('send', () => {
 		});
 		server.fail(4, 'lost');
 		expect(await chat.send(spec)).toMatchObject({ kind: 'partial', failed: { step: 1, class: 'uncertain' } });
-		// No step is sent again.
 		expect(server.calls.map(({ call }) => call.method)).toEqual(['sendRichMessage', 'sendMediaGroup', 'sendDocument', 'sendRichMessage', 'sendMediaGroup']);
 	});
 
 	test('a call without an answer counts as uncertain after 30 s, a video step after 600 s', async () => {
 		jest.useFakeTimers();
-		// Lets the promise jobs run until `done` holds: the fake clock moves only between them.
 		const settle = async (done: () => boolean) => {
 			for (let tick = 0; tick < 100 && !done(); tick++) await Promise.resolve();
 		};
@@ -353,7 +346,6 @@ describe('edit and close', () => {
 		expect(server.shows.get(BODY)).toEqual({ rich_message: { markdown: 'Step 2 of 3' } });
 		server.fail(server.count, 'lost');
 		expect(await chat.edit(sent, { markdown: 'Step 3 of 3' })).toMatchObject({ kind: 'uncertain' });
-		// No question holds the message: the only store writes are none, the reads are the index and its rebuild.
 		expect(store.ops.filter((op) => op.method === 'set' || op.method === 'delete')).toEqual([]);
 	});
 
@@ -442,7 +434,6 @@ describe('views', () => {
 		const { server, chat } = setup({ viewOrigin: ORIGIN, views: fake.views });
 		const spec = choice({ markdown: 'Which tab first?' }, [{ label: 'Views' }, { label: 'Lock' }], { view: VIEW });
 		expect(await chat.send(spec, { ref: REF })).toMatchObject({ kind: 'ok', sent: { view: { id: VIEW, origin: ORIGIN } } });
-		// The first write failed, so the send owes a repair: the edit the server finds unchanged, and the context again.
 		expect(fake.writes).toEqual([
 			{ id: VIEW, ref: REF, body: spec.body },
 			{ id: VIEW, ref: REF, body: spec.body },
@@ -461,16 +452,10 @@ describe('views', () => {
 	});
 });
 
-/** Lets promise jobs run until `done` holds: under fake timers the clock moves only between them. */
 async function settle(done: () => boolean) {
 	for (let tick = 0; tick < 200 && !done(); tick++) await Promise.resolve();
 }
 
-/**
- * A memory store whose writes of one edit can be slowed and cut, once armed. The edit's writes
- * are its body, the mark before the call and the answer after it: `slowMark` moves the clock on
- * while the mark is written, `cut` fails the write of the answer.
- */
 function editStore(clock: { now: number }) {
 	const inner = memoryStore();
 	const plan = { armed: false, sets: 0, slowMark: 0, cut: false };
@@ -493,7 +478,6 @@ function editStore(clock: { now: number }) {
 	};
 }
 
-/** A transport that holds the first edit until `release`, and answers later edits like Telegram. */
 function holdingFirstEdit() {
 	const state = { shows: new Map<number, unknown>(), edits: 0, held: undefined as Call | undefined, release: undefined as ((response: CallResponse) => void) | undefined };
 	const notModified: CallResponse = { ok: false, status: 400, description: 'Bad Request: message is not modified' };
@@ -516,15 +500,6 @@ function holdingFirstEdit() {
 	return { state, call };
 }
 
-/**
- * The late edit: "First?" gets no answer before its deadline, "Second?" is confirmed, then
- * "First?" reaches the server 1 ms before the end of its window: 60 s after its deadline,
- * counted from the call's start. With `cut`, the store write of the uncertain answer fails, so
- * only the mark stored before the call can leave the recheck. With `slowMark`, the mark's write
- * takes that long, so the call starts that much after the mark. With `lateTimeout`, the event
- * loop delivers the timeout that much after the deadline. `flush` must restore "Second?" at
- * `recheckAt`, and not before.
- */
 async function lateEdit(options: { cut: boolean; slowMark?: number; lateTimeout?: number }) {
 	const slowMark = options.slowMark ?? 0;
 	jest.useFakeTimers();
@@ -541,35 +516,29 @@ async function lateEdit(options: { cut: boolean; slowMark?: number; lateTimeout?
 		const start = NOW + slowMark;
 		expect(clock.now).toBe(start);
 		const windowEnd = start + DEADLINES.call + RECHECK_DELAY;
-		// The call passes its deadline, and the uncertain answer is processed at `answered`.
 		const answered = start + DEADLINES.call + (options.lateTimeout ?? 0);
 		clock.now = answered;
 		jest.advanceTimersByTime(DEADLINES.call);
 		const outcome = await first;
 		if (options.cut) expect(outcome).toBeInstanceOf(StoreFault);
 		else expect(outcome).toMatchObject({ kind: 'ok' });
-		// Only the mark survives a cut; a stored answer sets 60 s after it. Both lie at or past the window's end.
 		const recheckAt = options.cut ? NOW + START_WINDOW + DEADLINES.call + RECHECK_DELAY : answered + RECHECK_DELAY;
 		expect(recheckAt).toBeGreaterThanOrEqual(windowEnd);
 		expect((await chat.get(REF))?.shown).toMatchObject({ failures: options.cut ? 0 : 1, recheckAt });
 
-		// A newer edit is confirmed and keeps the recheck.
 		expect(await chat.edit(sent, { markdown: 'Second?' })).toMatchObject({ kind: 'ok', warnings: [] });
 		expect((await chat.get(REF))?.shown).toEqual({ want: 2, done: 2, failures: 0, recheckAt });
 
-		// Where a mark taken without the start window would come due, nothing is due yet.
 		if (options.cut && slowMark > 0) {
 			clock.now = NOW + DEADLINES.call + RECHECK_DELAY;
 			await chat.flush();
 			expect(state.edits).toBe(2);
 		}
-		// The old request lands 1 ms before the window's end.
 		clock.now = windowEnd - 1;
 		state.shows.set(BODY, state.held?.payload.rich_message);
 		state.release?.({ ok: true, result: { message_id: BODY } });
 		expect(state.shows.get(BODY)).toEqual({ markdown: 'First?' });
 
-		// Before recheckAt, flush sends nothing; from then on it edits once more and clears it.
 		clock.now = recheckAt - 1;
 		await chat.flush();
 		expect(state.edits).toBe(2);
@@ -605,7 +574,6 @@ describe('recovery', () => {
 				return { ok: true, result: { message_id: BODY } };
 			}
 			if (request.method !== 'editMessageText') return { ok: true, result: true };
-			// The first edit gets a 502 at once and reaches the server later.
 			if (++edits === 1) {
 				held = request;
 				return { ok: false, status: 502, description: 'Bad Gateway' };
@@ -621,7 +589,6 @@ describe('recovery', () => {
 		clock.now = start;
 		expect(await chat.edit(sent, { markdown: 'First?' })).toMatchObject({ kind: 'ok' });
 		const windowEnd = start + DEADLINES.call + RECHECK_DELAY;
-		// 60 s after the answer would be start + 60 s: the window's end lies 30 s later.
 		expect((await chat.get(REF))?.shown).toMatchObject({ failures: 1, recheckAt: windowEnd });
 		expect(await chat.edit(sent, { markdown: 'Second?' })).toMatchObject({ kind: 'ok' });
 
@@ -645,7 +612,6 @@ describe('recovery', () => {
 		expect(await chat.edit(sent, { markdown: 'First?' })).toMatchObject({ kind: 'ok', status: 'pending', warnings: [] });
 		expect(state.edits).toBe(0);
 		expect((await chat.get(REF))?.shown).toEqual({ want: 1, done: 0, failures: 1 });
-		// The debt stays: the next flush sends the edit.
 		const flushing = chat.flush();
 		await settle(() => state.edits === 1);
 		expect(state.held?.payload.rich_message).toEqual({ markdown: 'First?' });
@@ -716,7 +682,6 @@ describe('recovery', () => {
 		await expect(chat.flush()).rejects.toBeInstanceOf(TokenRefused);
 		expect((await chat.get(REF))?.shown).toEqual(edited?.shown);
 
-		// The toast answers 401: the answer is stored, the edit waits for the next flush.
 		server.fail(3, 'token');
 		await expect(chat.handle(tap({ button: 0, message: BODY }))).rejects.toBeInstanceOf(TokenRefused);
 		expect(await chat.get(REF)).toMatchObject({ status: 'answered', seq: 1 });
@@ -750,7 +715,6 @@ describe('files', () => {
 		expect(await setup({ files: sent.files }).chat.send(spec)).toMatchObject({ kind: 'ok' });
 		expect(sent.opened.map((file) => file.closed)).toEqual([1, 1]);
 
-		// Both fields send the first handle of the path, so its size refuses the send.
 		const big = [sized('/p/a.pdf', 60_000_000), sized('/p/a.pdf', 1)];
 		expect(await setup({ files: async () => ({ kind: 'ok', files: big }) }).chat.send(spec)).toMatchObject({ kind: 'refused', code: 'shape' });
 		expect(big.map((file) => file.closed)).toEqual([1, 1]);
@@ -762,7 +726,6 @@ describe('files', () => {
 
 	test('one path as document and as photo is checked on the handle both fields send, before the body', async () => {
 		const spec = message({ markdown: 'Same file twice.' }, { attach: [{ path: '/p/same.png', as: 'document' }, { path: '/p/same.png', as: 'photo' }] });
-		// The reader returns a handle per occurrence; both fields send the first.
 		const handles = [sized('/p/same.png', 10_000_001), sized('/p/same.png', 1)];
 		const { chat, server } = setup({ files: async () => ({ kind: 'ok', files: handles }) });
 		expect(await chat.send(spec)).toMatchObject({ kind: 'refused', code: 'shape' });
@@ -793,9 +756,7 @@ describe('pacing', () => {
 			const one = createChat({ call, store: memoryStore(), chat: CHAT });
 			const two = createChat({ call, store: memoryStore(), chat: CHAT, files: fakeFiles().files });
 			const other = createChat({ call, store: memoryStore(), chat: 222 });
-			// Two chats of one chat id and a third of another, at once.
 			const [first] = await Promise.all([one.send(message({ markdown: 'One.' })), two.send(message({ markdown: 'Two.' })), other.send(message({ markdown: 'Other.' }))]);
-			// A body and its files step, then two edits.
 			await two.send(message({ markdown: 'With a file.' }, { attach: [{ path: '/p/a.png' }] }));
 			const sent = sentOf(first ?? { kind: 'dry', steps: [], warnings: [] });
 			await one.edit(sent, { markdown: 'One, edited.' });
@@ -803,7 +764,6 @@ describe('pacing', () => {
 
 			const paced = starts.filter((start) => start.chat === CHAT);
 			expect(paced.map((start) => start.method)).toEqual(['sendRichMessage', 'sendRichMessage', 'sendRichMessage', 'sendPhoto', 'editMessageText', 'editMessageText']);
-			// The gate takes its time after the transport took the call, so the transport's own clock reads lie 1 s apart too.
 			for (const [index, start] of paced.entries()) if (index > 0) expect(start.at - (paced[index - 1]?.at ?? 0)).toBeGreaterThanOrEqual(1_000);
 			const otherStart = starts.find((start) => start.chat === 222)?.at ?? Number.POSITIVE_INFINITY;
 			expect(otherStart - (paced[0]?.at ?? 0)).toBeLessThan(900);
@@ -821,12 +781,8 @@ describe('pacing', () => {
 				entries.push(performance.now());
 				return server.call(request);
 			};
-			// A chat id no other test paces: its gate admits the first call at once, among the promise jobs below.
 			const one = createChat({ call, store: memoryStore(), chat: 333 });
 			const two = createChat({ call, store: memoryStore(), chat: 333 });
-			// 10 ms of work in each of the next 100 rounds of promise jobs, queued ahead of the sends: in
-			// every round a busy job runs before the sends' jobs. A gate that took its time in one round
-			// and called the transport in a later one would see its call delayed by that work.
 			const busy = () => {
 				const until = performance.now() + 10;
 				while (performance.now() < until) {}
@@ -846,8 +802,6 @@ describe('pacing', () => {
 		try {
 			const entries: number[] = [];
 			const server = telegram();
-			// 20 ms of synchronous work in the first call before it reads the clock, as a large body
-			// or a pause of the runtime takes between the gate admitting a call and its request.
 			const call = async (request: Call): Promise<CallResponse> => {
 				if (entries.length === 0) {
 					const until = performance.now() + 20;
@@ -856,7 +810,6 @@ describe('pacing', () => {
 				entries.push(performance.now());
 				return server.call(request);
 			};
-			// A chat id no other test paces.
 			const one = createChat({ call, store: memoryStore(), chat: 444 });
 			const two = createChat({ call, store: memoryStore(), chat: 444 });
 			await Promise.all([one.send(message({ markdown: 'One.' })), two.send(message({ markdown: 'Two.' }))]);

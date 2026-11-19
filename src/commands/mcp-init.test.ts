@@ -1,5 +1,3 @@
-// `mcp init` writes each client's documented entry into a temp home, keeps what the file held,
-// and changes nothing on a second run.
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,7 +17,6 @@ function home() {
 
 const STDIO = { type: 'stdio', command: 'npx', args: ['telegram-agent-ui@latest', 'mcp'] };
 
-/** The path and the file each client documents, in a home `dir`. */
 const expected: Record<McpClient, (dir: string) => { path: string; text: string }> = {
 	claude: (dir) => ({ path: join(dir, '.claude.json'), text: `${JSON.stringify({ mcpServers: { 'telegram-agent-ui': STDIO } }, null, 2)}\n` }),
 	cursor: (dir) => ({ path: join(dir, '.cursor', 'mcp.json'), text: `${JSON.stringify({ mcpServers: { 'telegram-agent-ui': STDIO } }, null, 2)}\n` }),
@@ -86,7 +83,6 @@ test('a Codex config keeps its other tables, and its entry is replaced in place'
 	expect(readFileSync(path, 'utf8')).toBe('model = "gpt-6"\n\n[mcp_servers.telegram-agent-ui]\ncommand = "npx"\nargs = ["telegram-agent-ui@latest", "mcp"]\n');
 });
 
-/** A Codex config in a fresh home: its path, and the parse of the file with Bun's own TOML parser. */
 function codexHome(text: string) {
 	const { dir, env } = home();
 	const path = join(dir, '.codex', 'config.toml');
@@ -171,7 +167,6 @@ test('a relative link under a linked directory changes the existing file it lead
 	expect(readFileSync(unrelated, 'utf8')).toBe(bytes);
 	expect(lstatSync(join(dir, '.cursor')).isSymbolicLink()).toBe(true);
 	expect(lstatSync(join(dir, 'physical', 'cursor', 'mcp.json')).isSymbolicLink()).toBe(true);
-	// The same chain to a target that no longer exists is refused, and nothing is written.
 	rmSync(intended);
 	expect(await mcpInit('cursor', env)).toMatchObject({ ok: false, failure: { code: 'client-config' } });
 	expect(existsSync(intended)).toBe(false);

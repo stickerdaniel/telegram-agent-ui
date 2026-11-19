@@ -1,36 +1,10 @@
-// The shell: the one HTML page `GET /` serves. Its one inline script reads the view id `v`, the
-// ref `q` and the tab `t` from its URL and the launch data from Telegram's SDK, removes the
-// fragment, fetches `/api/view`, asking again for 10 s after a 404, and draws the title, the
-// question's context, the tab row and one panel per tab. A view opened with `q` that shows no
-// context yet asks again for 10 s and adds the context once it shows, else shows
-// `labels.viewLate`. The panels draw Markdown and diff as text nodes, a gallery as its images
-// and `mp4` videos from the host with each caption as a text node, and a page in an
-// `<iframe sandbox>` whose `srcdoc` starts with the page policy and the resolved theme. A video
-// plays inline with the native controls, and seeks through the host's `Range` answers.
-//
-// Telegram's main button: on a tab that the context's binding names, `MainButton` reads
-// `labels.choose` and the option's label, spans the bar alone and posts the choice to
-// `/api/answer`. On any other tab, while no binding is visible, and for a closed binding, which
-// shows `labels.closed`, it is hidden: Telegram's own control closes the view. A tap disables
-// the main button until the host answers; its choice id of 128 random bits stays while the same
-// option is tried again.
-//
-// The response header names the script by its SHA-256, so the script is the same text for every
-// deployment: labels and theme reach it in two JSON data blocks of the page. The script is plain
-// JavaScript inside `String.raw`, so it holds no backtick and no `${`; a backtick in a pattern is
-// written `\x60`. `SHELL_LIB` holds its pure functions, which the tests run on their own.
 import type { Labels } from '../core/types.ts';
 import { MEDIA_URL_LIFE, PLACEHOLDER_SVG } from './media.ts';
 import type { CssVars } from './theme.ts';
 
-/** How long the shell asks again after a 404 on the view or for a context that is not there yet, and the pause between two asks, in ms. */
 export const LATE_KEY = { window: 10_000, pause: 1_000 } as const;
-/** How long the shell shows `labels.chosen` before it closes, in ms. */
 export const CHOSEN_CLOSE = 1_500;
 
-// The variables of shadcn's theming.mdx, each with the Telegram theme parameter it falls back to
-// and the fixed light and dark values of shadcn's neutral theme behind that.
-// https://github.com/shadcn-ui/ui/blob/main/apps/v4/content/docs/(root)/theming.mdx
 const VARIABLES: readonly [name: string, telegram: string | undefined, light: string, dark: string][] = [
 	['background', 'bg-color', 'oklch(1 0 0)', 'oklch(0.145 0 0)'],
 	['foreground', 'text-color', 'oklch(0.145 0 0)', 'oklch(0.985 0 0)'],
@@ -58,7 +32,6 @@ const VARIABLES: readonly [name: string, telegram: string | undefined, light: st
 	['chart-5', undefined, 'oklch(0.769 0.188 70.08)', 'oklch(0.645 0.246 16.439)'],
 ];
 
-// The names of the theme variables, without their leading `--`.
 const THEME_VARIABLES = VARIABLES.map(([name]) => name);
 
 const declarations = (scheme: 'light' | 'dark') =>
@@ -114,7 +87,6 @@ pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-si
 .state { margin: auto; padding: 24px; color: var(--muted-foreground); text-align: center; }
 `;
 
-// The pure part: no DOM, no network, no clock of its own. Each function takes what it needs.
 export const SHELL_LIB = String.raw`
 var RETRY = { window: ${LATE_KEY.window}, pause: ${LATE_KEY.pause} };
 var LIFE = ${MEDIA_URL_LIFE};
@@ -531,7 +503,6 @@ function contextNodes(body, htmlText) {
 }
 `;
 
-// The part that touches the document, Telegram's SDK and the network.
 const SHELL_MAIN = String.raw`
 var app = window.Telegram && window.Telegram.WebApp;
 var root = document.documentElement;
@@ -917,29 +888,19 @@ if (!initData || !viewId) {
 }
 `;
 
-/** The one inline script of the shell, exactly as the page carries it and its policy hashes it. */
 export const SHELL_SCRIPT = `\n(function () {\n'use strict';\n${SHELL_LIB}${SHELL_MAIN}})();\n`;
 
 let hashed: Promise<string> | undefined;
-/** The policy source of the shell script, `sha256-<base64>`, computed once. */
 export function shellScriptHash(): Promise<string> {
 	hashed ??= crypto.subtle.digest('SHA-256', new TextEncoder().encode(SHELL_SCRIPT)).then((digest) => `sha256-${btoa(String.fromCharCode(...new Uint8Array(digest)))}`);
 	return hashed;
 }
 
-/** The shell's policy as its response header, for the host at `origin`. */
 export const shellPolicy = (origin: string, hash: string) =>
 	`default-src 'none'; script-src '${hash}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${origin}; media-src ${origin}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`;
 
-/** JSON that a `<script type="application/json">` block carries: `<` is written `<`, so no text closes the block. */
 const dataBlock = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u003c');
 
-/**
- * The shell page with the labels it shows and the theme of the deployment. Neither changes the
- * script, so its hash stays the same.
- *
- *   const html = shellPage({ labels: mergeLabels({ choose: 'Wähle' }) });
- */
 export function shellPage(options: { labels: Labels; theme?: CssVars | undefined }): string {
 	const { labels } = options;
 	const shown = {

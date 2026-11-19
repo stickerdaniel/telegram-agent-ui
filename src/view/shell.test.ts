@@ -1,6 +1,3 @@
-// The shell script's own functions, run as the page runs them: the text of SHELL_LIB, which the
-// served script contains, evaluated alone. The late-key asks run against the handler on a
-// storage that shows a key late, on a virtual clock. dom.test.ts runs the whole script.
 import { expect, test } from 'bun:test';
 import { BOT, ID, launchKey, MEDIA_KEY, memoryStorage, ORIGIN, UPLOAD_KEY, USER } from './fixtures.ts';
 import { createViewHandler } from './handler.ts';
@@ -30,9 +27,7 @@ type Lib = {
 const names = ['fetchRetry', 'fetchContext', 'pagePrefix', 'themeBlocks', 'resolveVars', 'mediaIndexes', 'mapIndexes', 'resolveMedia', 'imageSource', 'safeLink', 'markdownBlocks', 'diffLines', 'contextNodes', 'galleryItems', 'TAGS', 'PLACEHOLDER'];
 const lib = new Function(`'use strict';\n${SHELL_LIB}\nreturn { ${names.join(', ')} };`)() as Lib;
 
-/** Every text node of a tree, in order. */
 const texts = (nodes: Node[]): string[] => nodes.flatMap((node) => (typeof node === 'string' ? [node] : texts(node.c ?? [])));
-/** Every element of a tree, depth first. */
 const elements = (nodes: Node[]): Exclude<Node, string>[] => nodes.flatMap((node) => (typeof node === 'string' ? [] : [node, ...elements(node.c ?? [])]));
 
 test('the served script holds the library, no backtick, no ${ and no closing script tag, and compiles', () => {
@@ -43,10 +38,6 @@ test('the served script holds the library, no backtick, no ${ and no closing scr
 	expect(() => new Function(SHELL_SCRIPT)).not.toThrow();
 });
 
-/**
- * A view with the context of `ask1`, published to the handler on a storage that hides the
- * reads `hidden` names once the publish is done, and the shell's view request on a virtual clock.
- */
 async function published(hidden: (key: string, read: number) => boolean) {
 	const { hex, launch } = await launchKey();
 	let live = false;
@@ -88,13 +79,11 @@ test('a view that a storage shows late is asked for again until it shows, for up
 });
 
 test('a context that a storage shows after its view is asked for again, for up to 10 s', async () => {
-	// The first read of the context misses it: the first answer has the view alone.
 	const late = await published((key, read) => key === `c:${ID}:ask1` && read === 1);
 	const first = await lib.fetchRetry(late.url, late.init, late.io);
 	expect(((await first.json()) as { context?: unknown }).context).toBeUndefined();
 	expect(await lib.fetchContext(late.url, late.init, late.io)).toMatchObject({ context: { markdown: 'Ship it?' } });
 	expect(late.clock).toEqual({ now: 1_000, asks: 2 });
-	// A context that never shows ends the asking after 10 s.
 	const never = await published((key) => key === `c:${ID}:ask1`);
 	expect(await lib.fetchContext(never.url, never.init, never.io)).toBeNull();
 	expect(never.clock).toEqual({ now: 10_000, asks: 10 });
@@ -148,12 +137,10 @@ test('Markdown is drawn as text nodes: raw HTML stays text, a link opens only ht
 		['https://t.me/somebot', true],
 	]);
 	const images = elements(nodes).filter((node) => node.t === 'img');
-	// A destination the tab's map names gets its media's URL, or the placeholder after a failed probe; any other shows its alt text.
 	const urls = [`${ORIGIN}/m/${ID}/g1/0?e=1&s=x`, ''];
 	const map = { 'shot.png': 0, 'gone.png': 1 };
 	expect(lib.mapIndexes({ ...map, 'again.png': 0 })).toEqual([0, 1]);
 	expect(images.map((image) => lib.imageSource(image.src ?? '', { urls, map }))).toEqual([urls[0], undefined, lib.PLACEHOLDER, undefined, undefined]);
-	// A context has no map: no image of its own.
 	expect(lib.imageSource('shot.png')).toBeUndefined();
 	expect(lib.imageSource('toString', { urls, map })).toBeUndefined();
 	expect(elements(nodes).map((node) => node.t)).toEqual(expect.arrayContaining(['h1', 'table', 'th', 'td', 'code', 'strong', 'ul', 'li', 'pre']));

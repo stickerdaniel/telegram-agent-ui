@@ -1,5 +1,3 @@
-// The topic functions against the local fake Bot API: the calls they send, the refusal without
-// topic mode, and a create whose answer is lost and is not sent again.
 import { afterEach, expect, test } from 'bun:test';
 import { fakeBotApi, TOKEN } from './fake-server.ts';
 import { fetchCall } from './fetch.ts';

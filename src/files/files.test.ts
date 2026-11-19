@@ -1,5 +1,3 @@
-// readPublishable on real files: one open per file, the checks on the handle, and every read from
-// that handle. A file swapped after its check is never what a read returns.
 import { afterEach, expect, test } from 'bun:test';
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +12,6 @@ afterEach(async () => {
 	for (const tree of trees.splice(0)) rmSync(tree, { recursive: true, force: true });
 });
 
-/** A project below a temp directory, with a secret beside it. */
 function tree() {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-files-')));
 	trees.push(root);
@@ -42,7 +39,6 @@ test('a file opens with its real path, type and size, and reads the same bytes a
 	expect(file).toMatchObject({ path: join(project, 'shot.png'), type: 'image/png', size: 7 });
 	expect(new TextDecoder().decode(await file.bytes())).toBe('CHECKED');
 	expect(await text(file.stream())).toBe('CHECKED');
-	// A file that grows after its check is read up to the checked size.
 	appendFileSync(join(project, 'shot.png'), 'GROWN');
 	expect(await text(file.stream())).toBe('CHECKED');
 });
@@ -55,7 +51,6 @@ test('a file swapped for a link to a secret after its check is refused, and no r
 	symlinkSync(join(root, 'secret.txt'), path);
 	const bytes = await file.bytes().catch((error: unknown) => error);
 	expect(bytes).toBeInstanceOf(FileRefused);
-	// The stream sends the checked file's bytes and then errors, so an upload of it fails.
 	const streamed = await text(file.stream()).catch((error: unknown) => error);
 	expect(streamed).toBeInstanceOf(FileRefused);
 });

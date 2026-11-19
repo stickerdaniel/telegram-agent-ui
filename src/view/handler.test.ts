@@ -1,6 +1,3 @@
-// Every route of the view host as raw HTTP against `createViewHandler` on a storage in memory:
-// launch data, uploads and their limits, contexts per ref, signed media with Range, the headers
-// of 4.9, and that no GET or HEAD route changes the storage.
 import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -12,7 +9,6 @@ import { createViewHandler, type ViewHandlerConfig } from './handler.ts';
 import { MEDIA_WAIT, mediaPath, PLACEHOLDER_SVG } from './media.ts';
 import { decode, parseChoiceRecord, parseContext, parseManifest, parseViewRecord, VERSION } from './stored.ts';
 
-// A missing media object is asked for again over 200 ms here, in place of 10 s.
 MEDIA_WAIT.window = 200;
 MEDIA_WAIT.pause = 50;
 afterEach(() => setSystemTime());
@@ -80,7 +76,6 @@ const getView = async (at: Host, query: string, initData?: string) =>
 			${initData === undefined ? 'Accept: application/json' : `Authorization: tma ${initData}`}`),
 	);
 
-/** The view of VIEW with its two media, published as a client publishes: media first, the view last. */
 async function publish(at: Host, generation = 'g1', expiresAt = Date.now() + 7 * DAY, id = ID) {
 	expect((await putMedia(at, generation, 0, MEDIA.png, 'image/png', expiresAt, id)).status).toBe(200);
 	expect((await putMedia(at, generation, 1, MEDIA.mp4, 'video/mp4', expiresAt, id)).status).toBe(200);
@@ -93,11 +88,9 @@ async function publish(at: Host, generation = 'g1', expiresAt = Date.now() + 7 *
 
 type Opened = { view: StoredView; context?: unknown; choice?: unknown; media: string[]; expiresAt: number };
 
-/** The binding of a question answered in the view of VIEW: one option per tab. */
 const BINDING = { options: [{ index: 0, label: 'Keep notes', tab: 'Notes' }, { index: 1, label: 'Use mock', tab: 'Mock' }], once: false };
 const CHOICE = 'c'.repeat(22);
 
-/** The shell's POST of a choice, with launch data unless it is undefined, and an empty body unless `body` is given. */
 const postAnswer = (at: Host, query: string, initData?: string, body?: string) =>
 	at.handle(
 		raw(
@@ -121,7 +114,6 @@ const getMedia = (at: Host, url: string, range?: string, signal?: AbortSignal) =
 	return at.handle(signal ? new Request(request, { signal }) : request);
 };
 
-/** Asserts the answer for a media object that did not show: the placeholder image, never cached. */
 async function expectPlaceholder(response: Response) {
 	expect(response.status).toBe(200);
 	expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
@@ -143,7 +135,6 @@ test('GET /api/version names this version, the view formats and answers, with th
 });
 
 test('the view answers 401 without launch data, for another user, for older than 600 s and for more than 60 s ahead', async () => {
-	// The clock stands at the last ms of a second, so no request crosses into the next one.
 	const now = 1_800_000_000;
 	setSystemTime(new Date(now * 1000 + 999));
 	const at = host();
@@ -230,7 +221,6 @@ test('an upload without the key, over a limit or of a wrong type is refused and 
 test('an upload with a wrong key is refused before a byte of its body is read', async () => {
 	const at = host();
 	let pulled = false;
-	// A high-water mark of 0 pulls only for a reader.
 	const body = new ReadableStream<Uint8Array>(
 		{
 			pull() {
@@ -253,7 +243,6 @@ test('contexts of 2 refs on one view each come back for their own ref', async ()
 	expect((await open(at, `v=${ID}&q=ask1`)).context).toEqual({ markdown: 'Ship **0.1** now?' });
 	expect((await open(at, `v=${ID}&q=ask2`)).context).toEqual({ markdown: 'Which mock wins?' });
 	expect((await open(at, `v=${ID}&q=ask3`)).context).toBeUndefined();
-	// A second write of one ref replaces its context alone.
 	expect((await putContext(at, 'ask1', { markdown: 'Ship **0.2** now?' })).status).toBe(200);
 	expect((await open(at, `v=${ID}&q=ask1`)).context).toEqual({ markdown: 'Ship **0.2** now?' });
 	expect((await open(at, `v=${ID}&q=ask2`)).context).toEqual({ markdown: 'Which mock wins?' });
@@ -300,7 +289,6 @@ test('a choice is stored only for a bound option of a registered question, with 
 	for (const [name, response, status] of refused) expect((await response).status, name).toBe(status);
 	expect(at.snapshot()).toBe(before);
 
-	// Reopened, the view has fresh launch data, and the same tap goes through.
 	const stored = await postAnswer(at, `v=${ID}&q=ask1&n=1&c=${CHOICE}`, await launch());
 	expect(stored.status).toBe(200);
 	expect(stored.headers.get('Cache-Control')).toBe('no-store');
@@ -326,7 +314,6 @@ test('a binding names distinct options and indexes, each with a tab of the view,
 	for (const [name, choice] of refused) expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice })).status, name).toBe(400);
 	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: BINDING, more: 1 })).status).toBe(400);
 	expect([...at.entries.keys()].some((key) => key.startsWith('c:'))).toBe(false);
-	// A closed binding enables no choice: a tab the view lost since is no refusal, its structure still is.
 	const gone = { ...BINDING, options: [first, { ...second, tab: 'Gone' }] };
 	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: gone })).status).toBe(400);
 	expect((await putContext(at, 'ask1', { body: { markdown: 'Which?' }, choice: { ...gone, options: [first, { ...second, tab: 'Notes' }], closed: true } })).status).toBe(400);
@@ -358,7 +345,6 @@ test('a binding past its expiry takes no choice, a listed choice id is answered 
 });
 
 test('the answers routes need the upload key: GET lists every live choice and writes nothing, DELETE removes one', async () => {
-	// The clock stands still, so the time of the choice is the time the test reads.
 	setSystemTime(new Date(1_800_000_000_000));
 	const at = host();
 	await publish(at, 'g1', Date.now() + DAY);
@@ -370,8 +356,6 @@ test('the answers routes need the upload key: GET lists every live choice and wr
 	const listed = await answersOf(at);
 	expect(listed.headers.get('Cache-Control')).toBe('no-store');
 	expect(await listed.json()).toEqual({ choices: [{ key, view: ID, ref: 'ask1', id: CHOICE, index: 1, user: { id: 112, name: 'Dana S' }, at: Date.now() }] });
-	// The choice outlives its view by a day at most from its time, and then is listed no more,
-	// and the list leaves it to the storage's own expiry.
 	setSystemTime(new Date(Date.now() + DAY + 1));
 	const writes = at.writes.length;
 	expect(await (await answersOf(at)).json()).toEqual({ choices: [] });
@@ -385,7 +369,6 @@ test('the answers routes need the upload key: GET lists every live choice and wr
 });
 
 test('the load of a media object waits out a read that misses it after the probe found it', async () => {
-	// The probe's read finds the object, the next read misses it, the one after finds it again.
 	const objectKey = `m:${ID}:g1:0`;
 	const at = host({}, { hidden: (key, read) => key === objectKey && read === 2 });
 	await publish(at);
@@ -395,7 +378,6 @@ test('the load of a media object waits out a read that misses it after the probe
 	expect(loaded.status).toBe(200);
 	expect(new Uint8Array(await loaded.arrayBuffer())).toEqual(MEDIA.png);
 	expect(at.reads.get(objectKey)).toBe(3);
-	// An object that never shows is the placeholder once the wait has passed: 200 ms in this file, 10 s in a deployment.
 	const gone = host({}, { hidden: (key) => key === objectKey });
 	await publish(gone);
 	const [missing = ''] = (await open(gone)).media;
@@ -407,7 +389,6 @@ test('the media wait is 10 s of elapsed time on a slow storage, and an aborted r
 	const at = host({}, { hidden: (key) => key === objectKey, latency: 400 });
 	await publish(at);
 	const [png = ''] = (await open(at)).media;
-	// A read takes 400 ms, twice the 200 ms wait: the wait ends at its deadline, not after the read.
 	at.reads.clear();
 	const started = performance.now();
 	await expectPlaceholder(await getMedia(at, png));
@@ -433,17 +414,13 @@ test('the media wait ends at the signature expiry, and a cache lifetime counts f
 	const objectKey = `m:${ID}:g1:0`;
 	const start = 1_800_000_000_000;
 	const expires = start + 2 * HOUR;
-	// The first read of the object misses it while 100 ms pass; the next read finds it. The view
-	// itself lives a day, so only the signature runs out.
 	const slow = (key: string, read: number) => {
 		if (key !== objectKey || read !== 1) return false;
 		setSystemTime(new Date(Date.now() + 100));
 		return true;
 	};
 	for (const [before, status, cache, reads] of [
-		// 3.05 s left at the request, 2.95 s at the answer.
 		[3_050, 200, 'private, max-age=2', 2],
-		// 50 ms left at the request, expired during the wait, which reads nothing more.
 		[50, 403, 'no-store', 1],
 	] as const) {
 		setSystemTime(new Date(start));
@@ -580,7 +557,6 @@ test('a replaced view keeps the media of its earlier generation, and an object u
 	expect(second.media[0]).toContain('/g2/0?');
 	expect((await getMedia(at, first.media[0] ?? '')).status).toBe(200);
 	expect((await getMedia(at, second.media[0] ?? '')).status).toBe(200);
-	// An object written over a committed index with other bytes than its view declared stays unserved.
 	expect((await putMedia(at, 'g2', 0, MEDIA.jpeg, 'image/jpeg')).status).toBe(200);
 	await expectPlaceholder(await getMedia(at, second.media[0] ?? ''));
 });
@@ -623,7 +599,6 @@ test('the shell carries one script, the policy with its sha256, and labels and t
 	expect(blocks.labels.viewGone).toBe(mergeLabels().viewGone);
 	expect(blocks.theme).toEqual({ light: { background: '#fff' } });
 	expect(html).not.toContain('</script><b>');
-	// Another deployment's labels and theme leave the script and its hash as they are.
 	const other = await shellOf({});
 	expect(other.response.headers.get('Content-Security-Policy')).toBe(response.headers.get('Content-Security-Policy'));
 });
@@ -651,7 +626,6 @@ test('a storage read that starts before the media deadline and rejects after it 
 	process.on('unhandledRejection', watch);
 	try {
 		const storage = {
-			// The first read spends 60 ms before it rejects, so the URL expires while it starts.
 			get: async () => {
 				reads++;
 				if (reads === 1) {

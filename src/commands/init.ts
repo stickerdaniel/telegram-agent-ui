@@ -1,7 +1,3 @@
-// `init`: pairs the bot with one private chat and writes the config of 5.1. It checks the token
-// with getMe, refuses a bot with a webhook, refuses while a listener of that bot holds its lease
-// and holds the lease itself while it polls, prints a link that opens the bot with
-// `/start <code>`, and polls until that message arrives in a private chat.
 import { readFile } from 'node:fs/promises';
 import { LISTENER_KEY } from '../chat/listener.ts';
 import { isNat, isRecord, isString } from '../core/check.ts';
@@ -13,15 +9,12 @@ import { apiUrlOf, type Config, type Env, findToken, parseConfig, paths, writeCo
 import { done, failed, type Result } from './result.ts';
 import type { Context } from './session.ts';
 
-/** How long `init` waits for `/start <code>`, in ms. */
 export const PAIR_WAIT = 600_000;
 const PAUSE = 5_000;
 const CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 
-/** 12 random characters of [a-z2-7]: the start parameter that proves the chat belongs to whoever ran init. */
 const newCode = () => [...crypto.getRandomValues(new Uint8Array(12))].map((byte) => CODE_ALPHABET.charAt(byte % 32)).join('');
 
-/** `promise`, or undefined once `signal` aborts or `ms` pass. */
 function within<T>(promise: Promise<T>, signal: AbortSignal, ms = Number.POSITIVE_INFINITY): Promise<T | undefined> {
 	return new Promise((resolve) => {
 		const timer = Number.isFinite(ms) ? setTimeout(() => resolve(undefined), ms) : undefined;
@@ -35,7 +28,6 @@ function within<T>(promise: Promise<T>, signal: AbortSignal, ms = Number.POSITIV
 	});
 }
 
-/** The config already on disk, or undefined when there is none or it breaks its format: init then starts fresh. */
 async function existing(env: Env): Promise<Config | undefined> {
 	try {
 		return parseConfig(JSON.parse(await readFile(paths(env).configFile, 'utf8')));
@@ -44,7 +36,6 @@ async function existing(env: Env): Promise<Config | undefined> {
 	}
 }
 
-/** Polls until `/start <code>` arrives in a private chat, the wait ends or the signal aborts. */
 async function pair(call: Transport, code: string, username: string, signal: AbortSignal): Promise<{ chat: number; user: number } | Result> {
 	const deadline = Date.now() + PAIR_WAIT;
 	let offset: number | undefined;
@@ -65,7 +56,6 @@ async function pair(call: Transport, code: string, username: string, signal: Abo
 			offset = update.update_id + 1;
 			const message = update.message;
 			if (message?.chat.type === 'private' && message.from && message.text === `/start ${code}`) {
-				// Confirms the updates read, so the listener does not fetch /start again.
 				await within(call({ method: 'getUpdates', payload: { offset, timeout: 0 } }), signal, 10_000);
 				return { chat: message.chat.id, user: message.from.id };
 			}
@@ -75,12 +65,6 @@ async function pair(call: Transport, code: string, username: string, signal: Abo
 	return failed({ error: 'refused', code: 'not-paired', message: `no /start ${code} arrived ${when}: run init again` });
 }
 
-/**
- * Pairs and writes the config. The token comes from TELEGRAM_BOT_TOKEN, the existing `.env`, or
- * a line typed on stdin. The Bot API URL is TELEGRAM_AGENT_UI_API_URL, then the `apiUrl` of the
- * existing config, and is kept as `apiUrl`. Pairing the bot of the existing config again keeps
- * its labels, publish roots and view host.
- */
 export async function init(context: Context): Promise<Result> {
 	const { env, log, signal } = context;
 	if (env.TELEGRAM_AGENT_UI_FAKE) return failed({ error: 'usage', message: 'fake mode has a built-in config: unset TELEGRAM_AGENT_UI_FAKE to pair a bot' });
@@ -103,8 +87,6 @@ export async function init(context: Context): Promise<Result> {
 	const url = 'ok' in hook && hook.ok && isRecord(hook.result) ? hook.result.url : undefined;
 	if (isString(url) && url !== '') return failed({ error: 'refused', code: 'webhook', message: `@${username} has a webhook, and the listener needs getUpdates: call deleteWebhook or use another bot` });
 
-	// A poll of init would end the poll of a running listener, so init takes the listener's lease
-	// of this bot. A live holder keeps it past the lock's wait; a dead one gives it up at once.
 	const store = fileStore(paths(env).store(id));
 	const conflict = failed({ error: 'refused', code: 'conflict', message: `a listener of @${username} runs: stop it and run init again` });
 	let paired: { chat: number; user: number } | Result;

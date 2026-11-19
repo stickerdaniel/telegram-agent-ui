@@ -1,28 +1,18 @@
 #!/usr/bin/env node
-// The `telegram-agent-ui` command. It finds the command in the table, parses the arguments by
-// its params, reads a body file or stdin, runs the command and prints one JSON object on stdout:
-// the output, or `{ error, code?, message, ref? }`. Progress goes to stderr. The exit code is
-// the one of section 5, except for a command with `failClosed`, such as `hook
-// permission-request`, which prints that output for any failure and exits 0. SIGINT and SIGTERM
-// stop `listen`, `init` and a waiting hook. `mcp` alone serves the tools over stdio instead, so
-// its stdout carries the protocol and no JSON line.
 import { createInterface } from 'node:readline';
 import { type Command, commands, exitCode, findCommand, printed, usage } from '../commands/index.ts';
 import { done, failed, failureOf, type Result } from '../commands/result.ts';
 import { type Context, readBodyFile, rootsOf } from '../commands/session.ts';
 import { parseArgs } from './args.ts';
 
-// `mcp` is no entry of the command table: it serves the table's tools.
 const SERVE = { name: 'mcp', usage: 'mcp', description: 'Serves the tools over stdio for an MCP client. mcp init writes the client entry that starts it.' };
 
-/** All of stdin as text. */
 async function readStdin(): Promise<string> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
 	return Buffer.concat(chunks).toString('utf8');
 }
 
-/** The first line of stdin, or undefined once stdin ends without one. */
 function readLine(): Promise<string | undefined> {
 	return new Promise((resolve) => {
 		const lines = createInterface({ input: process.stdin });
@@ -35,14 +25,12 @@ function readLine(): Promise<string | undefined> {
 	});
 }
 
-/** Runs `command` on the arguments after its name. */
 async function main(command: Command, rest: string[]): Promise<Result> {
 	const parsed = parseArgs(command.params, rest);
 	if (!parsed.ok) return failed({ error: 'usage', message: `${parsed.message}. Usage: telegram-agent-ui ${usage(command.name, command.params)}` });
 	const env = process.env;
 	const cwd = process.cwd();
 	if (parsed.files.size > 0) {
-		// A body file is read under the roots and refusals of 4.7, before anything is sent.
 		const roots = [...parsed.files.values()].some((path) => path !== '-') ? await rootsOf({ env, roots: [cwd] }) : [];
 		for (const [name, path] of parsed.files) {
 			if (path === '-') {
@@ -68,7 +56,6 @@ async function main(command: Command, rest: string[]): Promise<Result> {
 	return command.invoke(parsed.raw, context);
 }
 
-/** The result of the command `args` name, or the usage failure and the command list without one. */
 async function resultOf(args: string[]): Promise<Result> {
 	const found = findCommand(args);
 	if (!found) {
@@ -77,18 +64,15 @@ async function resultOf(args: string[]): Promise<Result> {
 		return failed({ error: 'usage', message: `${args[0] === undefined ? 'no command' : `unknown command ${args.slice(0, 2).join(' ')}`}. Commands: ${list.map((command) => command.name).join(', ')}` });
 	}
 	const ran = await main(found.command, found.rest).catch((error: unknown) => failed(failureOf(error)));
-	// A command a harness reads prints its own output for any failure, with exit 0.
 	const { failClosed } = found.command;
 	return !ran.ok && failClosed ? done(failClosed(ran.failure)) : ran;
 }
 
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === SERVE.name) {
-	// The server ends once the client closes stdin.
 	const { serve } = await import('../mcp/index.ts');
 	serve({ env: process.env });
 } else {
 	const result = await resultOf(args);
-	// A poll that was given up keeps a request open, so the process ends here once stdout is written.
 	process.stdout.write(`${JSON.stringify(printed(result))}\n`, () => process.exit(exitCode(result)));
 }

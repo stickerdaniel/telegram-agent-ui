@@ -1,7 +1,3 @@
-// A test adapter from the reply desk's ledger to the core: it reads the records of a desk
-// question (tools/reply-desk/ledger.ts in the growth repository) and turns each one into the
-// QuestionEvent that `reduce` takes. It shows that the desk's question lifecycle needs no
-// change to the types of the core. src/desk-ledger.json holds real records with placeholder text.
 import records from './desk-ledger.json';
 import { CHAT, reply, tap, USER } from './fixtures.ts';
 import type { Option, Question, QuestionEvent, Sent, Update } from './core/types.ts';
@@ -9,7 +5,6 @@ import type { Option, Question, QuestionEvent, Sent, Update } from './core/types
 type Keyboard = { inline_keyboard: { text: string; callback_data?: string }[][] };
 type Envelope = { message_id: number; date: number; edit_date?: number; text: string; caption?: string; reply_to?: { message_id: number } };
 
-/** The ledger records a desk question leaves, as ledger.ts writes them. Fields the adapter does not read are left out. */
 export type DeskRecord = { at: string } & (
 	| { type: 'msg_pending'; msg: number; parts: string[]; keyboard?: Keyboard; view?: string; topic?: number; silent?: true }
 	| { type: 'msg_part_delivered'; msg: number; part: number; messageId: number; date: number }
@@ -23,26 +18,11 @@ export type DeskRecord = { at: string } & (
 
 export const deskRecords = records as DeskRecord[];
 
-// callback_data of a desk answer button: c:<keyboard>:<position base36>, positions row by row from 0.
 const CHOICE = /^c:([0-9a-z]+):([0-9a-z]+)$/;
-// The quote `msg resolve` puts under the decision: the question as it was sent.
 const QUOTE = '<blockquote expandable>';
 
-/** One ledger record as an event on the question `ref`, at the record's time. */
 export type Driven = { record: DeskRecord; ref: string; now: number; event: QuestionEvent };
 
-/**
- * The QuestionEvents of a ledger, in order:
- * - `msg_pending` asks. A keyboard of answer buttons makes a choice whose ref is the keyboard
- *   id. A message without one whose last line ends with `?` makes a text question.
- * - `msg_part_delivered` of the question's part is `sent`.
- * - A tap on an answer button is an input. The ledger keeps only its id, data and message id,
- *   so the update carries an InaccessibleMessage, and the listener has already checked chat and user.
- * - A message or an edit of one that replies to the question's message is an input.
- * - `msg_edited` that quotes the question under a decision, or removes the buttons, is `close`
- *   with the decision as the resolved body. Any other edit is `edit`.
- * Records of other messages and the desk's own decisions are skipped.
- */
 export function deskEvents(ledger: DeskRecord[]): Driven[] {
 	const asked = new Map<number, { ref: string; parts: number; placed: Pick<Sent, 'topic' | 'view'> }>();
 	const messages = new Map<number, string>();
@@ -92,7 +72,6 @@ export function deskEvents(ledger: DeskRecord[]): Driven[] {
 	});
 }
 
-/** A desk send as a question spec, or undefined for a message that asks nothing. */
 function specOf(record: Extract<DeskRecord, { type: 'msg_pending' }>): { spec: Question['spec']; ref: string; viewOrigin?: string } | undefined {
 	const body = { html: record.parts.at(-1) ?? '' };
 	const view = record.view === undefined ? undefined : new URL(record.view);
@@ -102,7 +81,6 @@ function specOf(record: Extract<DeskRecord, { type: 'msg_pending' }>): { spec: Q
 	const keyboard = buttons.map((button) => CHOICE.exec(button.callback_data ?? '')?.[1]).find((id) => id !== undefined);
 	const at = { ...(view && viewId ? { viewOrigin: view.origin } : {}) };
 	if (keyboard) {
-		// The desk's keyboards put one button per row; a grid would render as rows here.
 		const options: Option[] = buttons.map((button) => ({ label: button.text }));
 		return { spec: { body, ...extras, answer: { type: 'choice', options } }, ref: keyboard, ...at };
 	}
@@ -110,7 +88,6 @@ function specOf(record: Extract<DeskRecord, { type: 'msg_pending' }>): { spec: Q
 	return { spec: { body, ...extras, answer: { type: 'text' } }, ref: `m${record.msg}`, ...at };
 }
 
-/** A reply from a ledger envelope: the recorded reply of facts/records/ with the envelope's ids, date and text. */
 function replyUpdate(updateId: number, kind: 'message' | 'edited_message', envelope: Envelope, replyTo: number): Update {
 	const update = reply({ id: envelope.message_id, replyTo, markupRef: null, text: envelope.text === '' ? null : envelope.text, ...(envelope.caption !== undefined ? { caption: envelope.caption } : {}) });
 	const message = update.message;
@@ -120,7 +97,6 @@ function replyUpdate(updateId: number, kind: 'message' | 'edited_message', envel
 	return { update_id: updateId, edited_message: { ...message, edit_date: envelope.edit_date ?? envelope.date } };
 }
 
-/** What the desk decided for the tap of update `updateId`, in the words of Handled. */
 export function deskOutcome(ledger: DeskRecord[], updateId: number): string | undefined {
 	if (ledger.some((record) => record.type === 'choice_received' && record.updateId === updateId)) return 'answered';
 	const decided = ledger.find((record) => record.type === 'callback_decided' && record.updateId === updateId);

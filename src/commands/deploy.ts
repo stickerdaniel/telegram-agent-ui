@@ -1,15 +1,3 @@
-// `view deploy`: deploys `./worker` of this installed package to the user's Cloudflare account as
-// `telegram-agent-ui-<bot id>`, with a pinned wrangler run through npx and the person's own
-// wrangler login. It finds or creates the KV namespace of that name, fills the wrangler.toml
-// template beside the Worker with the bot id, the allowed users, the labels and the theme of the
-// config, and deploys with both secrets in one step. The secrets are made once and kept in the
-// config's `.env`, written before the deploy, so a deploy that fails midway never leaves the
-// Worker with a key this machine lacks; `--rotate-keys` makes new ones. A key set in the
-// environment wins over `.env`, so it is sent as it is and rotated in the environment. Origin,
-// account (from `--account` or CLOUDFLARE_ACCOUNT_ID), route and theme go into the config's
-// `views`, and a later run without `--account`, `--route` or `--theme` reuses them, so the origin
-// of a sent button never changes by accident.
-// TELEGRAM_AGENT_UI_WRANGLER names another executable in place of the pinned wrangler, for tests.
 import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -21,12 +9,9 @@ import { type Config, type Env, findSecret, isAccount, KEY_NAMES, readConfig, ro
 import { done, failed, type Result } from './result.ts';
 import { type Context, readBodyFile, rootsOf } from './session.ts';
 
-/** The wrangler release `view deploy` runs. */
 export const WRANGLER_VERSION = '4.164.0';
 export { KEY_NAMES } from './config.ts';
 
-// ./worker and the template, from src/commands and from dist/commands alike. The template ships
-// in src/, which the package publishes beside dist/.
 const here = fileURLToPath(import.meta.url);
 const WORKER = fileURLToPath(new URL(`../worker/index${extname(here)}`, import.meta.url));
 const TEMPLATE = new URL('../../src/worker/wrangler.toml', import.meta.url);
@@ -37,20 +22,12 @@ const DEPLOY_DEADLINE = 600_000;
 type Ran = { code: number | null; stdout: string; stderr: string };
 type Wrangler = (args: string[], deadline: number) => Promise<Ran>;
 
-/** 32 random bytes as base64url: a new upload or media key. */
 const newKey = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
 
-/** A TOML basic string: JSON's escapes, plus the one character TOML forbids and JSON keeps. */
 const tomlString = (text: string) => JSON.stringify(text).replaceAll('\u007f', '\\u007f');
 
-/** The last lines of a run, for a failure message. */
 const tail = (ran: Ran) => `${ran.stdout}\n${ran.stderr}`.trim().split('\n').slice(-12).join('\n');
 
-/**
- * Wrangler with `args`, in `cwd`, killed with its process group once `deadline` ms passed. The
- * environment passes through for the Cloudflare login, without the bot token and the keys of
- * this package, and with CLOUDFLARE_ACCOUNT_ID for a chosen account.
- */
 function wranglerIn(env: Env, cwd: string, account: string | undefined): Wrangler {
 	const command = env.TELEGRAM_AGENT_UI_WRANGLER ? [env.TELEGRAM_AGENT_UI_WRANGLER] : ['npx', '--yes', `wrangler@${WRANGLER_VERSION}`];
 	const childEnv: Record<string, string> = {};
@@ -68,7 +45,6 @@ function wranglerIn(env: Env, cwd: string, account: string | undefined): Wrangle
 				try {
 					if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
 				} catch {
-					// The group is already empty.
 				}
 			}, deadline);
 			child.on('error', (error) => {
@@ -82,7 +58,6 @@ function wranglerIn(env: Env, cwd: string, account: string | undefined): Wrangle
 		});
 }
 
-/** The JSON list `wrangler kv namespace list` prints, from its first `[` to its last `]`. */
 function listed(stdout: string): unknown[] | undefined {
 	try {
 		const value: unknown = JSON.parse(stdout.slice(stdout.indexOf('['), stdout.lastIndexOf(']') + 1));
@@ -92,7 +67,6 @@ function listed(stdout: string): unknown[] | undefined {
 	}
 }
 
-/** The id of the KV namespace titled `title`: found in the list, else created and found again. */
 async function namespace(wrangler: Wrangler, title: string): Promise<{ ok: true; id: string } | { ok: false; message: string }> {
 	const find = async (): Promise<{ id?: string; failure?: string }> => {
 		const ran = await wrangler(['kv', 'namespace', 'list'], KV_DEADLINE);
@@ -110,7 +84,6 @@ async function namespace(wrangler: Wrangler, title: string): Promise<{ ok: true;
 	return { ok: false, message: `wrangler kv namespace create ${title} exited ${created.code}:\n${tail(created)}` };
 }
 
-/** The template with each `{{field}}` filled. A field without a value throws, so no placeholder ships. */
 export function fillTemplate(template: string, values: Record<string, string>): string {
 	return template.replace(/\{\{(\w+)\}\}/g, (_whole, field: string) => {
 		const value = values[field];
@@ -119,7 +92,6 @@ export function fillTemplate(template: string, values: Record<string, string>): 
 	});
 }
 
-/** The wrangler.toml of a deploy: the template, filled from the config, the KV id and the theme. */
 export async function wranglerConfig(config: Config, deploy: { kv: string; account?: string | undefined; route?: string | undefined; theme?: CssVars | undefined }): Promise<string> {
 	const { kv, account, route, theme } = deploy;
 	return fillTemplate(await readFile(TEMPLATE, 'utf8'), {
@@ -136,35 +108,23 @@ export async function wranglerConfig(config: Config, deploy: { kv: string; accou
 	});
 }
 
-/** The workers.dev address wrangler printed for the Worker `name`, as an origin. */
 function workersDev(stdout: string, name: string): string | undefined {
 	return new RegExp(`https://${name}\\.[a-z0-9-]+\\.workers\\.dev`).exec(stdout)?.[0];
 }
 
 export type DeployInput = { theme?: string; noTheme?: boolean; route?: string; account?: string; rotateKeys?: boolean };
 
-/**
- * Deploys the view host and prints `{ origin, worker, kv, account?, route?, theme, rotated }`.
- * A wrangler step that fails before the deploy refuses with code `wrangler` and changes nothing
- * on Cloudflare; a deploy that fails is `uncertain`, since the Worker may be live.
- *
- *   await viewDeploy({ route: 'views.example.com/*' }, context);
- */
 export async function viewDeploy(input: DeployInput, context: Context): Promise<Result> {
 	const { env } = context;
 	if (env.TELEGRAM_AGENT_UI_FAKE) return failed({ error: 'usage', message: 'fake mode has no view host to deploy' });
 	if (input.theme !== undefined && input.noTheme) return failed({ error: 'usage', message: '--theme and --no-theme exclude each other' });
 	const config = await readConfig(env);
 	const route = input.route ?? config.views.route;
-	// The account a deploy targets: --account, then the stored one, then CLOUDFLARE_ACCOUNT_ID.
-	// Whichever it is gets stored, so a later change of the environment moves no host.
 	const account = input.account ?? config.views.account ?? (env.CLOUDFLARE_ACCOUNT_ID || undefined);
 	if (route !== undefined && routeOrigin(route) === undefined) {
 		return failed({ error: 'usage', message: `the route "${route}" is no <host>/* of one host, such as views.example.com/*: the shell, the API and the media URLs sit at the root of the host` });
 	}
 	if (account !== undefined && !isAccount(account)) return failed({ error: 'usage', message: `the account "${account}" is no Cloudflare account id of 32 hex digits` });
-	// A key set in the environment wins over .env at every read, so a rotation written to .env
-	// would end at the next deploy. The environment's owner rotates it there.
 	const fromEnv = Object.values(KEY_NAMES).filter((name) => env[name]);
 	if (input.rotateKeys && fromEnv.length > 0) {
 		return failed({ error: 'usage', message: `${fromEnv.join(' and ')} come from the environment, which wins over .env: put new keys there and run view deploy without --rotate-keys` });
@@ -172,7 +132,6 @@ export async function viewDeploy(input: DeployInput, context: Context): Promise<
 
 	let theme = input.noTheme ? undefined : config.views.theme;
 	if (input.theme !== undefined) {
-		// The theme leaves the machine for the Worker, so it is read under the roots like a body.
 		const read = await readBodyFile(input.theme, { roots: await rootsOf(context), cwd: process.cwd(), env });
 		if (!read.ok) return failed(read.failure);
 		let value: unknown;

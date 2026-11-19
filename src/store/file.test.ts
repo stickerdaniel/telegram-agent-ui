@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { LockTimeout } from '../core/types.ts';
 import { fileStore, LockLost } from './file.ts';
 
-// Each test's directory sits in a root of its own, removed once the file is done.
 const roots: string[] = [];
 const temp = () => {
 	const root = mkdtempSync(join(tmpdir(), 'tau-store-'));
@@ -18,23 +17,19 @@ afterAll(() => {
 const lockDir = (dir: string, key: string) => join(dir, '.locks', encodeURIComponent(key));
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Tests that start processes get room for a machine 10 times slower than an idle one.
 const SPAWNING = 30_000;
 
-/** Starts lock-child.ts in another process, with `env` in place of this one's. */
 function child(dir: string, key: string, mode: 'hold' | 'kill' | 'gate' | 'for', options: { gate?: string; ms?: number; env?: Record<string, string | undefined> } = {}) {
 	const arg = options.gate ?? (options.ms !== undefined ? String(options.ms) : undefined);
 	const args = [process.execPath, join(import.meta.dir, 'lock-child.ts'), dir, key, mode, ...(arg !== undefined ? [arg] : [])];
 	return Bun.spawn(args, { stdout: 'pipe', stderr: 'inherit', env: options.env ?? process.env });
 }
 
-/** The first line a child prints. */
 async function firstLine(process: { stdout: ReadableStream<Uint8Array> }): Promise<string> {
 	const { value } = await process.stdout.getReader().read();
 	return new TextDecoder().decode(value).split('\n')[0] ?? '';
 }
 
-/** The start time of `pid` as the store reads it. */
 function startOf(pid: number): string {
 	return Bun.spawnSync(['ps', '-o', 'lstart=', '-p', String(pid)], { env: { ...process.env, LC_ALL: 'C' } })
 		.stdout.toString()
@@ -53,7 +48,6 @@ test('one JSON file per key, named by encodeURIComponent, in a directory of mode
 	await store.delete('q:merge1');
 	expect(await store.get('q:merge1')).toBeUndefined();
 	expect(await store.list('')).toEqual(['m:111:632']);
-	// A second store on the directory reads the same values.
 	expect(await fileStore(dir).get('m:111:632')).toBe('merge1');
 	await expect(store.set('.locks', 1)).rejects.toThrow('cannot name a file');
 	await expect(store.set('q:x', undefined)).rejects.toThrow('not JSON');
@@ -70,7 +64,6 @@ test('lock serializes two tasks of one process on one key', async () => {
 		trace.push(`${name} out`);
 	};
 	await Promise.all([store.lock('q:a', task('first')), store.lock('q:a', task('second'))]);
-	// Either task may go first; neither starts before the other is out.
 	expect([
 		['first in', 'first out', 'second in', 'second out'],
 		['second in', 'second out', 'first in', 'first out'],
@@ -91,11 +84,9 @@ test('a holder killed inside the lock passes it on', async () => {
 test('a process that cannot read its own start time takes no lock, so a live holder is never displaced', async () => {
 	const dir = temp();
 	const gate = `${dir}-gate`;
-	// Without ps, the first process cannot name its start time. It would hold the lock until the gate exists.
 	const blind = child(dir, 'q:a', 'gate', { gate, env: { ...process.env, PATH: '/nonexistent' } });
 	try {
 		const said = await firstLine(blind);
-		// A process with ps reads the first one's real start time. It must not enter while the first is inside.
 		const enteredBesideHolder = await fileStore(dir, { lockWait: 2_000 })
 			.lock('q:a', async () => said === 'locked' && !existsSync(gate))
 			.catch((error: unknown) => error);
@@ -110,7 +101,6 @@ test('a process that cannot read its own start time takes no lock, so a live hol
 
 test('a waiter whose look stalls on a slow ps does not give up on a holder that released meanwhile', async () => {
 	const dir = temp();
-	// A ps that takes 1.5 s, as one did under CPU contention for a process at background priority.
 	const shim = `${dir}-bin`;
 	mkdirSync(shim, { recursive: true });
 	writeFileSync(join(shim, 'ps'), '#!/bin/sh\nsleep 1.5\nexec /bin/ps "$@"\n', { mode: 0o755 });
@@ -119,8 +109,6 @@ test('a waiter whose look stalls on a slow ps does not give up on a holder that 
 	try {
 		expect(await firstLine(holder)).toBe('locked');
 		process.env.PATH = `${shim}:${path}`;
-		// The first look finds the lock held and stalls 1.5 s on ps; the holder lets go 300 ms in.
-		// A wait of 500 ms counted from the request would expire during that stalled look.
 		expect(await fileStore(dir, { lockWait: 500 }).lock('q:a', async () => 'taken')).toBe('taken');
 	} finally {
 		process.env.PATH = path;
@@ -134,7 +122,6 @@ test('a live holder is never taken over by age, and a waiter gives up with LockT
 	const holder = child(dir, 'q:a', 'hold');
 	try {
 		await firstLine(holder);
-		// The generation file looks a year old: age changes nothing.
 		const old = new Date(Date.now() - 365 * 86_400_000);
 		utimesSync(join(lockDir(dir, 'q:a'), '1.json'), old, old);
 		const store = fileStore(dir, { lockWait: 300 });
@@ -181,11 +168,9 @@ test('a pid that another process reused does not keep a lock, and the holder wit
 	try {
 		const owner = (start: string) => JSON.stringify({ pid: other.pid, start, token: 'reused', generation: 1 });
 		const generation = join(lockDir(dir, 'q:a'), '1.json');
-		// The live process `other` has the owner's start time: it is the holder.
 		mkdirSync(lockDir(dir, 'q:a'), { recursive: true });
 		writeFileSync(generation, owner(startOf(other.pid)));
 		await expect(fileStore(dir, { lockWait: 300 }).lock('q:a', async () => {})).rejects.toBeInstanceOf(LockTimeout);
-		// The same pid with another start time is a process that reused the pid of a holder that is gone.
 		writeFileSync(generation, owner('Thu Jan  1 00:00:00 1970'));
 		expect(await fileStore(dir).lock('q:a', async () => 'taken')).toBe('taken');
 	} finally {
@@ -199,7 +184,6 @@ test('a write by a holder that lost its lock is refused, and its release leaves 
 	const store = fileStore(dir);
 	await store.set('q:a', 'before');
 	await store.lock('q:a', async () => {
-		// As if this holder had been judged gone while paused, and another process took the lock.
 		writeFileSync(join(lockDir(dir, 'q:a'), '2.json'), JSON.stringify({ pid: process.pid, start: 'another', token: 'successor', generation: 2 }));
 		await expect(store.set('q:a', 'late write')).rejects.toBeInstanceOf(LockLost);
 		await expect(store.delete('q:a')).rejects.toBeInstanceOf(LockLost);

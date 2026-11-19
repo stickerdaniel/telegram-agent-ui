@@ -1,5 +1,3 @@
-// verifyLaunchData on launch data signed with a generated key: the bounds of auth_date, the
-// allowed users, a changed field, a repeated field and the user it returns.
 import { expect, test } from 'bun:test';
 import { BOT, launchKey, USER } from './fixtures.ts';
 import { verifyLaunchData } from './launch.ts';
@@ -27,6 +25,5 @@ test('a user outside the allowed users, a changed field, a repeated field and a 
 	expect(await verify(`${initData}&chat_type=private`)).toEqual({ ok: false, reason: 'duplicate field chat_type' });
 	expect(await verify(initData.replace(/&signature=[^&]+/, ''))).toEqual({ ok: false, reason: 'missing signature' });
 	expect(await verifyLaunchData(initData, { botId: '223', publicKey: hex, allowedUsers: [USER], now })).toEqual({ ok: false, reason: 'bad signature' });
-	// Without publicKey the check runs against Telegram's production key, which signed none of these.
 	expect(await verifyLaunchData(initData, { botId: BOT, allowedUsers: [USER], now })).toEqual({ ok: false, reason: 'bad signature' });
 });

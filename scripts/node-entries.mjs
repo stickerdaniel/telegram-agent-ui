@@ -1,5 +1,3 @@
-// Imports the 12 package entries by name with plain Node, as a Node 20 consumer would, runs one
-// small call through each, and runs the bin. Run after the build: `bun run test:node`.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -38,7 +36,6 @@ assert.deepEqual(await store.get('q:node1'), question);
 const telegram = fakeCall();
 assert.equal((await telegram.call(steps[0].call)).ok, true);
 
-// createChat on a fileStore: a question is sent, stored as a file and answered by a tap.
 const root = mkdtempSync(join(tmpdir(), 'tau-node-'));
 const files = fileStore(join(root, 'store'));
 const chat = core.createChat({ call: fakeCall().call, store: files, chat: 111 });
@@ -49,8 +46,6 @@ const tap = (ref, message) => ({ update_id: 1, callback_query: { id: `cq-${ref}`
 assert.equal((await chat.handle(tap('node2', sent.sent.message))).kind, 'answered');
 assert.equal((await chat.get('node2')).status, 'answered');
 
-// A Bot API server on node:http: sends get message 1001, a long poll ends with 409, and every
-// multipart upload is read back with the Fetch API's form parser.
 const received = [];
 const server = createServer(async (request, response) => {
 	const method = request.url.split('/').pop();
@@ -66,7 +61,6 @@ const server = createServer(async (request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const apiUrl = `http://127.0.0.1:${server.address().port}`;
 
-// ./telegram: a streamed upload, and a listener that stops on the 409.
 const call = fetchCall({ token: '222:node', apiUrl });
 const bytes = new Uint8Array(1_000_000).fill(7);
 const document = { path: '/work/report.pdf', type: 'application/pdf', size: bytes.length, stream: () => new Blob([bytes]).stream(), bytes: async () => bytes, close: async () => {} };
@@ -78,7 +72,6 @@ const listener = core.createChat({ call, store: memoryStore(), chat: 111 });
 const stopped = await listen({ chat: listener, target: 111, origin: apiUrl, allow: [111], call, store: memoryStore(), signal: AbortSignal.timeout(30_000) });
 assert.equal(stopped.reason, 'conflict');
 
-// ./grammy: the bot's Api is the transport, and its middleware answers a tap.
 const bot = new Bot('222:node', {
 	client: { apiRoot: apiUrl },
 	botInfo: { id: 222, is_bot: true, first_name: 'Probe', username: 'probe_bot', can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false },
@@ -91,7 +84,6 @@ await bot.handleUpdate(tap('node3', asked.sent.message));
 assert.equal((await hosted.get('node3')).status, 'answered');
 server.close();
 
-// ./view/handler: launch data signed with a generated Ed25519 key opens a view stored in a Map.
 const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
 const publicKey = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('hex');
 const authDate = Math.floor(Date.now() / 1000);
@@ -115,7 +107,6 @@ const opened = await viewHost(new Request(`https://views.example.com/api/view?v=
 assert.deepEqual((await opened.json()).view, published.view);
 assert.match((await viewHost(new Request('https://views.example.com/'))).headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/]{43}=' https:\/\/telegram\.org/);
 
-// ./files: a file below the roots opens once and streams from its handle; one outside is refused.
 const project = join(realpathSync(root), 'project');
 mkdirSync(join(project, 'shots'), { recursive: true });
 writeFileSync(join(project, 'notes.md'), '# Notes\n\n![shot](shots/a.png)');
@@ -126,8 +117,6 @@ assert.equal(await new Response(read.files[0].stream()).text(), '# Notes\n\n![sh
 await read.files[0].close();
 assert.equal((await readPublishable(['/etc/hosts'], { roots: [project] })).code, 'outside-roots');
 
-// ./view: a prepared view with its image goes up to the handler of ./view/handler over node:http,
-// and a question's body comes back as its context.
 const ready = await prepareView({ tabs: [{ label: 'Notes', content: { file: join(project, 'notes.md') } }] }, { roots: [project] });
 assert.equal(ready.kind, 'ok');
 assert.deepEqual(ready.prepared.view.tabs[0].content, { markdown: '# Notes\n\n![shot](shots/a.png)', media: { 'shots/a.png': 0 } });
@@ -148,12 +137,10 @@ const shown = await viewHost(new Request(`https://views.example.com/api/view?v=$
 assert.deepEqual((await shown.json()).context, { markdown: 'Ship it?' });
 hostServer.close();
 
-// ./worker: the Cloudflare entry answers from its variables, on a KV binding of its own.
 const kv = { getWithMetadata: async () => ({ value: null, metadata: null }), put: async () => {}, delete: async () => {}, list: async () => ({ keys: [], list_complete: true }) };
 const version = await worker.fetch(new Request('https://views.example.com/api/version'), { VIEWS: kv, BOT_ID: '222', ALLOWED_USERS: '[111]', UPLOAD_KEY: 'upload-key-0123456789', MEDIA_KEY: 'media-key-0123456789' });
 assert.deepEqual((await version.json()).formats, [1, 'answers']);
 
-// ./commands and the bin, in fake mode.
 assert.deepEqual(
 	commands.map((command) => command.name),
 	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'hook permission-request', 'hook notification', 'hook init', 'mcp init'],
@@ -164,31 +151,23 @@ const env = { PATH: process.env.PATH, HOME: root, TELEGRAM_AGENT_UI_FAKE: join(r
 const run = (args, input) => JSON.parse(execFileSync(process.execPath, [bin, ...args], { env, input, encoding: 'utf8' }));
 const { ref } = run(['ask', '--yes-no', '-'], 'Deploy now?');
 assert.deepEqual(run(['wait', ref]).answer, { kind: 'choice', index: 0, label: 'Yes', value: 'yes' });
-// mcp init parses Codex's TOML under Node too.
 assert.equal(run(['mcp', 'init', '--client', 'codex']).changed, true);
-// The permission hook reads stdin under Node and denies an input it cannot read, with exit 0.
 const hooked = spawnSync(process.execPath, [bin, 'hook', 'permission-request', '--client', 'claude'], { env, input: 'not json', encoding: 'utf8' });
 assert.equal(hooked.status, 0);
 assert.equal(JSON.parse(hooked.stdout).hookSpecificOutput.decision.behavior, 'deny');
-// hook init finds claude on the PATH of its environment and writes ~/.claude/settings.json.
 const claudeBin = join(root, 'claude-bin');
 mkdirSync(claudeBin);
 writeFileSync(join(claudeBin, 'claude'), '#!/bin/sh\necho "2.1.327 (Claude Code)"\n', { mode: 0o755 });
 const hookEnv = { ...env, PATH: `${claudeBin}:${process.env.PATH}` };
 assert.equal(JSON.parse(execFileSync(process.execPath, [bin, 'hook', 'init', '--client', 'claude'], { env: hookEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).changed, true);
-// The entry runs this Node and the built bin by their absolute paths.
 const settings = JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8'));
 assert.equal(settings.hooks.PermissionRequest[0].hooks[0].command, `'${process.execPath}' '${realpathSync(bin)}' hook permission-request --client claude --seconds 570`);
-// A body file outside the roots is refused before anything is sent.
 const outside = spawnSync(process.execPath, [bin, 'send', '/etc/hosts'], { env, encoding: 'utf8' });
 assert.equal(outside.status, 1);
 assert.equal(JSON.parse(outside.stdout).code, 'outside-roots');
-// The supervisor of an answer command runs under Node and reports the command's exit.
 const supervisor = join(dirname(bin), '..', 'commands', 'supervise.js');
 const supervised = spawnSync(process.execPath, [supervisor, '5000', String(process.pid), 'cat > /dev/null; exit 3'], { input: '{}\n', encoding: 'utf8' });
 assert.deepEqual(JSON.parse(supervised.stdout.trim()), { ended: 'exit', code: 3 });
-// An owner that dies right after it started the supervisor leaves no command running: the
-// supervisor sees another parent than the owner it was told, and starts nothing.
 const startedFile = join(root, 'started');
 const deadline = 30_000 + (process.pid % 1_000);
 const shell = pathToFileURL(join(dirname(bin), '..', 'commands', 'shell.js')).href;
@@ -199,7 +178,6 @@ for (const until = Date.now() + 60_000; alive() && !existsSync(startedFile) && D
 assert.equal(alive(), false);
 assert.equal(existsSync(startedFile), false);
 
-// ./mcp: a client in memory lists the tools, and one over stdio asks and waits through the bin.
 const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
 await mcp.createServer({ env }).connect(serverSide);
 const memory = new Client({ name: 'node', version: '1.0.0' });
@@ -215,7 +193,6 @@ const shipIt = await stdio.callTool({ name: 'ask_question', arguments: { answer:
 assert.deepEqual(JSON.parse(shipIt.content[0].text), shipIt.structuredContent);
 const waited = await stdio.callTool({ name: 'get_answer', arguments: { ref: shipIt.structuredContent.ref } });
 assert.equal(waited.structuredContent.status, 'answered');
-// A file id that no allowed message carried is refused before any read.
 assert.equal((await stdio.callTool({ name: 'fetch_file', arguments: { id: 'BQACAgIAAxkBAAI' } })).structuredContent.code, 'forbidden');
 await stdio.close();
 rmSync(root, { recursive: true, force: true });

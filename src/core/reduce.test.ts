@@ -11,16 +11,13 @@ const STATUSES = ['sending', 'open', 'answered', 'answeredOnce', 'closed', 'clos
 
 const outcome = (handled: Handled | undefined) => (handled?.kind === 'stale' ? handled.reason : handled?.kind);
 type Outcome = ReturnType<typeof outcome>;
-/** The same outcome in every status. */
 const every = (expected: Outcome) => STATUSES.map(() => expected);
-/** The keyboard texts of a question's edit, row by row. */
 const buttons = (question: Question) => {
 	const markup = renderEdit(question).payload.reply_markup as { inline_keyboard: { text: string }[][] } | undefined;
 	return markup?.inline_keyboard.map((row) => row.map((button) => button.text)) ?? [];
 };
 
 describe('the inputs of 4.6 in every status', () => {
-	// Expected Handled per input, in the order of STATUSES. Answers came from button 0 by tap `a0`, or from reply 700.
 	const choiceTable: [string, Update, Outcome[]][] = [
 		['a tap on button 0', tap({ button: 0, id: 'b0' }), ['answered', 'answered', 'repeat', 'repeat', 'closed', 'closed', 'closed']],
 		['a tap on button 1', tap({ button: 1, id: 'b1' }), ['answered', 'answered', 'answered', 'repeat', 'closed', 'closed', 'closed']],
@@ -40,7 +37,6 @@ describe('the inputs of 4.6 in every status', () => {
 		});
 	}
 
-	// A text question has no buttons, so the replied-to message carries no keyboard.
 	const textTable: [string, Update, Outcome[]][] = [
 		['a new reply', reply({ id: 701, text: 'second', markupRef: null }), ['ignored', 'answered', 'answered', 'repeat', 'ignored', 'ignored', 'ignored']],
 		['the replayed reply 700', reply({ id: 700, text: 'first', markupRef: null }), ['ignored', 'answered', 'repeat', 'repeat', 'ignored', 'ignored', 'ignored']],
@@ -157,11 +153,9 @@ describe('replays', () => {
 
 	test('a replay is found while its key is among the last 32 applied inputs', () => {
 		let question = states(choiceSpec).answered;
-		// 31 more corrections: the key a0 stays in the window of 32.
 		for (let n = 1; n <= 31; n++) question = step(question, input(tap({ button: n % 2 === 1 ? 1 : 0, id: `c${n}` })));
 		expect(question.applied).toHaveLength(32);
 		expect(question.applied[0]).toBe('cq:a0');
-		// The last correction picked button 1, so a fresh tap on 0 would answer; the replay does not.
 		expect(outcome(reduce(question, input(tap({ button: 0, id: 'a0' })), { now: NOW }).handled)).toBe('repeat');
 		question = step(question, input(tap({ button: 0, id: 'c32' })));
 		expect(question.applied).not.toContain('cq:a0');
@@ -170,7 +164,6 @@ describe('replays', () => {
 
 describe('choices made in a view', () => {
 	const inView = choice({ markdown: 'Which layout should stay?' }, [{ label: 'Compact', tab: 'Compact' }, { label: 'Wide', tab: 'Wide', value: 'wide' }, { label: 'Split', tab: 'Split' }], { view: VIEW, in: 'view' });
-	/** A choice of option `index` with choice id `n`, by `user`. */
 	const pick = (index: number, n = 1, user = USER): QuestionEvent => ({ type: 'choice', id: `v${String(n).padStart(21, '0')}`, user: { id: user, name: 'Dana' }, index, at: NOW });
 	const views = states(inView);
 	const table: [string, QuestionEvent, Outcome[]][] = [
@@ -205,7 +198,6 @@ describe('choices made in a view', () => {
 		expect(outcome(reduce(views.closed, pick(0, 1, 999), { now: NOW }).handled)).toBe('forbidden');
 		const applied = step(views.open, pick(0, 1));
 		expect(outcome(reduce(step(applied, { type: 'close' }), pick(1, 1), { now: NOW }).handled)).toBe('closed');
-		// The same choice id is a repeat even where its option would correct the answer.
 		expect(outcome(reduce(step(applied, pick(2, 2)), pick(0, 1), { now: NOW }).handled)).toBe('repeat');
 	});
 
@@ -216,19 +208,16 @@ describe('choices made in a view', () => {
 		expect(reduce(chosen, input(tap({ button: 1, id: 't1' })), { now: NOW })).toMatchObject({ question: chosen, handled: { kind: 'stale', reason: 'repeat' } });
 		const tapped = step(open, input(tap({ button: 0, id: 't0' })));
 		expect(reduce(tapped, pick(1), { now: NOW })).toEqual({ question: tapped, calls: [], handled: { kind: 'stale', reason: 'repeat' } });
-		// Without once, a tap after a choice corrects it.
 		expect(reduce(step(views.open, pick(0)), input(tap({ button: 2, id: 't2' })), { now: NOW }).handled).toMatchObject({ kind: 'answered', previous: { index: 0 } });
 	});
 
 	test('a choice retried after 33 inputs is a tap on its option again: a repeat on the same option, else a correction', () => {
 		let question = step(views.open, pick(0, 0));
-		// 32 more inputs push the key of choice 0 out of the window; the last picks option 0 again.
 		for (let n = 1; n <= 32; n++) question = step(question, pick(n % 2 === 1 ? 1 : 0, n));
 		expect(question.applied).not.toContain(`view:v${'0'.padStart(21, '0')}`);
 		expect(reduce(question, pick(0, 0), { now: NOW })).toEqual({ question, calls: [], handled: { kind: 'stale', reason: 'repeat' } });
 		question = step(question, pick(1, 33));
 		expect(reduce(question, pick(0, 0), { now: NOW }).handled).toMatchObject({ kind: 'answered', seq: question.seq + 1, answer: { index: 0 }, previous: { index: 1 } });
-		// Within the window the same id stays a repeat, even where it would be a correction.
 		const recent = step(step(views.open, pick(0, 40)), pick(1, 41));
 		expect(outcome(reduce(recent, pick(0, 40), { now: NOW }).handled)).toBe('repeat');
 	});
@@ -328,7 +317,6 @@ describe('a question whose message is unknown', () => {
 	});
 
 	test('a reply to a sending text question names no ref, so it stays sending', () => {
-		// A text question has no answer buttons, so the replied-to message carries no callback data.
 		const question = asked(textSpec);
 		expect(reduce(question, input(reply({ text: 'ship it', markupRef: null })), { now: NOW })).toEqual({ question, calls: [], handled: { kind: 'ignored' } });
 	});
@@ -359,7 +347,6 @@ describe('edit, close, shown and delivered', () => {
 		const markup = renderEdit(closedAnswered).payload.reply_markup as { inline_keyboard: { callback_data: string }[][] };
 		const data = markup.inline_keyboard[0]?.[0]?.callback_data;
 		expect(data).toBe(`q:${REF}:0`);
-		// A fresh tap on the remaining button, by the user who answered.
 		const result = reduce(closedAnswered, input(tap({ button: 0, id: 'after-close' })), { now: NOW });
 		expect(result).toEqual({
 			question: closedAnswered,
@@ -397,16 +384,13 @@ describe('edit, close, shown and delivered', () => {
 		const want = answered.shown.want;
 		const uncertain = step(answered, { type: 'shown', want, outcome: { kind: 'uncertain' } }, NOW + 30_000);
 		expect(uncertain.shown).toEqual({ want, done: want - 1, failures: 1, recheckAt: NOW + 30_000 + RECHECK_DELAY });
-		// A later edit of a newer state succeeds: the old one may still land, so recheckAt stays.
 		const edited = step(uncertain, { type: 'edit', body: { markdown: 'Rebase now?' } });
 		const confirmed = step(edited, { type: 'shown', want: want + 1, outcome: { kind: 'ok', result: true } });
 		expect(confirmed.shown).toEqual({ want: want + 1, done: want + 1, failures: 0, recheckAt: NOW + 30_000 + RECHECK_DELAY });
-		// The recheck is an edit of the current want after done reached it.
 		const later = NOW + 30_000 + RECHECK_DELAY;
 		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'uncertain' } }, later).shown.recheckAt).toBe(later + RECHECK_DELAY);
 		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'unchanged' } }, later).shown).toEqual({ want: want + 1, done: want + 1, failures: 0 });
 		expect(step(confirmed, { type: 'shown', want: want + 1, outcome: { kind: 'ok', result: true } }, later).shown).toEqual({ want: want + 1, done: want + 1, failures: 0 });
-		// An answer for an older want changes nothing.
 		expect(step(confirmed, { type: 'shown', want, outcome: { kind: 'unchanged' } }, later)).toEqual(confirmed);
 	});
 
@@ -431,7 +415,6 @@ describe('edit, close, shown and delivered', () => {
 		const failed = step(step(answered, { type: 'delivered', seq: 1, error: 'exit 1' }), { type: 'delivered', seq: 1, error: 'exit 1' });
 		expect(failed.delivery).toEqual({ seq: 0, attempts: 2, error: 'exit 1' });
 		expect(step(failed, { type: 'delivered', seq: 1 }).delivery).toEqual({ seq: 1, attempts: 0 });
-		// A new answer starts the attempts again.
 		expect(step(failed, input(tap({ button: 1, id: 'b1' }))).delivery).toEqual({ seq: 0, attempts: 0 });
 	});
 

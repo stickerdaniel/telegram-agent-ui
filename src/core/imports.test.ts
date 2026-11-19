@@ -1,6 +1,3 @@
-// The entries `.`, `./view/handler` and `./worker` run on any runtime with the Fetch API: the
-// core and createChat import only their own files and the types of @grammyjs/types, the view
-// host only the core and its own files, and none names a Node global.
 import { expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,10 +7,8 @@ const sources = [...readdirSync(join(root, 'core')).map((name) => `core/${name}`
 	(path) => path.endsWith('.ts') && !path.endsWith('.test.ts'),
 );
 
-/** Every module a source names, with whether the statement imports types only. */
 function imports(source: string): { specifier: string; typeOnly: boolean }[] {
 	const found: { specifier: string; typeOnly: boolean }[] = [];
-	// `import x from 'm'`, `import type { X } from "m"`, `export * from 'm'`, `import 'm'`, `import("m")`, `require('m')`.
 	const statements = /^\s*(import|export)\b(\s+type\b)?[^;]*?\bfrom\s*(['"])([^'"]+)\3/gms;
 	const bare = [/^\s*import\s*(['"])([^'"]+)\1/gm, /\b(?:import|require)\s*\(\s*(['"])([^'"]+)\1/g];
 	for (const match of source.matchAll(statements)) found.push({ specifier: match[4] ?? '', typeOnly: match[1] === 'import' && match[2] !== undefined });

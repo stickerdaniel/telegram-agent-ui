@@ -1,8 +1,3 @@
-// A view theme: a `cssVars` object in the shadcn registry format, `{ theme?, light?, dark? }`,
-// each a map from a variable name without its leading `--` to a CSS value. `theme` applies in
-// both colour schemes, `light` and `dark` in theirs, and all of them win over Telegram's colours.
-// The shell writes the values into its document and in front of every page, inside a `<style>`
-// block, so a value holds no character that could end a declaration, a rule or the block.
 import { isRecord, isString } from '../core/check.ts';
 
 export type CssVars = { theme?: Record<string, string>; light?: Record<string, string>; dark?: Record<string, string> };
@@ -12,7 +7,6 @@ const NAME = /^[a-z0-9-]{1,64}$/;
 const VALUE_LENGTH = 200;
 const BREAKS = /[;{}<>\\]|\/\*/;
 
-/** Why `value` is no theme, or undefined. */
 export function themeIssue(value: unknown): string | undefined {
 	if (!isRecord(value)) return 'a theme is a cssVars object of theme, light and dark';
 	for (const key of Object.keys(value)) if (!BLOCKS.some((block) => block === key)) return `a theme has no block ${key}: only theme, light and dark`;
@@ -28,11 +22,6 @@ export function themeIssue(value: unknown): string | undefined {
 	return undefined;
 }
 
-/**
- * The theme in `value`, copied, or undefined when it breaks `themeIssue`.
- *
- *   const theme = parseTheme(JSON.parse(await readFile('theme.json', 'utf8')));
- */
 export function parseTheme(value: unknown): CssVars | undefined {
 	if (themeIssue(value) !== undefined || !isRecord(value)) return undefined;
 	const theme: CssVars = {};

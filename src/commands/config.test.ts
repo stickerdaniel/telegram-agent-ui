@@ -1,5 +1,3 @@
-// The stored values of this stage read back after a JSON round trip, and a value that breaks
-// its type reads as none: config.json, the token in .env, and the `listener` key.
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

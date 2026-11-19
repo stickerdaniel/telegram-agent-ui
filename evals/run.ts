@@ -1,21 +1,3 @@
-// The skill's evals: the prompts of `skills/telegram-agent-ui/evals/evals.json` run with the
-// skill and without it, in fake mode, and each run is graded on what fake mode recorded.
-//
-// `--study` runs the fixed study in one process, the only run that can pass the criterion.
-// Phase 1 runs each of the 10 prompts once with and once without the skill. It stops there when
-// a with-skill run fails, a guardrail run fails in either condition, a run does not complete, or
-// the prompts that pass with the skill exceed those without it by fewer than 2: phase 2 adds no
-// run without the skill, so that gain cannot grow. Phase 2 runs each prompt once more with the
-// skill. The criterion then applies to exactly those 30 runs: each present once, every
-// with-skill run passing, no guardrail run failing, and a gain of at least 2 prompts.
-//
-// Any other run is a diagnostic: `--with <n>`, `--without <n>` and `--only <ids>` pick its runs,
-// and it prints its table and no criterion. Every run claims a fresh output directory before
-// anything else: `--out` must not exist yet, and without it a new temp directory is made.
-//
-//   bun evals/run.ts --model claude-opus-5-5 --study            # a paid run: one claude -p per run
-//   bun evals/run.ts --model claude-opus-5-5 --study --dry-run  # the jobs and the claude command
-//   bun evals/run.ts --runner recorded --transcripts t.json --with 1 --without 0 --only 7
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -26,13 +8,10 @@ import { claudeArgs, claudeRunner, type Eval, type Job, parseEvals, parseTranscr
 const REPO = join(import.meta.dir, '..');
 const EVALS = join(REPO, 'skills', 'telegram-agent-ui', 'evals', 'evals.json');
 
-/** The evals of `evals.json`. */
 export const loadEvals = (path = EVALS): Eval[] => parseEvals(JSON.parse(readFileSync(path, 'utf8')));
 
-/** One graded run. `error` is a run whose process failed or timed out: its calls are no evidence. */
 export type Graded = { id: number; name: string; skill: boolean; run: number; outcome: 'pass' | 'fail' | 'error'; failures: string[]; root: string };
 
-/** Runs every job through `runner`, `parallel` at a time, and grades each on its calls and stored questions. */
 export async function runAll(jobs: readonly Job[], runner: Runner, parallel: number, log: (line: string) => void): Promise<Graded[]> {
 	const graded: Graded[] = [];
 	let next = 0;
@@ -58,15 +37,12 @@ export async function runAll(jobs: readonly Job[], runner: Runner, parallel: num
 	return graded;
 }
 
-/** Whether the study passes, with every reason it does not. */
 export type Verdict = { pass: boolean; reasons: string[]; summary: string };
 
 const label = (run: { name: string; skill: boolean; run: number }) => `${run.name} ${run.skill ? 'with' : 'without'} skill, run ${run.run}`;
 
-/** The runs of each phase of the study, as condition and run number per prompt. */
 const PHASES = { 1: [{ skill: true, run: 1 }, { skill: false, run: 1 }], 2: [{ skill: true, run: 2 }] } as const;
 
-/** Why `graded` is not exactly the runs of the study's phases up to `phase`: a run missing, repeated or foreign. */
 function matrixIssues(evals: readonly Eval[], graded: readonly Graded[], phase: 1 | 2): string[] {
 	const slots = (phase === 1 ? PHASES[1] : [...PHASES[1], ...PHASES[2]]).flatMap((slot) => evals.map((evalCase) => ({ ...slot, id: evalCase.id, name: evalCase.name })));
 	const key = (run: { id: number; skill: boolean; run: number }) => `${run.id}:${run.skill}:${run.run}`;
@@ -78,7 +54,6 @@ function matrixIssues(evals: readonly Eval[], graded: readonly Graded[], phase: 
 	return [...issues, ...graded.filter((run) => !wanted.has(key(run))).map((run) => `${label(run)} of eval ${run.id} belongs to no phase ${phase} run`)];
 }
 
-/** The reasons no phase may pass: a run that did not complete, and a failed run of a guardrail prompt in either condition. */
 function hardReasons(evals: readonly Eval[], graded: readonly Graded[]): string[] {
 	const guardrails = new Set(evals.filter((evalCase) => evalCase.guardrail).map((evalCase) => evalCase.id));
 	return [
@@ -88,17 +63,11 @@ function hardReasons(evals: readonly Eval[], graded: readonly Graded[]): string[
 	];
 }
 
-/** The prompts every run of which passes in one condition. */
 const passedPrompts = (evals: readonly Eval[], graded: readonly Graded[], skill: boolean) =>
 	evals.filter((evalCase) => graded.filter((run) => run.id === evalCase.id && run.skill === skill).every((run) => run.outcome === 'pass')).length;
 
-/** The prompts the skill gains: those passing with it minus those passing without it. */
 const gainOf = (evals: readonly Eval[], graded: readonly Graded[]) => passedPrompts(evals, graded, true) - passedPrompts(evals, graded, false);
 
-/**
- * Why the study stops after phase 1, or nothing when phase 2 may run. `evals` is the study's
- * full prompt set. Phase 2 adds only with-skill runs, so a gain below 2 prompts cannot grow.
- */
 export function phaseOneStop(evals: readonly Eval[], graded: readonly Graded[]): string[] {
 	const reasons = [...matrixIssues(evals, graded, 1), ...hardReasons(evals, graded)];
 	const gain = gainOf(evals, graded);
@@ -106,7 +75,6 @@ export function phaseOneStop(evals: readonly Eval[], graded: readonly Graded[]):
 	return reasons;
 }
 
-/** The criterion of the study over phases 1 and 2. `evals` is the study's full prompt set. */
 export function studyCriterion(evals: readonly Eval[], graded: readonly Graded[]): Verdict {
 	const reasons = [...matrixIssues(evals, graded, 2), ...hardReasons(evals, graded)];
 	const withSkill = passedPrompts(evals, graded, true);
@@ -116,7 +84,6 @@ export function studyCriterion(evals: readonly Eval[], graded: readonly Graded[]
 	return { pass: reasons.length === 0, reasons, summary: `With the skill ${runs.filter((run) => run.outcome === 'pass').length} of ${runs.length} runs pass, ${withSkill} prompts; without it ${without} prompts.` };
 }
 
-/** The table of passes per prompt, with and without the skill, and the verdict of a study, or the note of a diagnostic run. */
 export function report(evals: readonly Eval[], graded: readonly Graded[], verdict: Verdict | undefined): string {
 	const cell = (id: number, skill: boolean) => {
 		const runs = graded.filter((run) => run.id === id && run.skill === skill);
@@ -135,13 +102,11 @@ export function report(evals: readonly Eval[], graded: readonly Graded[], verdic
 	].join('\n');
 }
 
-/** The commit, the trees of the skill and the grader at it, and whether the working tree differs there: what a result was measured with. */
 function provenance() {
 	const git = (...args: string[]) => Bun.spawnSync(['git', '-C', REPO, ...args]).stdout.toString().trim();
 	return { commit: git('rev-parse', 'HEAD'), skill: git('rev-parse', 'HEAD:skills/telegram-agent-ui'), grader: git('rev-parse', 'HEAD:evals'), dirty: git('status', '--porcelain', '--', 'skills', 'evals', 'src') !== '' };
 }
 
-/** A fresh output directory, owned by this run: `path`, created here and refused when it exists, or a new temp directory. */
 function claimOut(path: string | undefined): string {
 	if (path === undefined) return mkdtempSync(join(tmpdir(), 'telegram-agent-ui-evals-'));
 	mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -170,9 +135,6 @@ if (import.meta.main) {
 			'dry-run': { type: 'boolean', default: false },
 		},
 	});
-	// A run grades only what its own runs recorded. It claims its output directory first, before
-	// any lookup or preparation, with a mkdir that fails when the path exists, so no other run can
-	// write evidence into it and no earlier evidence is in it.
 	const out = claimOut(values.out);
 	const study = values.study;
 	if (study && (values.with !== undefined || values.without !== undefined || values.only !== undefined)) throw new Error('--study runs the fixed study: --with, --without and --only pick the runs of a diagnostic run');
@@ -190,7 +152,6 @@ if (import.meta.main) {
 		runner = claudeRunner({ model: values.model, claude: values.claude });
 	} else throw new Error(`--runner is claude or recorded, not ${values.runner}`);
 
-	/** The jobs of the given conditions and run numbers, each in its own directory under `out`. */
 	const jobsOf = (slots: readonly { skill: boolean; run: number }[]) =>
 		evals.flatMap((evalCase) =>
 			slots.map(({ skill, run }) => {

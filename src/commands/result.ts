@@ -1,17 +1,6 @@
-// What a command returns and how it ends: one JSON object, and an exit code from the table of
-// section 5. A failure is `{ error, code?, message, ref?, id? }`. Every refusal names its code.
 import { LockTimeout, type Outcome, ShapeError, TokenRefused } from '../core/types.ts';
 import type { Stopped } from '../telegram/listen.ts';
 
-/**
- * The codes of a refusal: those of `createChat`, plus those of pairing, of an edit by ref, of
- * `mcp init` and `hook init`, of `view deploy`, and of the view host: `view-host` for a request
- * it refused, `unknown-view` for a view it does not hold. `fetch` adds `forbidden` for a file id
- * no allowed message carried and `too-large` for a file past its cap, the topic commands
- * `no-topics`. `client-version` is a harness too old for the hook entry, `other-hook` a harness
- * file with another PermissionRequest handler, and `npx-cache` a `hook init` run from an npx
- * cache, which a hook entry must not point into.
- */
 export type RefusedCode =
 	| Extract<Outcome, { kind: 'refused' }>['code']
 	| 'webhook'
@@ -38,16 +27,13 @@ export type Failure =
 	| { error: 'no-config'; message: string }
 	| { error: 'no-view-host'; message: string };
 
-/** A command's end: its output, or its failure. */
 export type Result = { ok: true; output: Record<string, unknown> } | { ok: false; failure: Failure };
 
-/** The exit code of each failure, see section 5. Success is 0. */
 export const EXIT = { refused: 1, usage: 2, 'no-listener': 3, uncertain: 4, stopped: 5, 'no-config': 6, 'no-view-host': 7 } as const satisfies Record<Failure['error'], number>;
 
 export const done = (output: Record<string, unknown>): Result => ({ ok: true, output });
 export const failed = (failure: Failure): Result => ({ ok: false, failure });
 
-/** A failure thrown from deep inside a command, such as a missing config. */
 export class Failed extends Error {
 	override name = 'Failed';
 	constructor(readonly failure: Failure) {
@@ -55,16 +41,10 @@ export class Failed extends Error {
 	}
 }
 
-/** The exit code of a result. */
 export const exitCode = (result: Result) => (result.ok ? 0 : EXIT[result.failure.error]);
 
-/** What a command prints: its output, or the failure. */
 export const printed = (result: Result): Record<string, unknown> => (result.ok ? result.output : result.failure);
 
-/**
- * A thrown error as a failure. A rejected token is a config to fix, a shape error and a lock
- * held elsewhere refuse, and anything else may have happened after a request went out.
- */
 export function failureOf(error: unknown): Failure {
 	if (error instanceof Failed) return error.failure;
 	if (error instanceof TokenRefused) return { error: 'no-config', message: `${error.message}. Run init with a new token` };
@@ -74,11 +54,6 @@ export function failureOf(error: unknown): Failure {
 	return { error: 'uncertain', message: `${message}. A request may have gone out: run info to see the stored state` };
 }
 
-/**
- * An outcome of `createChat` as a result: `ok` and `dry` through `output`, a refusal with its
- * code (`no-listener`, a rejected token and `view-host` have exit codes of their own), and
- * `uncertain` and `partial` as uncertain with the way out.
- */
 export function fromOutcome(outcome: Outcome, output: (outcome: Extract<Outcome, { kind: 'ok' | 'dry' }>) => Record<string, unknown>): Result {
 	switch (outcome.kind) {
 		case 'ok':

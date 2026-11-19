@@ -1,8 +1,3 @@
-// Stage 2 acceptance: a fault before and after every store write, and every failure class on
-// every call, of `send`, `edit`, `close` and `handle` ends in a state that `flush` repairs or
-// that the outcome names. After each faulted run a second chat on the same store, without
-// faults and a day later, runs `flush`; then every question reads back, every known message
-// shows its question's state and has its index entry, and every stored answer was delivered.
 import { describe, expect, test } from 'bun:test';
 import { choice, message, text } from '../core/builders.ts';
 import { renderEdit } from '../core/render.ts';
@@ -18,14 +13,12 @@ const why = text({ markdown: 'Why did the run fail?' });
 
 type Scenario = {
 	name: string;
-	/** How many bodies the scenario sends at most: no fault may show a body twice. */
 	sends: number;
 	io?: () => Partial<ChatIO> & { writes?: { id: string; ref: string; body: unknown }[] };
 	prepare?: (chat: Chat, server: Telegram) => Promise<unknown>;
 	act: (chat: Chat) => Promise<Outcome | { kind: string }>;
 };
 
-/** A send whose body arrived and whose answer was lost: the question stays sending, message 1001 exists. */
 const lostSend = (spec: Question['spec']) => async (chat: Chat, server: Telegram) => {
 	server.fail(server.count, 'lost');
 	await chat.send(spec, { ref: REF });
@@ -96,7 +89,6 @@ type StoreFault = { method: 'set' | 'delete'; when: 'before' | 'after'; nth: num
 type Injected = { store?: StoreFault; call?: { index: number; fault: Fault } };
 
 const CALL_FAULTS: Fault[] = ['lost', 'gateway', 'refused', 'token', { busy: NOW }, { busy: NOW + 60_000 }];
-// Each matrix runs dozens of scenarios: room for a machine 10 times slower than an idle one.
 const MATRIX = 60_000;
 
 async function run(scenario: Scenario, injected: Injected = {}) {
@@ -117,7 +109,6 @@ async function verify(scenario: Scenario, ran: Awaited<ReturnType<typeof run>>) 
 	expect(breaches).toEqual([]);
 	const before = await questions(inner);
 
-	// What the outcome names.
 	if (result.kind === 'refused' && scenario.name.startsWith('send')) expect(before.has(REF)).toBe(false);
 	if (result.kind === 'ok' && 'ref' in result && result.ref !== undefined) {
 		const question = before.get(result.ref);
@@ -127,7 +118,6 @@ async function verify(scenario: Scenario, ran: Awaited<ReturnType<typeof run>>) 
 		if (question?.shown.error !== undefined) expect(codes).toContain('not-shown');
 	}
 
-	// The repair: another chat on the same store, a day later, without faults.
 	const delivered: string[] = [];
 	const repair = createChat({ ...io, call: server.call, store: inner, chat: CHAT, now: () => NOW + DAY, onAnswer: async (answer) => void delivered.push(answer.delivery) });
 	await repair.flush();
@@ -155,7 +145,6 @@ async function verify(scenario: Scenario, ran: Awaited<ReturnType<typeof run>>) 
 	expect(server.shows.size).toBeLessThanOrEqual(scenario.sends);
 }
 
-/** Runs and verifies, naming the fault in a failure. */
 async function check(scenario: Scenario, injected: Injected = {}) {
 	const ran = await run(scenario, injected);
 	try {

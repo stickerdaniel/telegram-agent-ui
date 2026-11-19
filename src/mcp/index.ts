@@ -1,15 +1,3 @@
-// The MCP server of section 6: every command of the table that names a tool, over the store and
-// without a listener of its own. A tool's input schema is the JSON Schema of its command's
-// params, and the command's `invoke` checks the input, so a usage error is a tool result like
-// any other. Every result is the command's JSON as text and as `structuredContent`, with
-// `isError` for a failure. The progress and warnings that the CLI writes to stderr follow as a
-// second text block.
-//
-// Files come from the roots the client reports plus `publishRoots`. A body file is an absolute
-// path below them, given in place of the body as `bodyFile`, and so is every attachment in
-// `files` of `send_message` and `ask_question` and every file of `publish_view`: the context
-// names no working directory, so a relative path is a usage error.
-// A client that reports no roots adds none, so with an empty `publishRoots` every path is refused.
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,27 +19,19 @@ import { readBodyFile, rootsOf } from '../commands/session.ts';
 import { type Command, commands } from '../commands/table.ts';
 import { isRecord } from '../core/check.ts';
 
-// The package's version, from its package.json two levels up from both src/mcp and dist/mcp.
 const manifest: unknown = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 const version = isRecord(manifest) && typeof manifest.version === 'string' ? manifest.version : '0.0.0';
 
-// The key of the roots request inside an input-required result.
 const ROOTS = 'roots';
 
-/** The name of the path parameter that stands in for a file parameter: `bodyFile` for `body`. */
 const fileKey = (param: Param) => `${param.name}File`;
 
-/** The JSON Schema of one parameter. */
 function paramSchema(param: Param): Record<string, unknown> {
 	const { type } = param;
 	const one = param.schema ? { ...param.schema } : typeof type !== 'string' ? { type: 'string', enum: [...type] } : type === 'json' ? {} : { type };
 	return { ...(param.many ? { type: 'array', items: one } : one), description: param.description };
 }
 
-/**
- * The input schema of a command's tool: its params without the CLI-only ones, and for each file
- * parameter a `<name>File` path beside it. Either of the two may be given, so neither is required.
- */
 function inputSchema(params: readonly Param[]): Record<string, unknown> {
 	const properties: Record<string, unknown> = {};
 	const required: string[] = [];
@@ -65,7 +45,6 @@ function inputSchema(params: readonly Param[]): Record<string, unknown> {
 	return { type: 'object', properties, ...(required.length > 0 ? { required } : {}), additionalProperties: false };
 }
 
-/** A Standard Schema that advertises `json` and lets every object through: the command's `invoke` checks it. */
 function passThrough(json: Record<string, unknown>): StandardSchemaWithJSON<Record<string, unknown>, Record<string, unknown>> {
 	return {
 		'~standard': {
@@ -77,7 +56,6 @@ function passThrough(json: Record<string, unknown>): StandardSchemaWithJSON<Reco
 	};
 }
 
-/** A command's result as a tool result. */
 function toolResult(result: Result, log: readonly string[]): CallToolResult {
 	const json = printed(result);
 	return {
@@ -87,7 +65,6 @@ function toolResult(result: Result, log: readonly string[]): CallToolResult {
 	};
 }
 
-/** Whether the client declared the roots capability: per request on the 2026 protocol, at `initialize` on the 2025 one. */
 function declaresRoots(server: McpServer, ctx: ServerContext): boolean {
 	const envelope = ctx.mcpReq.envelope;
 	const perRequest = isRecord(envelope) ? envelope[CLIENT_CAPABILITIES_META_KEY] : undefined;
@@ -95,11 +72,6 @@ function declaresRoots(server: McpServer, ctx: ServerContext): boolean {
 	return capabilities?.roots !== undefined;
 }
 
-/**
- * The client's roots as paths, or the input-required result that asks for them. The SDK
- * fulfils it on both protocol eras and calls the handler again with the answer. A client
- * without the roots capability, or one whose answer holds no roots, has none.
- */
 function clientRoots(server: McpServer, ctx: ServerContext): string[] | InputRequiredResult {
 	const view = inputResponse(ctx.mcpReq.inputResponses, ROOTS);
 	if (view.kind === 'roots') return view.roots.flatMap((root) => (root.uri.startsWith('file://') ? [fileURLToPath(root.uri)] : []));
@@ -107,10 +79,6 @@ function clientRoots(server: McpServer, ctx: ServerContext): string[] | InputReq
 	return inputRequired({ inputRequests: { [ROOTS]: inputRequired.listRoots() } });
 }
 
-/**
- * The input of `command` from the tool arguments: each `<name>File` read under the roots into
- * its parameter, or the failure that refuses the call before anything is sent.
- */
 async function inputOf(command: Command, args: Record<string, unknown>, roots: readonly string[], env: Env): Promise<{ ok: true; raw: Record<string, unknown> } | { ok: false; failure: Failure }> {
 	const raw = { ...args };
 	for (const param of command.params.filter((candidate) => candidate.cli?.file)) {
@@ -130,13 +98,6 @@ async function inputOf(command: Command, args: Record<string, unknown>, roots: r
 	return { ok: true, raw };
 }
 
-/**
- * An MCP server with one tool per command of the table that names one. `env` is the
- * environment its commands read, `process.env` by default.
- *
- *   const server = createServer();
- *   await server.connect(transport);
- */
 export function createServer(options: { env?: Env } = {}): McpServer {
 	const env = options.env ?? process.env;
 	const server = new McpServer({ name: 'telegram-agent-ui', version });
@@ -159,10 +120,6 @@ export function createServer(options: { env?: Env } = {}): McpServer {
 	return server;
 }
 
-/**
- * Serves the tools over this process's stdin and stdout, on both protocol eras, until the
- * client closes stdin. Errors of the transport go to stderr, since stdout carries the protocol.
- */
 export function serve(options: { env?: Env } = {}): StdioServerHandle {
 	return serveStdio(() => createServer(options), { onerror: (error) => void process.stderr.write(`${error.message}\n`) });
 }

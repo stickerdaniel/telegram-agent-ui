@@ -1,53 +1,33 @@
-// What the view host stores, and the limits of 4.8 it checks on every upload itself. Each stored
-// record is JSON and reads back only through its parse function, which runs the same checks, so
-// a record that breaks them reads as missing. Keys:
-//
-//   v:<view id>                       the view, its committed generation, its media and its expiry
-//   g:<view id>:<generation>          the media of one generation, which a media URL is served against
-//   m:<view id>:<generation>:<index>  one media object, as bytes with its type
-//   c:<view id>:<ref>                 the context of one question on the view: its body, and the binding of a question answered in it
-//   a:<view id>:<ref>:<choice id>     one choice posted from the view: the option, the user and the host's time
 import { arrayOf, isBool, isInt, isNat, isRecord, isString, optional, storable } from '../core/check.ts';
 import { isBody, isUser } from '../core/guards.ts';
 import { CHOICE_ID, LIMITS, questionBodyIssue, REF, VIEW_ID } from '../core/shape.ts';
 import type { Body, ChoiceBinding, StoredView, User } from '../core/types.ts';
 
-/** The version of this package, which `GET /api/version` reports. A test keeps it equal to package.json. */
 export const VERSION = '0.0.0';
-/** The view formats `v` this host accepts. */
 export const VIEW_FORMATS: readonly number[] = [1];
-/** What `GET /api/version` lists as `formats`: the view formats, and `answers` for the choices of 4.10. */
 export const HOST_FORMATS: readonly (number | string)[] = [...VIEW_FORMATS, 'answers'];
-/** How many choices the host stores for one ref before it answers 429, and how long a choice lives at least after its time. */
 export const CHOICE_LIMITS = { perRef: 32, life: 86_400_000 } as const;
 
 const MIB = 1024 * 1024;
 const DAY = 86_400_000;
-/** The limits of 4.8, and how far ahead of the host's clock a view or media object may expire: 365 days. */
 export const VIEW_LIMITS = { tabs: [1, 8], label: 46, viewBytes: 2 * MIB, mediaBytes: 20 * MIB, media: 20, totalBytes: 50 * MIB, ahead: 365 * DAY } as const;
 
-/** The media types of 4.8: the endings png, jpg, jpeg, webp, gif and mp4. */
 export const MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/mp4'] as const;
 export type MediaType = (typeof MEDIA_TYPES)[number];
 export const isMediaType = (value: unknown): value is MediaType => MEDIA_TYPES.some((type) => type === value);
 
-/** A generation of a view's media: 1 to 32 characters of [A-Za-z0-9_-], chosen by the publisher. */
 export const GENERATION = /^[A-Za-z0-9_-]{1,32}$/;
-/** A media index in a path: 0 to 19, without leading zeros. */
 export const INDEX = /^(0|[1-9]\d?)$/;
 
-/** The storage keys of the table above. */
 export const keys = {
 	view: (id: string) => `v:${id}`,
 	manifest: (id: string, generation: string) => `g:${id}:${generation}`,
 	media: (id: string, generation: string, index: number) => `m:${id}:${generation}:${index}`,
 	context: (id: string, ref: string) => `c:${id}:${ref}`,
 	choice: (id: string, ref: string, choice: string) => `a:${id}:${ref}:${choice}`,
-	/** The prefix of every choice of a ref, or of every choice at all. */
 	choices: (id?: string, ref?: string) => (id !== undefined && ref !== undefined ? `a:${id}:${ref}:` : 'a:'),
 };
 
-/** The view id, ref and choice id of a choice key, or undefined for any other key. */
 export function parseChoiceKey(key: string): { view: string; ref: string; id: string } | undefined {
 	const [prefix, view, ref, id, ...rest] = key.split(':');
 	if (prefix !== 'a' || rest.length > 0 || view === undefined || ref === undefined || id === undefined) return undefined;
@@ -55,19 +35,11 @@ export function parseChoiceKey(key: string): { view: string; ref: string; id: st
 }
 
 export type MediaEntry = { type: MediaType; size: number };
-/** `v:<id>`: what `PUT /api/view/<id>` stored. Its write commits `generation`. */
 export type ViewRecord = { v: 1; generation: string; expiresAt: number; media: MediaEntry[]; view: StoredView };
-/** `g:<id>:<generation>`: the media of a committed generation. A replaced view keeps it until it expires. */
 export type ManifestRecord = { v: 1; expiresAt: number; media: MediaEntry[] };
-/** `c:<id>:<ref>`: the body of a question, shown above the view's tabs, and the binding of a question answered in the view. */
 export type ContextRecord = { v: 1; expiresAt: number; body: Body; choice?: ChoiceBinding };
-/** `a:<id>:<ref>:<choice id>`: one choice, kept until `expiresAt`. */
 export type ChoiceRecord = { v: 1; expiresAt: number; index: number; user: User; at: number };
 
-/**
- * The type of a media file by its leading bytes: PNG, JPEG, WebP, GIF or an MP4 `ftyp` box.
- * Undefined for anything else.
- */
 export function sniff(bytes: Uint8Array): MediaType | undefined {
 	const starts = (offset: number, ...expected: number[]) => expected.every((byte, index) => bytes[offset + index] === byte);
 	if (starts(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
@@ -80,7 +52,6 @@ export function sniff(bytes: Uint8Array): MediaType | undefined {
 
 const isMediaEntry = (value: unknown): value is MediaEntry => isRecord(value) && Object.keys(value).length === 2 && isMediaType(value.type) && isInt(value.size);
 
-/** Why a list of media is refused, or undefined: at most 20, each of 1 byte to 20 MiB, 50 MiB together. */
 export function mediaIssue(media: unknown): string | undefined {
 	if (!arrayOf(isMediaEntry)(media)) return `media is a list of { type, size } with a type of ${MEDIA_TYPES.join(', ')}`;
 	if (media.length > VIEW_LIMITS.media) return `a view has at most ${VIEW_LIMITS.media} media, this one ${media.length}`;
@@ -90,7 +61,6 @@ export function mediaIssue(media: unknown): string | undefined {
 	return undefined;
 }
 
-/** Why a Markdown tab's map from image destination to media index is refused, or undefined: each index names an image of the view. */
 function mapIssue(map: unknown, media: readonly MediaEntry[]): string | undefined {
 	if (map === undefined) return undefined;
 	if (!isRecord(map)) return 'the media of a Markdown tab map destinations to media indexes';
@@ -103,7 +73,6 @@ function mapIssue(map: unknown, media: readonly MediaEntry[]): string | undefine
 	return undefined;
 }
 
-/** Why one tab's content is refused against the view's media, or undefined. */
 function contentIssue(content: unknown, media: readonly MediaEntry[]): string | undefined {
 	if (isRecord(content) && 'markdown' in content && Object.keys(content).every((key) => key === 'markdown' || key === 'media')) {
 		return isString(content.markdown) ? mapIssue(content.media, media) : 'markdown is text';
@@ -125,12 +94,6 @@ function contentIssue(content: unknown, media: readonly MediaEntry[]): string | 
 	return undefined;
 }
 
-/**
- * Why `view` is no stored view of format 1 with these media, or undefined: 1 to 8 tabs with
- * labels of 1 to 46 characters, unique in the view, each with one content, no `<script` in a
- * page, a Markdown media map and gallery items that name media entries of their type, and at
- * most 2 MiB as JSON.
- */
 export function viewIssue(view: unknown, media: readonly MediaEntry[]): string | undefined {
 	if (!isRecord(view) || !storable(view)) return 'the view is no JSON object';
 	if (Object.keys(view).some((key) => key !== 'v' && key !== 'title' && key !== 'tabs')) return 'a view is { v, title?, tabs }';
@@ -151,13 +114,10 @@ export function viewIssue(view: unknown, media: readonly MediaEntry[]): string |
 	return undefined;
 }
 
-/** `value` as a stored view, after `viewIssue` found nothing and its format is 1. */
 const isStoredView = (value: unknown, media: readonly MediaEntry[]): value is StoredView => isRecord(value) && value.v === 1 && viewIssue(value, media) === undefined;
 
-/** The JSON bytes a record is stored as. */
 export const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 
-/** The JSON value of stored bytes, or undefined for bytes that are no UTF-8 JSON. */
 export function decode(bytes: Uint8Array): unknown {
 	try {
 		return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -166,7 +126,6 @@ export function decode(bytes: Uint8Array): unknown {
 	}
 }
 
-/** A stored `v:<id>` record, or undefined when it breaks its type or a limit. */
 export function parseViewRecord(value: unknown): ViewRecord | undefined {
 	if (!isRecord(value) || value.v !== 1 || !isString(value.generation) || !GENERATION.test(value.generation) || !isNat(value.expiresAt)) return undefined;
 	const { media, view } = value;
@@ -174,13 +133,11 @@ export function parseViewRecord(value: unknown): ViewRecord | undefined {
 	return { v: 1, generation: value.generation, expiresAt: value.expiresAt, media, view };
 }
 
-/** A stored `g:<id>:<generation>` record, or undefined. */
 export function parseManifest(value: unknown): ManifestRecord | undefined {
 	if (!isRecord(value) || value.v !== 1 || !isNat(value.expiresAt) || mediaIssue(value.media) !== undefined || !arrayOf(isMediaEntry)(value.media)) return undefined;
 	return { v: 1, expiresAt: value.expiresAt, media: value.media };
 }
 
-/** Why a context body is refused, or undefined: a body a question may have, see section 8. */
 export function contextIssue(body: unknown): string | undefined {
 	if (!isBody(body)) return 'a context is a body: { markdown }, { html } or { blocks }';
 	return questionBodyIssue(body);
@@ -189,11 +146,6 @@ export function contextIssue(body: unknown): string | undefined {
 const isBound = (value: unknown): value is ChoiceBinding['options'][number] =>
 	isRecord(value) && Object.keys(value).length === 3 && isNat(value.index) && isString(value.label) && isString(value.tab);
 
-/**
- * Why a binding is refused against the tab labels of its view, or undefined: 2 to 8 options of
- * distinct indexes below 8, each with a label of 1 to 46 characters and its own tab of the view,
- * `once`, an optional expiry and an optional `closed`.
- */
 export function bindingIssue(binding: unknown, tabs: readonly string[]): string | undefined {
 	if (!isRecord(binding) || Object.keys(binding).some((key) => key !== 'options' && key !== 'once' && key !== 'expiresAt' && key !== 'closed')) return 'a binding is { options, once, expiresAt?, closed? }';
 	const { options } = binding;
@@ -212,13 +164,10 @@ export function bindingIssue(binding: unknown, tabs: readonly string[]): string 
 	return undefined;
 }
 
-/** True for a binding that `bindingIssue` finds sound against `tabs`. */
 export const isBinding = (value: unknown, tabs: readonly string[]): value is ChoiceBinding => bindingIssue(value, tabs) === undefined;
 
-/** The tabs a binding names, as far as its options have the type. */
 export const boundTabs = (value: unknown) => (isRecord(value) && arrayOf(isBound)(value.options) ? value.options.map((option) => option.tab) : []);
 
-/** A stored `c:<id>:<ref>` record, or undefined. Its binding was checked against the view's tabs when it was stored. */
 export function parseContext(value: unknown): ContextRecord | undefined {
 	if (!isRecord(value) || value.v !== 1 || !isNat(value.expiresAt) || contextIssue(value.body) !== undefined || !isBody(value.body)) return undefined;
 	const { choice } = value;
@@ -227,20 +176,14 @@ export function parseContext(value: unknown): ContextRecord | undefined {
 	return { v: 1, expiresAt: value.expiresAt, body: value.body, ...(binding !== undefined ? { choice: binding } : {}) };
 }
 
-/** A stored `a:<id>:<ref>:<choice id>` record, or undefined. */
 export function parseChoiceRecord(value: unknown): ChoiceRecord | undefined {
 	if (!isRecord(value) || value.v !== 1 || !isNat(value.expiresAt) || !isNat(value.index) || !isUser(value.user) || !isNat(value.at)) return undefined;
 	const { user } = value;
 	return { v: 1, expiresAt: value.expiresAt, index: value.index, user: { id: user.id, ...(user.name !== undefined ? { name: user.name } : {}) }, at: value.at };
 }
 
-/** The upload of `PUT /api/view/<id>`: the view, the generation it commits, that generation's media and the expiry. */
 export type ViewUpload = { generation: string; expiresAt: number; media: MediaEntry[]; view: StoredView };
 
-/**
- * The upload in `value`, or why it is refused: `format` for a view format this host does not
- * accept, `shape` for anything else. `now` bounds the expiry to the next 365 days.
- */
 export function parseUpload(value: unknown, now: number): { ok: true; upload: ViewUpload } | { ok: false; kind: 'format' | 'shape'; reason: string } {
 	const shape = (reason: string) => ({ ok: false, kind: 'shape', reason }) as const;
 	if (!isRecord(value)) return shape('the upload is { generation, expiresAt, media, view }');
@@ -257,9 +200,7 @@ export function parseUpload(value: unknown, now: number): { ok: true; upload: Vi
 	return { ok: true, upload: { generation, expiresAt, media, view } };
 }
 
-/** True for a view id and a ref of a path: the patterns of section 4.1 and 4.8. */
 export const isViewId = (id: string) => VIEW_ID.test(id);
 export const isRef = (ref: string) => REF.test(ref);
 
-/** The labels of a stored view's tabs, in order. */
 export const tabLabels = (view: StoredView) => view.tabs.map((tab) => tab.label);

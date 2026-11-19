@@ -1,6 +1,3 @@
-// The runtime predicates of the core's stored types. `parseQuestion` builds a question from
-// them, and `reduce` checks every event and its context with the same ones, so a state that
-// `reduce` returns always parses.
 import { arrayOf, isBool, isInt, isNat, isRecord, isString, oneOf, optional, storable } from './check.ts';
 import { isBlocks } from './rich.ts';
 import type { Answer, AnswerSpec, Attachment, Body, CallClass, Option, Question, Sent, Spec, User } from './types.ts';
@@ -9,7 +6,6 @@ export function isBody(value: unknown): value is Body {
 	if (!isRecord(value) || Object.keys(value).length !== 1) return false;
 	if ('markdown' in value) return isString(value.markdown);
 	if ('html' in value) return isString(value.html);
-	// JSON first: the block checks recurse, and a cycle or a non-JSON extension field must fail before them.
 	return storable(value.blocks) && isBlocks(value.blocks);
 }
 

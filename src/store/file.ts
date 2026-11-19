@@ -1,22 +1,3 @@
-// A Store of one JSON file per key, for Node and Bun on macOS and Linux. Several processes may
-// share one directory: a write goes to a temp file that is renamed over the key's file, so a
-// reader sees the old value or the new one, never a part.
-//
-// The lock of a key is a directory of generation files, `.locks/<key>/<n>.json`, each holding
-// its owner: pid, process start time and a token per acquisition. The highest generation is the
-// current one, held until `<n>.released` exists. This is the reply desk's ledger lock:
-// - Publication: the owner is written in full to a temp file and hard-linked to `<n>.json`.
-//   link() fails when the name exists, so exactly one waiter gets each generation, and a
-//   generation file is never seen half-written.
-// - Takeover: a waiter that sees generation n released, or owned by a process that is gone,
-//   publishes n + 1. A process is gone when its pid does not exist, or when ps reads another
-//   start time for it, so a pid that another process reused never keeps a lock. A start time that
-//   cannot be read proves nothing: a process that cannot read its own takes no lock. Age never
-//   passes a lock on: a held lock never expires while its task runs.
-// - Nothing removes the current generation. The new holder deletes the generations below its
-//   own; a waiter that published one of those again sees a higher one and withdraws it.
-// - Fence: before every `set` and `delete` inside a lock, the store checks that each lock the
-//   task holds is still its own, so a holder that was replaced cannot write.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -25,12 +6,10 @@ import { join } from 'node:path';
 import { isInt, isRecord, isString } from '../core/check.ts';
 import { LockTimeout, type Store } from '../core/types.ts';
 
-/** A write inside a lock that this process no longer holds. */
 export class LockLost extends Error {
 	override name = 'LockLost';
 }
 
-/** A process that cannot read its own start time, and therefore takes no lock. */
 export class IdentityUnknown extends Error {
 	override name = 'IdentityUnknown';
 }
@@ -38,8 +17,6 @@ export class IdentityUnknown extends Error {
 type Owner = { pid: number; start: string; token: string; generation: number };
 type Held = { dir: string; key: string; owner: Owner };
 
-// Names that start with "." are the store's own: the lock directories and temp files. No key
-// encodes to one, since `fileStore` refuses such keys.
 const LOCKS = '.locks';
 const TEMP = '.tmp-';
 const TEMP_NAME = /^\.tmp-(\d+)-/;
@@ -47,14 +24,12 @@ const TEMP_NAME = /^\.tmp-(\d+)-/;
 const codeOf = (error: unknown) => (error instanceof Error && 'code' in error ? error.code : undefined);
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** The file name of a key. Throws for a key whose name would start with "." or not fit a file name. */
 function fileName(key: string): string {
 	const name = encodeURIComponent(key);
 	if (name === '' || name.startsWith('.') || name.length > 240) throw new Error(`the key "${key}" cannot name a file of the store`);
 	return name;
 }
 
-/** The start time of process `pid` as ps reports it, or undefined when ps names none. With the pid it identifies one process. */
 function startTime(pid: number): string | undefined {
 	try {
 		const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -74,20 +49,12 @@ function pidExists(pid: number): boolean {
 }
 
 let ownStart: string | undefined;
-/**
- * This process's start time. Throws IdentityUnknown when ps names none: an owner without a
- * comparable start time could be judged gone by a process that reads the real one.
- */
 function thisStart(): string {
 	ownStart ??= startTime(process.pid);
 	if (ownStart === undefined) throw new IdentityUnknown(`the start time of process ${process.pid} cannot be read with ps, so this process takes no lock`);
 	return ownStart;
 }
 
-/**
- * Whether the owner's process still runs. Only a start time that was read and differs proves a
- * reused pid: a live pid whose start time cannot be read counts as the owner, so the lock fails closed.
- */
 function alive(owner: Owner): boolean {
 	if (owner.pid === process.pid) return owner.start === thisStart();
 	if (!pidExists(owner.pid)) return false;
@@ -126,7 +93,6 @@ async function readOwner(dir: string, generation: number): Promise<Owner | undef
 	}
 }
 
-/** Publishes `owner` as its generation. False when another waiter got that generation first. */
 async function publish(dir: string, owner: Owner): Promise<boolean> {
 	const temp = join(dir, `${TEMP}${process.pid}-${randomUUID()}`);
 	try {
@@ -146,7 +112,6 @@ async function publish(dir: string, owner: Owner): Promise<boolean> {
 	}
 }
 
-/** Removes the generations below `generation` and the temp files of processes that are gone. */
 async function sweep(dir: string, generation: number): Promise<void> {
 	for (const name of await readdir(dir)) {
 		const old = /^(\d+)\.(json|released)$/.exec(name);
@@ -156,7 +121,6 @@ async function sweep(dir: string, generation: number): Promise<void> {
 	}
 }
 
-/** Throws LockLost unless `held` is still the current, unreleased generation of its lock, with this owner. */
 async function fence(held: Held): Promise<void> {
 	const { dir, owner } = held;
 	const current = await readOwner(dir, owner.generation);
@@ -165,25 +129,11 @@ async function fence(held: Held): Promise<void> {
 	}
 }
 
-/**
- * A Store in the directory `dir`, created with mode 0700 when missing: one JSON file per key,
- * named `encodeURIComponent(key)`. Keys whose name would start with "." are refused. `lockWait`
- * is how long one holder may keep a lock, as a waiting `lock` observes it, before the waiter
- * rejects with LockTimeout, 10 s by default; the `wait` of one `lock` call replaces it for that
- * call. A lock that changes hands restarts the wait.
- * A `set` or `delete` inside `lock` rejects with LockLost once a task no longer holds its lock.
- * `lock` rejects with IdentityUnknown in a process that cannot read its own start time with ps.
- *
- *   const store = fileStore(join(process.env.XDG_DATA_HOME ?? '', 'telegram-agent-ui', '123'));
- *   await store.lock('q:merge1', async () => store.set('q:merge1', question));
- */
 export function fileStore(dir: string, options: { lockWait?: number } = {}): Store {
 	const lockWait = options.lockWait ?? 10_000;
-	// The locks the current task holds, so a write inside them can be fenced.
 	const holding = new AsyncLocalStorage<Held[]>();
 	let ready: Promise<void> | undefined;
 
-	/** Creates the directory once, with mode 0700, and removes temp files of processes that are gone. */
 	function prepare(): Promise<void> {
 		ready ??= (async () => {
 			await mkdir(join(dir, LOCKS), { recursive: true, mode: 0o700 });
@@ -204,17 +154,11 @@ export function fileStore(dir: string, options: { lockWait?: number } = {}): Sto
 		const start = thisStart();
 		const lockDir = join(dir, LOCKS, fileName(key));
 		await mkdir(lockDir, { recursive: true, mode: 0o700 });
-		// The generation this waiter saw held, and when a look at it had ended. The wait counts only
-		// while one generation stays held: a lock that was free or changed hands starts it again.
-		// So the time another process spends acquiring, and any time this one is starved, never
-		// counts against a holder.
 		let seen: { generation: number; token: string | undefined; at: number } | undefined;
 		for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
-			// Read before the look, which may stall on a ps spawn: a slow look never makes the holder seem to have held longer.
 			const lookedAt = Date.now();
 			const current = await top(lockDir);
 			const holder = current > 0 ? await readOwner(lockDir, current) : undefined;
-			// An unreadable owner counts as live: the lock fails closed.
 			const free = current === 0 || (await exists(releasedPath(lockDir, current))) || (holder !== undefined && !alive(holder));
 			if (free) {
 				seen = undefined;
@@ -230,14 +174,12 @@ export function fileStore(dir: string, options: { lockWait?: number } = {}): Sto
 			}
 			if (seen?.generation !== current || seen.token !== holder?.token) seen = { generation: current, token: holder?.token, at: Date.now() };
 			else if (lookedAt - seen.at >= lockWait) {
-				// Two looks, lockWait apart, both found this generation held.
 				throw new LockTimeout(holder ? `the lock of ${key} stayed held by pid ${holder.pid} for ${lockWait} ms` : `the lock of ${key} has an unreadable owner`);
 			}
 			await sleep(pause);
 		}
 	}
 
-	/** Marks the generation released, unless a successor took it over: then its generation stays untouched. */
 	async function release(held: Held): Promise<void> {
 		try {
 			await fence(held);

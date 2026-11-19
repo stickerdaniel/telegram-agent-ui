@@ -1,9 +1,3 @@
-// A second process for the fileStore tests: `bun lock-child.ts <dir> <key> hold|kill|gate|for [arg]`.
-// `hold` takes the lock, prints "locked" and keeps it for 60 s. `kill` takes the lock and dies by
-// SIGKILL inside it, as a crashed holder does. `gate` takes the lock, prints "locked" and keeps it
-// until the gate file `arg` exists. `for` takes the lock, prints "locked" and keeps it for `arg`
-// ms. Each prints "released" once it let go. A lock that is refused prints "error <name>" and
-// exits 2.
 import { existsSync } from 'node:fs';
 import { fileStore } from './file.ts';
 

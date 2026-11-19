@@ -1,5 +1,3 @@
-// A grammY bot that hosts the package: its Api is the transport, its update handling feeds
-// `chat.handle`, and the package makes no getUpdates call of its own.
 import { afterEach, expect, test } from 'bun:test';
 import { Bot } from 'grammy';
 import { memoryFile } from '../chat/harness.ts';
@@ -15,7 +13,6 @@ import { grammyCall, grammyHandler } from './index.ts';
 let server: FakeBotApi | undefined;
 afterEach(() => server?.stop());
 
-/** A grammY bot on the local server, with the bot's info given, so it calls no getMe. */
 function bot(api: FakeBotApi) {
 	return new Bot(TOKEN, {
 		client: { apiRoot: api.url },
@@ -49,7 +46,6 @@ test('a grammY bot with grammyHandler answers a question and makes no getUpdates
 
 	const sent = await chat.send(choice({ markdown: 'Merge now?' }, [{ label: 'Merge' }, { label: 'Wait' }]), { ref: 'g1' });
 	expect(sent).toMatchObject({ kind: 'ok', sent: { message: 1001, ref: 'g1' } });
-	// The host's loop hands over each update, as its poll or its webhook received it.
 	await host.handleUpdate(tap({ button: 0, ref: 'g1', message: 1001, id: 'cq-g1' }));
 	await host.handleUpdate(plain('not for the package'));
 

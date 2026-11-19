@@ -1,8 +1,3 @@
-// Answers in the view end to end, as 4.10 states them: `createChat` on the Telegram model of the
-// chat harness, the view host on a storage in memory that lists keys late and out of order,
-// reached by its client through the Fetch seam, the shell's POST with launch data, and the
-// listener's pass `applyChoices`. The host's clock moves with the chat's. The last test runs the
-// listener itself against the fake Bot API.
 import { afterEach, expect, setDefaultTimeout, setSystemTime, test } from 'bun:test';
 import { createChat, type Delivered } from '../chat/create.ts';
 import { setup } from '../chat/harness.ts';
@@ -19,7 +14,6 @@ import { viewClient } from './client.ts';
 import { BOT, launchKey, MEDIA_KEY, memoryStorage, ORIGIN, UPLOAD_KEY, USER } from './fixtures.ts';
 import { createViewHandler } from './handler.ts';
 
-// A loaded machine runs the listener slowly; its wait has a deadline of its own.
 setDefaultTimeout(120_000);
 afterEach(() => setSystemTime());
 
@@ -27,7 +21,6 @@ const { hex, launch } = await launchKey();
 const TABS = ['A: Compact', 'B: Wide', 'C: Split', 'Notes'];
 const BODY = { markdown: 'Which layout should the settings page keep?' };
 
-/** A choice id of 22 characters; ids sort as `n` does. */
 const cid = (n: number) => `c${String(n).padStart(21, '0')}`;
 
 function sentOf(outcome: Outcome): Sent {
@@ -35,11 +28,6 @@ function sentOf(outcome: Outcome): Sent {
 	return outcome.sent;
 }
 
-/**
- * A view of TABS on a host over a storage in memory, and a chat with `views` over the Telegram
- * model, both at NOW. `at(ms)` moves the chat's clock and the host's together. `fail(match)`
- * answers the next host request that `match` accepts with 503.
- */
 async function world(storage: Parameters<typeof memoryStorage>[0] = {}) {
 	setSystemTime(new Date(NOW));
 	const memory = memoryStorage(storage);
@@ -70,17 +58,14 @@ async function world(storage: Parameters<typeof memoryStorage>[0] = {}) {
 			harness.clock.now = ms;
 			setSystemTime(new Date(ms));
 		},
-		/** A question answered in the view, with the first 3 tabs as its options; the fourth stays unbound. */
 		spec: (extras: { once?: boolean } = {}) =>
 			choice(
 				BODY,
 				TABS.slice(0, 3).map((label) => ({ label, tab: label })),
 				{ view: put.id, in: 'view', ...extras },
 			),
-		/** The shell's POST of option `n` with choice id `c`, with launch data of `userId` opened at `authDate`. */
 		post: async (ref: string, n: number, c: string, opened: { userId?: number; authDate?: number } = {}) =>
 			handle(new Request(`${ORIGIN}/api/answer?v=${put.id}&q=${ref}&n=${n}&c=${c}`, { method: 'POST', headers: { Authorization: `tma ${await launch(opened)}` } })),
-		/** What the shell reads for `ref`: the context and its binding. */
 		opened: async (ref: string): Promise<Record<string, unknown>> => {
 			const response = await handle(new Request(`${ORIGIN}/api/view?v=${put.id}&q=${ref}`, { headers: { Authorization: `tma ${await launch()}` } }));
 			const json: unknown = await response.json();
@@ -88,9 +73,7 @@ async function world(storage: Parameters<typeof memoryStorage>[0] = {}) {
 		},
 		choiceKeys: () => [...memory.entries.keys()].filter((key) => key.startsWith('a:')),
 		pass: () => applyChoices({ chat: harness.chat, views }),
-		/** The keyboard a message shows now. */
 		markup: (message: number) => harness.server.shows.get(message)?.reply_markup,
-		/** The keyboard of a question answered in the view: its view row alone, with `text`, opening `tab`. */
 		viewRow: (ref: string, text: string, tab?: string) => ({ inline_keyboard: [[{ text, web_app: { url: viewUrl(view, ref, tab) } }]] }),
 	};
 }
@@ -98,7 +81,6 @@ async function world(storage: Parameters<typeof memoryStorage>[0] = {}) {
 test('a choice made in the view is applied with the mark on the view button and delivered once', async () => {
 	const w = await world();
 	const sent = sentOf(await w.chat.send(w.spec(), { ref: 'layout' }));
-	// The message carries the view row alone, and the view gets the question with its options.
 	expect(w.markup(sent.message)).toEqual(w.viewRow('layout', 'Open view'));
 	expect(await w.opened('layout')).toMatchObject({
 		context: BODY,
@@ -117,7 +99,6 @@ test('a choice made in the view is applied with the mark on the view button and 
 	await w.chat.flush();
 	expect(w.delivered).toMatchObject([{ ref: 'layout', seq: 1, answer: { kind: 'choice', index: 1, label: 'B: Wide' }, by: { id: USER }, delivery: 'layout:1' }]);
 	expect(await w.chat.wait('layout', { seconds: 0 })).toMatchObject({ status: 'answered', answer: { index: 1 } });
-	// A choice gets no toast: Telegram saw the send and the edit of the mark.
 	expect(w.server.calls.map(({ call }) => call.method)).toEqual(['sendRichMessage', 'editMessageText']);
 	await w.chat.flush();
 	expect(w.delivered).toHaveLength(1);
@@ -128,10 +109,8 @@ test('a pass that dies after the store and before the delete applies nothing twi
 	const w = await world();
 	await w.chat.send(w.spec(), { ref: 'layout' });
 	await w.chat.send(w.spec(), { ref: 'second' });
-	// Both choices arrive while no listener runs.
 	expect((await w.post('layout', 2, cid(1))).status).toBe(200);
 	expect((await w.post('second', 0, cid(2))).status).toBe(200);
-	// The process dies at each delete: the results are stored, the choices stay on the host.
 	const dying: ViewClient = {
 		...w.views,
 		removeChoice: async () => {
@@ -140,7 +119,6 @@ test('a pass that dies after the store and before the delete applies nothing twi
 	};
 	expect(await applyChoices({ chat: w.chat, views: dying })).toEqual({ answered: 2, removed: 0, left: 2 });
 	expect(w.choiceKeys()).toHaveLength(2);
-	// The restarted listener finds them applied already and only removes them.
 	expect(await w.pass()).toEqual({ answered: 0, removed: 2, left: 0 });
 	for (const [ref, index] of [
 		['layout', 2],
@@ -156,7 +134,6 @@ test('choices visible across two passes apply as corrections, and one pass appli
 	const hidden = new Set<string>();
 	const w = await world({ unlisted: (key) => [...hidden].some((id) => key.endsWith(id)) });
 	await w.chat.send(w.spec(), { ref: 'layout' });
-	// The earlier choice stays out of the first list, as a storage that shows it late does.
 	hidden.add(cid(1));
 	w.at(NOW + 1_000);
 	expect((await w.post('layout', 0, cid(1))).status).toBe(200);
@@ -168,8 +145,6 @@ test('choices visible across two passes apply as corrections, and one pass appli
 	expect(await w.pass()).toEqual({ answered: 1, removed: 1, left: 0 });
 	expect(await w.chat.get('layout')).toMatchObject({ seq: 2, answer: { index: 0 }, previous: { index: 1 } });
 
-	// Posted out of order: the pass applies 9 at +4 s, then 3 and 4 at +6 s by their ids. 4 picks
-	// what 3 picked, so it is a repeat, and 5 at +7 s picks again.
 	for (const [ms, n, id] of [
 		[6_000, 2, 4],
 		[4_000, 1, 9],
@@ -189,7 +164,6 @@ test('a duplicate POST race stores one choice in effect', async () => {
 	let hide = true;
 	const w = await world({ unlisted: (key) => hide && key.startsWith('a:') });
 	const sent = sentOf(await w.chat.send(w.spec(), { ref: 'layout' }));
-	// Two POSTs of one tap race, and neither list shows the other's write: both write the one key.
 	const raced = await Promise.all([w.post('layout', 0, cid(1)), w.post('layout', 0, cid(1))]);
 	expect(raced.map((response) => response.status)).toEqual([200, 200]);
 	const key = `a:${w.view.id}:layout:${cid(1)}`;
@@ -197,13 +171,11 @@ test('a duplicate POST race stores one choice in effect', async () => {
 	expect(w.choiceKeys()).toEqual([key]);
 	hide = false;
 	expect(await w.pass()).toEqual({ answered: 1, removed: 1, left: 0 });
-	// A write of the race that lands after the delete makes the key again: the pass removes it as a repeat.
 	expect((await w.post('layout', 0, cid(1))).status).toBe(200);
 	expect(await w.pass()).toEqual({ answered: 0, removed: 1, left: 0 });
 	expect(await w.chat.get('layout')).toMatchObject({ seq: 1, answer: { index: 0 } });
 	await w.chat.flush();
 	expect(w.delivered).toHaveLength(1);
-	// A choice id the host lists is answered as stored, without a write.
 	expect((await w.post('layout', 1, cid(2))).status).toBe(200);
 	const writes = w.memory.writes.length;
 	expect((await w.post('layout', 1, cid(2))).status).toBe(200);
@@ -218,7 +190,6 @@ test('a failed store and a failed delete each leave the choice for the next pass
 	expect((await w.post('layout', 0, cid(1))).status).toBe(200);
 	w.at(NOW + 2_000);
 	expect((await w.post('layout', 1, cid(2))).status).toBe(200);
-	// The write of the answered question fails: both choices wait, in their order.
 	w.store.fail('set', 'before');
 	expect(await w.pass()).toEqual({ answered: 0, removed: 0, left: 2 });
 	expect(await w.chat.get('layout')).toMatchObject({ status: 'open', seq: 0 });
@@ -242,7 +213,6 @@ test('a choice stored just before expiresAt and visible after the question close
 	hidden.add(cid(1));
 	w.at(NOW + 59_999);
 	expect((await w.post('timed', 0, cid(1))).status).toBe(200);
-	// The question expires while its choice is still out of the list.
 	w.at(NOW + 60_000);
 	await w.chat.flush();
 	expect(await w.chat.get('timed')).toMatchObject({ status: 'closed', seq: 0 });
@@ -251,7 +221,6 @@ test('a choice stored just before expiresAt and visible after the question close
 	expect(await w.pass()).toEqual({ answered: 0, removed: 1, left: 0 });
 	expect(await w.chat.get('timed')).toMatchObject({ status: 'closed', seq: 0 });
 	expect(w.choiceKeys()).toEqual([]);
-	// From expiresAt on the host takes no choice for it.
 	expect((await w.post('timed', 1, cid(2))).status).toBe(410);
 });
 
@@ -260,7 +229,6 @@ test('a choice stored just before its view expires outlives the view on the host
 	const w = await world({ unlisted: (key) => [...hidden].some((id) => key.endsWith(id)) });
 	await w.chat.send(w.spec(), { ref: 'near' });
 	await w.chat.send(w.spec(), { ref: 'late' });
-	// A question answered in its view closes with its view at the latest.
 	const end = w.viewExpiresAt;
 	expect(await w.chat.get('late')).toMatchObject({ expiresAt: end });
 	w.at(end - 1);
@@ -270,7 +238,6 @@ test('a choice stored just before its view expires outlives the view on the host
 	expect(await w.pass()).toEqual({ answered: 1, removed: 1, left: 0 });
 	expect(await w.chat.get('near')).toMatchObject({ status: 'answered', answer: { index: 0 } });
 
-	// The view, its context and the question are past their expiry; the choice is still listed.
 	w.at(end + 30_000);
 	hidden.clear();
 	expect(await w.views.choices()).toMatchObject({ kind: 'ok', choices: [{ ref: 'late', index: 1, id: cid(2) }] });
@@ -303,17 +270,14 @@ test('a question answered in its view whose send is uncertain takes no choice', 
 	w.server.fail(0, 'lost');
 	expect(await w.chat.send(w.spec(), { ref: 'lost' })).toEqual({ kind: 'uncertain', ref: 'lost', reason: expect.stringContaining('close it and ask again') });
 	expect(await w.chat.get('lost')).toMatchObject({ status: 'sending' });
-	// The binding was stored before the send, so the host takes the choice; the listener refuses it.
 	expect((await w.post('lost', 0, cid(1))).status).toBe(200);
 	expect(await w.pass()).toEqual({ answered: 0, removed: 1, left: 0 });
 	expect(await w.chat.get('lost')).toMatchObject({ status: 'sending', seq: 0 });
 	expect(await w.chat.close('lost')).toMatchObject({ kind: 'ok', status: 'closed', warnings: [{ code: 'unconfirmed-message', message: expect.stringContaining('no answer button') }] });
-	// No message is known, and still the host learns of the close: a fresh choice gets 410.
 	await w.chat.flush();
 	await expectClosedOnHost(w, 'lost');
 });
 
-/** The binding of `ref` on the host is closed, nothing is owed, and a fresh signed choice gets 410 without a write. */
 async function expectClosedOnHost(w: Awaited<ReturnType<typeof world>>, ref: string) {
 	expect((await w.opened(ref)).choice, ref).toMatchObject({ closed: true });
 	expect(await w.chat.get(ref), ref).not.toHaveProperty('bindingOwed');
@@ -342,14 +306,11 @@ test('a recheck that Telegram refuses after an earlier open context landed over 
 	if (!asked || !open) throw new Error('unreachable');
 	expect((await w.chat.close('late')).kind).toBe('ok');
 	await expectClosedOnHost(w, 'late');
-	// An open context write from before the close lands late and reopens the binding on the host,
-	// and the recheck owed for it has come.
 	expect(await w.views.context(w.view.id, 'late', asked.spec.body, open)).toMatchObject({ kind: 'ok' });
 	expect((await w.opened('late')).choice).not.toHaveProperty('closed');
 	const stored = await w.chat.get('late');
 	if (!stored) throw new Error('unreachable');
 	await w.store.set('q:late', { ...stored, shown: { ...stored.shown, recheckAt: w.clock.now - 1 } });
-	// Calls 0 and 1 were the send and the close; Telegram refuses the recheck's edit.
 	w.server.fail(2, 'refused');
 	await w.chat.flush();
 	expect(await w.chat.get('late')).not.toHaveProperty('shown.recheckAt');
@@ -361,7 +322,6 @@ test('a view the host does not show for a while keeps the debt of the closed bin
 	const w = await world({ hidden: (key) => hide && key.startsWith('v:') });
 	w.server.fail(0, 'lost');
 	expect((await w.chat.send(w.spec(), { ref: 'hidden' })).kind).toBe('uncertain');
-	// The host answers 404 for the view while its storage hides the key.
 	hide = true;
 	expect((await w.chat.close('hidden')).kind).toBe('ok');
 	await w.chat.flush();
@@ -381,7 +341,6 @@ test('the debt of a closed binding ends at expiresAt, from which on the host ref
 	w.at(NOW + 60_000);
 	await w.chat.flush();
 	expect(await w.chat.get('down')).not.toHaveProperty('bindingOwed');
-	// No write reached the host, and its binding's own expiry refuses the choice.
 	expect((await w.opened('down')).choice).not.toHaveProperty('closed');
 	const writes = w.memory.writes.length;
 	expect((await w.post('down', 0, cid(1))).status).toBe(410);
@@ -396,7 +355,6 @@ test('a close whose host writes failed reaches the host after a replacement drop
 	w.fail(context);
 	await w.chat.close('replaced');
 	expect(await w.chat.get('replaced')).toMatchObject({ bindingOwed: true });
-	// The question is closed, so the view may lose B: Wide, which its binding names.
 	const tabs = ['A: Compact', 'C: Split', 'Notes', 'D: Grid'];
 	expect(await w.views.put({ view: { v: 1, tabs: tabs.map((label) => ({ label, content: { markdown: label } })) }, media: [] }, { id: w.view.id })).toMatchObject({ kind: 'ok' });
 	await w.chat.flush();
@@ -407,7 +365,6 @@ test('a closed binding the host did not store stays owed, and the next flush sto
 	const w = await world();
 	await w.chat.send(w.spec(), { ref: 'owed' });
 	const context = (request: Request) => request.method === 'PUT' && request.url.endsWith('/context/owed');
-	// Both writes of the close fail: the one after its edit and the one of the debt.
 	w.fail(context);
 	w.fail(context);
 	expect(await w.chat.close('owed')).toMatchObject({ kind: 'ok', status: 'closed' });
@@ -419,7 +376,6 @@ test('a closed binding the host did not store stays owed, and the next flush sto
 
 test('a host without answers, a binding the host did not store, a lacking tab and no view client refuse the send before Telegram receives it', async () => {
 	const w = await world();
-	// A host of stage 5 lists the view formats alone.
 	const stage5 = viewClient({
 		origin: ORIGIN,
 		uploadKey: UPLOAD_KEY,
@@ -439,7 +395,6 @@ test('a host without answers, a binding the host did not store, a lacking tab an
 	expect(await without.chat.send(w.spec(), { ref: 'none' })).toMatchObject({ kind: 'refused', code: 'view-host' });
 	expect(w.server.count + without.server.count).toBe(0);
 	expect(await w.inner.list('')).toEqual([]);
-	// No question and no tombstone stayed: the ref goes out once the host stores the binding.
 	expect(await w.chat.send(w.spec(), { ref: 'unbound' })).toMatchObject({ kind: 'ok', ref: 'unbound' });
 });
 
@@ -458,7 +413,6 @@ test('an edit, a correction and a repair by flush keep the binding of the contex
 	expect(await w.pass()).toEqual({ answered: 1, removed: 1, left: 0 });
 	expect(await w.chat.get('layout')).toMatchObject({ seq: 2, answer: { index: 2 }, previous: { index: 0 } });
 	expect((await w.opened('layout')).choice).toEqual(binding);
-	// A context write that fails after an edit is repaired by flush, with the binding.
 	w.fail((request) => request.method === 'PUT' && request.url.endsWith('/context/layout'));
 	const again = { markdown: 'Which layout should the settings page keep for 0.3?' };
 	await w.chat.edit(sent, again);

@@ -1,6 +1,3 @@
-// The inbound side of the listener on an injected transport, without a network: the gate per
-// kind and its stored count, the keys and epochs of `onUpdate`, its two lanes, the receipts
-// across a listener that dies, the file records, and forwards for `onMessage`.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { DEADLINES, PACING } from '../chat/calls.ts';
 import { createChat } from '../chat/create.ts';
@@ -17,7 +14,6 @@ import { LANES, type InboundUpdate, parseStoredUpdate } from './updates.ts';
 PACING.interval = 0;
 LISTEN.beat = 100;
 LISTEN.pause = 50;
-// A loaded machine runs these slowly; each wait below has its own deadline.
 setDefaultTimeout(60_000);
 
 const cleanups: (() => unknown)[] = [];
@@ -29,17 +25,11 @@ const PERSON = { id: 111, is_bot: false, first_name: 'Dana' };
 const CHAT = { id: 111, type: 'private', first_name: 'Dana' };
 const DATE = 1_794_908_513;
 
-/** `value` as an Update; it throws for a value without an update id. */
 function asUpdate(value: Record<string, unknown>): Update {
 	if (!isUpdate(value)) throw new Error('no update');
 	return value;
 }
 
-/**
- * A Bot API transport in memory. getUpdates answers with every queued update at or above its
- * offset, or after 100 ms with none. A send gets the next message id; any other call `true`.
- * `stall(method)` holds every call of that method until the returned function runs.
- */
 function telegram() {
 	const queue: Update[] = [];
 	const calls: Call[] = [];
@@ -66,7 +56,6 @@ function telegram() {
 	return {
 		call,
 		calls,
-		/** Queues updates with the next ids, or with `id` for the first, and answers the open poll. */
 		push(...updates: Record<string, unknown>[]): Update[] {
 			const pushed = updates.map((update) => asUpdate({ ...update, update_id: typeof update.update_id === 'number' ? update.update_id : nextUpdate++ }));
 			queue.push(...pushed);
@@ -86,7 +75,6 @@ function telegram() {
 			);
 			return release;
 		},
-		/** The id the next queued message gets. */
 		nextMessage: () => nextMessage + 1,
 	};
 }
@@ -102,7 +90,6 @@ const tapOn = (id: string, data: string, fields: Record<string, unknown> = {}, o
 });
 const document = (id: string, name = 'notes.pdf') => ({ file_id: id, file_unique_id: `u-${id}`, file_name: name, mime_type: 'application/pdf', file_size: 1200 });
 
-/** Resolves once `check` holds, polling every 20 ms; throws after `ms`. */
 async function until(check: () => boolean | Promise<boolean>, what: string, ms = 20_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (!(await check())) {
@@ -111,10 +98,6 @@ async function until(check: () => boolean | Promise<boolean>, what: string, ms =
 	}
 }
 
-/**
- * A listener of chat 111 with allow [111] on `store` over `transport`, recording what each
- * consumer got. `onUpdate` and `onMessage` replace the recorders. `stop()` aborts it.
- */
 function run(
 	transport: Telegram,
 	store: Store,
@@ -123,7 +106,6 @@ function run(
 		onUpdate?: (update: InboundUpdate, deadline: number) => Promise<void>;
 		onMessage?: (message: Inbound) => Promise<void>;
 		withoutUpdates?: boolean;
-		/** Called with each update once `handle` returned for it. */
 		handled?: (update: Update) => void;
 		now?: () => number;
 	} = {},
@@ -165,7 +147,6 @@ function run(
 	return { chat, updates, messages, logs, running, stop };
 }
 
-/** The receipts by key, in the order the consumer got them. */
 function byKey(updates: InboundUpdate[]): Map<string, InboundUpdate[]> {
 	const keys = new Map<string, InboundUpdate[]>();
 	for (const update of updates) keys.set(update.key, [...(keys.get(update.key) ?? []), update]);
@@ -197,9 +178,7 @@ test('a message, two edits and two reactions in one second, a tap on a foreign b
 	expect(got('up:m:111:600')?.update).toEqual(hello ?? asUpdate({ update_id: 0 }));
 	expect(got('up:c:cq-foreign')).toMatchObject({ update: foreign, handled: { kind: 'ignored' } });
 	expect(got('up:m:111:601')).toMatchObject({ update: unreadable, handled: { error: 'the text of the message breaks its type' } });
-	// No toast for a tap on a button of another consumer: that consumer answers it.
 	expect(transport.calls.filter((call) => call.method === 'answerCallbackQuery')).toEqual([]);
-	// With onUpdate the polls ask for the four update types.
 	for (const poll of transport.calls.filter((call) => call.method === 'getUpdates')) expect(poll.payload.allowed_updates).toEqual(['message', 'edited_message', 'callback_query', 'message_reaction']);
 	await until(async () => (await store.list('up:')).length === 0, 'the delivered receipts to leave the store');
 	expect(parseQuestion(await store.get('q:branch'))).toMatchObject({ status: 'open' });
@@ -225,10 +204,8 @@ test('updates of another chat, of another user, an anonymous reaction and an inl
 	await until(() => listener.updates.length === 1 && listener.messages.length === 1, 'the admitted message');
 	expect(listener.updates.map((update) => update.key)).toEqual(['up:m:111:612']);
 	expect(listener.messages).toEqual([{ kind: 'message', message: 612, text: 'the one that passes', files: [{ id: 'mine', name: 'notes.pdf', bytes: 1200 }] }]);
-	// Only the admitted message's file is recorded.
 	const records = await Promise.all((await store.list('fa:')).map(async (key) => parseFileRecord(await store.get(key))?.id));
 	expect(records).toEqual(['mine']);
-	// The question keeps its own allow list: the stranger's tap gets the forbidden toast and answers nothing.
 	expect(transport.calls.filter((call) => call.method === 'answerCallbackQuery').map((call) => call.payload)).toEqual([{ callback_query_id: 'cq-stranger', text: defaultLabels.forbidden }]);
 	expect(parseQuestion(await store.get('q:merge'))).toMatchObject({ status: 'open' });
 });
@@ -243,7 +220,6 @@ test('a new origin, also a return to an earlier one, starts a new epoch before i
 	await until(async () => parseCursor(await store.get(CURSOR_KEY))?.offset === 8, 'the moved cursor');
 	await one.stop();
 
-	// A local server restarts the update ids; the stored cursor is a minute old.
 	const second = telegram();
 	const two = run(second, store, { origin: 'http://127.0.0.1:8081' });
 	await until(() => second.calls.some((call) => call.method === 'getUpdates'), 'the first poll of the new origin');
@@ -263,10 +239,6 @@ test('a new origin, also a return to an earlier one, starts a new epoch before i
 	expect(edit?.update_id).toBe(7);
 });
 
-/**
- * A store that dies at the first operation `at` matches: that operation and every one after it
- * throws, as nothing of a killed process reaches the disk. `inner` keeps what came before.
- */
 function mortal(inner: Store, at: (method: 'set' | 'delete', key: string) => boolean) {
 	let dead = false;
 	const dying = (method: 'set' | 'delete', key: string) => {
@@ -304,7 +276,6 @@ for (const [point, update, at] of [
 		const inner = memoryStore();
 		const transport = telegram();
 		const before = mortal(inner, () => false);
-		// The first listener lives until it stored its first cursor, then dies at `at`.
 		const first = run(transport, before.store);
 		await until(async () => parseCursor(await inner.get(CURSOR_KEY)) !== undefined, 'the first cursor');
 		await first.stop();
@@ -322,7 +293,6 @@ for (const [point, update, at] of [
 		expect(keys.size).toBe(1);
 		const [key, deliveries = []] = [...keys][0] ?? [];
 		expect(key).toBe(point === 'before the record' ? 'up:m:111:600' : `up:u:1:${pushed.update_id}`);
-		// Every delivery of the key carries the same update and the same result of handle.
 		for (const delivery of deliveries) expect(delivery).toEqual({ key: key ?? '', epoch: 1, updateId: pushed.update_id, update: pushed, handled: { kind: 'ignored' } });
 		if (point === 'before the record') expect(doomed.updates).toEqual([]);
 		else expect(doomed.updates).toHaveLength(1);
@@ -338,7 +308,6 @@ test('a tap reaches onUpdate within 2 s while a message command and 3 tap comman
 		const transport = telegram();
 		const store = memoryStore();
 		const arrived = new Map<string, number>();
-		// When `handle` returned for each tap: the 2 s count from there.
 		const handledAt = new Map<string, number>();
 		const hang = new Promise<void>(() => {});
 		const listener = run(transport, store, {
@@ -360,19 +329,16 @@ test('a tap reaches onUpdate within 2 s while a message command and 3 tap comman
 		expect((arrived.get('up:c:cq-4') ?? Number.POSITIVE_INFINITY) - pushedAt).toBeLessThan(2_000);
 		expect(sinceHandled('up:c:cq-4')).toBeLessThan(2_000);
 
-		// A tap on a package question: its toast hangs, and handle gives it up at its deadline.
 		const asked = await listener.chat.send(choice({ markdown: 'Merge now?' }, [{ label: 'Merge' }, { label: 'Wait' }]), { ref: 'merge' });
 		if (asked.kind !== 'ok' || !asked.sent) throw new Error('the question was not sent');
 		const release = transport.stall('answerCallbackQuery');
 		cleanups.push(release);
-		// The fourth slot is free again: cq-4 is delivered, and cq-1 to cq-3 still hang.
 		const tappedAt = Date.now();
 		transport.push(tapOn('cq-package', 'q:merge:0', {}, asked.sent.message));
 		await until(() => arrived.has('up:c:cq-package'), 'the package tap', 10_000);
 		const after = (arrived.get('up:c:cq-package') ?? 0) - tappedAt;
 		expect(after).toBeGreaterThanOrEqual(DEADLINES.call);
 		expect(after).toBeLessThan(DEADLINES.call + 2_000);
-		// `handle` returned after the toast's deadline and the edit; the tap arrived within 2 s of that.
 		expect((handledAt.get('up:c:cq-package') ?? 0) - tappedAt).toBeGreaterThanOrEqual(DEADLINES.call);
 		expect(sinceHandled('up:c:cq-package')).toBeLessThan(2_000);
 		expect(parseQuestion(await store.get('q:merge'))).toMatchObject({ status: 'answered' });
@@ -386,7 +352,6 @@ test('a tap reaches onUpdate within 2 s while a message command and 3 tap comman
 test('the other lane runs updates 9 and 10 in that order, also from the store after a restart', async () => {
 	const store = memoryStore();
 	const stored = (updateId: number) => ({ v: 1, key: `up:u:1:${updateId}`, epoch: 1, updateId, update: { ...edited(600), update_id: updateId }, handled: { kind: 'ignored' }, attempts: 0 });
-	// Read by key, `up:u:1:10` comes before `up:u:1:9`.
 	await store.set('up:u:1:10', stored(10));
 	await store.set('up:u:1:9', stored(9));
 	await store.set(CURSOR_KEY, { v: 1, origin: 'https://api.telegram.org', epoch: 1, offset: 11, at: Date.now(), refused: 0 });
@@ -444,10 +409,8 @@ test('a forwarded text, caption and file sit only under forwarded, and a forward
 		{ kind: 'forward', message: 620, replyTo: asked.sent.message, ref: 'branch', forwarded: { origin, text: 'see https://example.com and the docs', links: ['https://example.com', 'https://docs.example.com'], files: [] } },
 		{ kind: 'forward', message: 621, forwarded: { origin, caption: 'the report', links: [], files: [{ id: 'forwarded-file', name: 'report.pdf', bytes: 1200 }] } },
 	]);
-	// The forwarded words answered nothing, and no reaction acknowledged them.
 	expect(parseQuestion(await store.get('q:branch'))).toMatchObject({ status: 'open', seq: 0 });
 	expect(transport.calls.filter((call) => call.method === 'setMessageReaction')).toEqual([]);
-	// The forwarded file is recorded for fetch like any other.
 	expect((await store.list('fa:')).length).toBe(1);
 });
 
@@ -488,7 +451,6 @@ test('the file records keep one occurrence per message, edit and position, a rep
 test('a tap on an open question of a former chat is refused before handle: no answer, no toast, no delivery', async () => {
 	const transport = telegram();
 	const store = memoryStore();
-	// Chat 111 was the target once and left a question open.
 	const former = createChat({ call: transport.call, store, chat: 111 });
 	const asked = await former.send(choice({ markdown: 'Merge now?' }, [{ label: 'Merge' }, { label: 'Wait' }]), { ref: 'old-chat' });
 	if (asked.kind !== 'ok' || !asked.sent) throw new Error('the question was not sent');
@@ -503,7 +465,6 @@ test('a tap on an open question of a former chat is refused before handle: no an
 	});
 	transport.push(tapOn('cq-old', 'q:old-chat:0', {}, asked.sent.message));
 	await until(async () => parseCursor(await store.get(CURSOR_KEY))?.refused === 1, 'the refused tap');
-	// Flushes run every 100 ms: none of them finds an answer to deliver.
 	await Bun.sleep(LISTEN.beat * 3);
 	expect(answers).toEqual([]);
 	expect(updates).toEqual([]);
@@ -513,7 +474,6 @@ test('a tap on an open question of a former chat is refused before handle: no an
 
 test('a cursor without an offset older than 6 days starts a new epoch before the poll, so a new update never takes a delivered key', async () => {
 	const store = memoryStore();
-	// A listener stored epoch 7, delivered the edit up:u:7:9 and died before its cursor write.
 	await store.set(CURSOR_KEY, { v: 1, origin: 'https://api.telegram.org', epoch: 7, at: Date.now() - 7 * 86_400_000, refused: 0 });
 	const applied = new Set(['up:u:7:9']);
 	const fresh: string[] = [];
@@ -526,7 +486,6 @@ test('a cursor without an offset older than 6 days starts a new epoch before the
 	});
 	await until(() => transport.calls.some((call) => call.method === 'getUpdates'), 'the first poll');
 	expect(parseCursor(await store.get(CURSOR_KEY))).toMatchObject({ epoch: 8 });
-	// Telegram restarted its update ids: a new edit comes as update 9.
 	transport.push({ ...edited(601), update_id: 9 });
 	await until(() => fresh.length === 1, 'the new edit');
 	expect(fresh).toEqual(['up:u:8:9']);
@@ -544,7 +503,6 @@ test('a message queued by an earlier release, without kind, is delivered after a
 
 test('a forward queued by an earlier release is delivered as a forward without origin, and keeps its stored form while delivery fails', async () => {
 	const store = memoryStore();
-	// That release kept a forward's words under forwarded, its files at the top level, and no origin.
 	const old = { v: 1, chat: 111, update: 42, message: { message: 600, forwarded: { text: 'forwarded release instructions', caption: 'third-party attachment' }, files: [{ id: 'forwarded-file', name: 'report.pdf', bytes: 12 }] }, attempts: 0 };
 	await store.set('in:111:600', old);
 	let down = true;
@@ -577,7 +535,6 @@ test('a consumer that rejects with the text "stopped" gets the failure path: a r
 		run(transport, store, {
 			onUpdate: async (update) => {
 				tries.push(update.updateId);
-				// A real consumer waits on I/O: timers run between its attempts, even when one repeats at once.
 				await Bun.sleep(1);
 				if (update.updateId === 9) throw new Error('stopped');
 			},
@@ -595,7 +552,6 @@ test('a consumer that rejects with the text "stopped" gets the failure path: a r
 
 for (const [what, fails] of [
 	['the list of receipts', (method: string, key: string) => method === 'list' && key === 'up:'],
-	// The scan reads by key: up:u:1:10, then up:u:1:11, then up:u:1:9. The second read fails.
 	['the read of a receipt after one it read', (method: string, key: string) => method === 'get' && key === 'up:u:1:11'],
 ] as const) {
 	test(`a startup scan whose store fails ${what} once runs again whole, delivers nothing of the failed scan, and then every stored receipt`, async () => {
@@ -603,7 +559,6 @@ for (const [what, fails] of [
 		const stored = (updateId: number) => ({ v: 1, key: `up:u:1:${updateId}`, epoch: 1, updateId, update: { ...edited(600), update_id: updateId }, handled: { kind: 'ignored' }, attempts: 0 });
 		for (const id of [9, 10, 11]) await inner.set(`up:u:1:${id}`, stored(id));
 		await inner.set(CURSOR_KEY, { v: 1, origin: 'https://api.telegram.org', epoch: 1, offset: 12, at: Date.now(), refused: 0 });
-		// What happened to the receipts, in order: each list and read of them, the failure, each delivery.
 		const events: string[] = [];
 		let failed = false;
 		const once = (method: string, key: string) => {
@@ -639,7 +594,6 @@ for (const [what, fails] of [
 		const failure = events.findIndex((event) => event.startsWith('fail'));
 		const firstDelivery = events.findIndex((event) => event.startsWith('deliver'));
 		const retried = events.indexOf('list', failure);
-		// Nothing was delivered before the scan that ran whole.
 		expect(retried).toBeGreaterThan(failure);
 		expect(firstDelivery).toBeGreaterThan(retried);
 		if (what === 'the read of a receipt after one it read') expect(events.slice(0, failure)).toEqual(['list', 'get up:u:1:10']);

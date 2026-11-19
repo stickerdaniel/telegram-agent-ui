@@ -1,6 +1,3 @@
-// Stage 2 acceptance: two processes on one question end consistent in 100 runs. Each run starts
-// two real processes on one fileStore directory, releases them at once and checks the stored
-// question against the calls both made.
 import { expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +19,6 @@ const PAIRS: [Op, Op][] = [
 	['edit', 'close'],
 ];
 
-/** Both children's traces, merged by time, for a failed run. */
 function traces(log: string): string {
 	const lines = [0, 1].flatMap((id) => (existsSync(`${log}.trace-${id}`) ? readFileSync(`${log}.trace-${id}`, 'utf8').trim().split('\n') : [`no trace from child ${id}`]));
 	return lines.sort().join('\n');
@@ -37,20 +33,17 @@ async function race(run: number, a: Op, b: Op) {
 	const children = [a, b].map((op, id) => Bun.spawn([process.execPath, CHILD, dir, log, op, String(id), String(run)], { stdout: 'pipe', stderr: 'inherit' }));
 	let results: (Outcome | Handled)[];
 	try {
-		// A loaded machine took 90 s to start both children of one run.
 		const deadline = Date.now() + 180_000;
 		while (!existsSync(`${log}.ready-0`) || !existsSync(`${log}.ready-1`)) {
 			if (Date.now() > deadline) throw new Error('the children did not start');
 			await Bun.sleep(2);
 		}
 		writeFileSync(`${log}.go`, '');
-		// Both children end before any verdict, so both traces are complete.
 		const ended = await Promise.all(children.map(async (child) => ({ pid: child.pid, out: await new Response(child.stdout).text(), code: await child.exited })));
 		const failed = ended.filter((child) => child.code !== 0);
 		if (failed.length > 0) throw new Error(`run ${run}, ${a} and ${b}: ${failed.map((child) => `child ${child.pid} exited ${child.code}`).join(', ')}. Traces:\n${traces(log)}`);
 		results = ended.map((child) => JSON.parse(child.out) as Outcome | Handled);
 	} finally {
-		// A run that fails leaves no child waiting for its go file.
 		for (const child of children) child.kill('SIGKILL');
 	}
 	const calls = readFileSync(log, 'utf8')
@@ -58,7 +51,6 @@ async function race(run: number, a: Op, b: Op) {
 		.split('\n')
 		.map((line) => JSON.parse(line) as { method: string; payload: Record<string, unknown> });
 	const question = parseQuestion(await fileStore(dir).get(`q:${REF}`));
-	// 100 runs leave 100 directories, which Spotlight indexes; a run whose children failed keeps its own.
 	rmSync(root, { recursive: true, force: true });
 	return { question, results, calls };
 }
@@ -73,7 +65,6 @@ test('two processes on one question end consistent in 100 runs', async () => {
 		if (!question) throw new Error(`${label}: the question does not read back`);
 		expect(question.shown.done, label).toBe(question.shown.want);
 		expect(calls.filter((call) => call.method === 'sendRichMessage'), label).toHaveLength(1);
-		// The message shows the stored state: the last body or edit of message 1001 is the question's edit.
 		const last = calls.findLast((call) => call.method === 'editMessageText' || call.method === 'sendRichMessage');
 		expect(last && shownOf(last.payload), label).toEqual(shownOf(renderEdit(question).payload));
 
@@ -92,7 +83,6 @@ test('two processes on one question end consistent in 100 runs', async () => {
 				const newest = answers.find((answer) => answer.seq === 2);
 				expect(question, label).toMatchObject({ status: 'answered', seq: 2, answer: newest?.answer ?? {}, previous: answers.find((answer) => answer.seq === 1)?.answer ?? {} });
 			} else {
-				// The tap answered when it came first, and is stale when the close came first.
 				expect(question.status, label).toBe('closed');
 				expect(question.seq, label).toBe(first?.kind === 'answered' ? 1 : 0);
 				expect(second, label).toMatchObject({ kind: 'ok', status: 'closed' });

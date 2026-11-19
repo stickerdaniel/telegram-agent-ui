@@ -1,23 +1,10 @@
-// Test doubles for a consumer's loop: a Bot API transport that records every call and answers
-// from a script, and a store that fails on demand. Neither makes a request.
 import type { Call, CallResponse, Store } from '../core/types.ts';
 
-/** One scripted answer: a fixed response, or one computed from the call. */
 export type Scripted = CallResponse | ((call: Call) => CallResponse);
 
-// The date of the recorded sends in facts/records/, in Unix seconds.
 const DATE = 1794908513;
 const SENDS = new Set(['sendRichMessage', 'sendPhoto', 'sendVideo', 'sendDocument']);
 
-/**
- * A transport that records every call and answers from `script`, in order. Once the script
- * is used up it answers like the cloud Bot API does on success: a send gets a new message,
- * an album one message per file, an edit the edited message, anything else `true`.
- *
- *   const telegram = fakeCall([{ noAnswer: true }]);
- *   await telegram.call(steps[0].call); // { noAnswer: true }
- *   telegram.calls.length; // 1
- */
 export function fakeCall(script: Scripted[] = []) {
 	const queue = [...script];
 	const calls: { call: Call; files?: Readonly<Record<string, unknown>> }[] = [];
@@ -33,7 +20,6 @@ export function fakeCall(script: Scripted[] = []) {
 
 	return {
 		calls,
-		/** The transport: `files` holds what a caller opened for the call's multipart fields. */
 		async call(call: Call, files?: Readonly<Record<string, unknown>>): Promise<CallResponse> {
 			calls.push(files ? { call, files } : { call });
 			const scripted = queue.shift();
@@ -43,19 +29,12 @@ export function fakeCall(script: Scripted[] = []) {
 	};
 }
 
-/** The error a faulty store throws. */
 export class StoreFault extends Error {
 	override name = 'StoreFault';
 }
 
 type Method = keyof Store;
 
-/**
- * Wraps a store so that one chosen call fails: `fail('set', 'after', 2)` lets the second
- * `set` from now on write and then throw StoreFault, `'before'` throws without running it.
- * For `lock`, `'after'` runs the task and then throws. `ops` lists every call in order, so a
- * test can count the fault points of a run and then fail each one.
- */
 export function faultyStore(inner: Store) {
 	let armed: { method: Method; when: 'before' | 'after'; left: number } | undefined;
 	const ops: { method: Method; key: string }[] = [];
@@ -80,7 +59,6 @@ export function faultyStore(inner: Store) {
 	return {
 		...store,
 		ops,
-		/** Arms one fault on the `nth` call of `method` from now on, 1 by default. */
 		fail(method: Method, when: 'before' | 'after', nth = 1) {
 			armed = { method, when, left: nth };
 		},

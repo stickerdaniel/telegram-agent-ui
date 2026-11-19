@@ -1,8 +1,3 @@
-// Publishes one probe view and sends its Web App button, or reads back what the phone reported.
-// Run: ORIGIN=https://... READ_KEY=... TELEGRAM_BOT_TOKEN=... CHAT=... bun facts/view-probe/publish.ts
-//      ORIGIN=https://... READ_KEY=... bun facts/view-probe/publish.ts reports <id>
-// The first form PUTs `{ markdown, page }` under a new id, sends the button at once and prints the
-// time between the two answers, so a 404 retry count in the report shows how long the store lagged.
 import { readFile } from 'node:fs/promises';
 
 const origin = process.env.ORIGIN?.replace(/\/+$/, '');
@@ -25,7 +20,6 @@ if (process.argv[2] === 'reports') {
 	const chat = process.env.CHAT;
 	if (!token || !chat) throw new Error('TELEGRAM_BOT_TOKEN and CHAT are required');
 
-	// 16 random bytes are 22 base64url characters without padding.
 	const id = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64url');
 	const page = (await readFile(new URL('./page.html', import.meta.url), 'utf8')).replaceAll('ORIGIN', origin);
 	const markdown = ['View probe', '', '| a | b |', '| --- | --- |', '| 1 | 2 |', '', '<b>stays text</b> <script>alert(1)</script>'].join('\n');

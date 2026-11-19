@@ -1,27 +1,17 @@
-// The shape checks and warnings of section 8. `specIssue` and `questionBodyIssue` need no
-// configuration, so `parseQuestion` runs them on stored questions too. `checkSpec` adds the
-// checks that need the send's context and throws ShapeError.
 import { isRecord, isString, storable } from './check.ts';
 import { type Body, type Labels, type Spec, ShapeError, type Warning } from './types.ts';
 
-/** A caller's `ref`. The library's own refs, 8 characters of `[a-z2-7]`, match it too. */
 export const REF = /^[A-Za-z0-9_-]{1,32}$/;
-/** A view id: 128 random bits as 22 base64url characters. */
 export const VIEW_ID = /^[A-Za-z0-9_-]{22}$/;
-/** A choice id: 128 random bits as 22 base64url characters, made by the shell for one tap. */
 export const CHOICE_ID = /^[A-Za-z0-9_-]{22}$/;
 
-// `levels`: objects and arrays on any path of a body or a meta, counted from the body or meta itself.
 export const LIMITS = { body: 32_768, blocks: 500, questionBody: 3_500, caption: 1_024, label: 46, options: [2, 8], files: 10, levels: 48 } as const;
 
-// Block types whose text is code or a quotation: the warnings skip them.
 const QUOTED = new Set(['pre', 'blockquote', 'expandable_blockquote', 'pullquote']);
 
-/** The elements of an array, or none. The walkers below read blocks as unknown JSON. */
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
-/** The plain words of a RichText, without its code spans. */
 function richText(value: unknown): string {
 	if (typeof value === 'string') return value;
 	if (Array.isArray(value)) return list(value).map(richText).join('');
@@ -29,7 +19,6 @@ function richText(value: unknown): string {
 	return '';
 }
 
-/** One line per text-bearing block, depth first, without code and quotation blocks. */
 function blockLines(blocks: unknown): string[] {
 	return list(blocks).flatMap((block): string[] => {
 		if (!isRecord(block) || QUOTED.has(String(block.type))) return [];
@@ -43,12 +32,10 @@ function blockLines(blocks: unknown): string[] {
 	});
 }
 
-/** Every block object at any depth, list items' blocks included. */
 function countBlocks(blocks: unknown): number {
 	return sum(list(blocks).map((block) => (isRecord(block) ? 1 + countBlocks(block.blocks) + sum(list(block.items).map((item) => (isRecord(item) ? countBlocks(item.blocks) : 0))) : 1)));
 }
 
-/** The characters of a blocks body: every string leaf except the `type` tags. */
 function blocksLength(value: unknown, key = ''): number {
 	if (typeof value === 'string') return key === 'type' ? 0 : value.length;
 	if (Array.isArray(value)) return sum(list(value).map((item) => blocksLength(item)));
@@ -58,7 +45,6 @@ function blocksLength(value: unknown, key = ''): number {
 
 const decode = (text: string) => text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 
-/** The lines a human reads, without code and quotation blocks: what the warnings look at. */
 export function plainLines(body: Body): string[] {
 	if ('blocks' in body) return blockLines(body.blocks).flatMap((line) => line.split('\n'));
 	if ('html' in body) {
@@ -68,7 +54,6 @@ export function plainLines(body: Body): string[] {
 			.replace(/<[^>]*>/g, '');
 		return decode(text).split('\n');
 	}
-	// A link shows its label: `[Ready?](https://example.com)` reads as `Ready?`, and a link definition shows nothing.
 	const text = body.markdown
 		.replace(/^ {0,3}```[\s\S]*?^ {0,3}```.*$/gm, '')
 		.replace(/`[^`\n]*`/g, '')
@@ -78,10 +63,6 @@ export function plainLines(body: Body): string[] {
 	return text.split('\n').filter((line) => !/^\s*>/.test(line));
 }
 
-/**
- * True when a blocks body holds a button of its own, as a `buttons` block or an inline button
- * node, at any depth. Every button of a message comes from its `answer` and its `view`.
- */
 function hasButton(value: unknown): boolean {
 	if (Array.isArray(value)) return list(value).some(hasButton);
 	if (!isRecord(value)) return false;
@@ -89,13 +70,9 @@ function hasButton(value: unknown): boolean {
 }
 
 const BUTTON_REFUSAL = 'a body may hold no button of its own: buttons come from answer and view';
-// Rich Markdown and Rich HTML both turn `<tg-button>` and `<tg-button-row>` into buttons (recorded
-// 2026-11-17). The check reads the whole string, code spans included, which keeps it simple.
 const BUTTON_TAG = /<tg-button(?:-row)?/i;
 
-/** Why a body is refused, or undefined. `limit` is the character limit of its role. */
 function bodyIssue(body: Body, limit: number): string | undefined {
-	// JSON first: the walkers below recurse, so a cycle must fail before them.
 	if (!storable(body)) return 'the body is not JSON';
 	if (!storable(body, LIMITS.levels)) return `the body nests objects and arrays deeper than ${LIMITS.levels} levels`;
 	if ('blocks' in body) {
@@ -112,23 +89,15 @@ function bodyIssue(body: Body, limit: number): string | undefined {
 	return undefined;
 }
 
-/** Why a meta is refused, or undefined: it is JSON of at most 48 levels. */
 export function metaIssue(meta: unknown): string | undefined {
 	if (!storable(meta)) return 'meta is not JSON';
 	return storable(meta, LIMITS.levels) ? undefined : `meta nests objects and arrays deeper than ${LIMITS.levels} levels`;
 }
 
-/** Why a body cannot go out as a message at all: empty, over 32,768 characters or over 500 blocks. */
 export const messageBodyIssue = (body: Body) => bodyIssue(body, LIMITS.body);
 
-/** True when both bodies are Markdown, both HTML or both blocks. */
 export const sameForm = (a: Body, b: Body) => ('blocks' in a && 'blocks' in b) || ('html' in a && 'html' in b) || ('markdown' in a && 'markdown' in b);
 
-/**
- * Why a question body or a resolved body is refused, or undefined. A Markdown or HTML body
- * sits inside a details block once the question is resolved, so it may not close one, and an
- * odd number of code fences would swallow what follows.
- */
 export function questionBodyIssue(body: Body): string | undefined {
 	const issue = bodyIssue(body, LIMITS.questionBody);
 	if (issue || 'blocks' in body) return issue;
@@ -138,11 +107,9 @@ export function questionBodyIssue(body: Body): string | undefined {
 	return undefined;
 }
 
-/** Why a spec is refused by the checks that need no configuration, or undefined. */
 export function specIssue(spec: Spec): string | undefined {
 	const issue = spec.answer ? questionBodyIssue(spec.body) : messageBodyIssue(spec.body);
 	if (issue) return issue;
-	// A reply answers a text question in the chat: only a choice is answered in a view.
 	if (spec.answer?.type === 'text' && 'in' in spec.answer) return 'a text question is answered by a reply in the chat, and takes no in';
 	if (spec.answer?.type === 'choice') {
 		const { options } = spec.answer;
@@ -167,12 +134,10 @@ export function specIssue(spec: Spec): string | undefined {
 	return undefined;
 }
 
-/** True when `origin` is the origin of an https URL, such as `https://views.example.com`. */
 export function isOrigin(origin: string): boolean {
 	return URL.canParse(origin) && new URL(origin).protocol === 'https:' && new URL(origin).origin === origin;
 }
 
-/** Throws ShapeError when `spec` cannot be sent with this `ref` and view origin. */
 export function checkSpec(spec: Spec, at: { ref?: string | undefined; viewOrigin?: string | undefined }): void {
 	if (!storable(spec)) throw new ShapeError('the spec is not JSON');
 	const issue = specIssue(spec);
@@ -183,17 +148,14 @@ export function checkSpec(spec: Spec, at: { ref?: string | undefined; viewOrigin
 	if (at.viewOrigin !== undefined && !isOrigin(at.viewOrigin)) throw new ShapeError(`the view origin "${at.viewOrigin}" is not an https origin`);
 }
 
-/** Throws ShapeError when `body` cannot be a question's body or its resolved body. */
 export function checkQuestionBody(body: Body): void {
 	const issue = questionBodyIssue(body);
 	if (issue) throw new ShapeError(issue);
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// `word(s): value`: 1 to 4 words, a colon, a value.
 const FIELD = /^\s*(?:[-*]\s+)?[\p{L}\p{N}][\p{L}\p{N}'_-]*(?: [\p{L}\p{N}'_-]+){0,3}:\s+\S/u;
 
-/** The warnings of section 8 for a spec. None of them refuses a send without `strict`. */
 export function specWarnings(spec: Spec, labels: Labels): Warning[] {
 	const lines = plainLines(spec.body);
 	const warnings: Warning[] = [];

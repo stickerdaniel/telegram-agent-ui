@@ -1,12 +1,3 @@
-// `mcp init --client <client>`: writes the entry `npx telegram-agent-ui@latest mcp` into the
-// user config of one MCP client and installs nothing. The server holds no project state, and
-// the config of 5.1 is one per machine user, so the entry goes where the client reads servers
-// for every project. Each format below is the one the client documents or parses, as cited.
-// A JSON config is read, given the entry and written back whole through a temp file. Codex's
-// TOML keeps every byte outside the entry's own table, and the edit is written only when the
-// parsed result holds every other setting unchanged. A linked config is written at its real
-// path, and a link to a file that does not exist is refused. A config that cannot be edited so
-// is refused and left untouched. A second run changes nothing.
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
@@ -19,36 +10,25 @@ import { canonical, parsedJson, readText, type UserConfig as Config, writeKept, 
 export const MCP_CLIENTS = ['claude', 'cursor', 'vscode', 'codex', 'opencode'] as const;
 export type McpClient = (typeof MCP_CLIENTS)[number];
 
-/** The name of the server in every client config. */
 const NAME = 'telegram-agent-ui';
-/** The command every entry starts: the latest release, fetched by npx. */
 const COMMAND = ['npx', 'telegram-agent-ui@latest', 'mcp'] as const;
 const [command, ...args] = COMMAND;
 
-/** A JSON config with the entry in place, or why the file cannot take it. */
 type Placed = { kind: 'ok'; next: Config; entry: Json } | { kind: 'refused'; reason: string };
 
 type Target =
 	| { format: 'json'; path: string; place(config: Config): Placed; fresh?: Config }
 	| { format: 'toml'; path: string; text: string };
 
-/** `config` with `entry` under `config[key][NAME]`, or a refusal when `config[key]` is no object. */
 function placeUnder(config: Config, key: string, entry: Json): Placed {
 	const servers = config[key] ?? {};
 	if (!isRecord(servers)) return { kind: 'refused', reason: `its ${key} is no object` };
 	return { kind: 'ok', next: { ...config, [key]: { ...servers, [NAME]: entry } }, entry };
 }
 
-/**
- * OpenCode reads servers natively from `mcp.servers` and as the legacy `mcp.<name>`, and a
- * native entry wins over a legacy one of the same name. A config with native servers gets the
- * native entry and loses a legacy one of this name; any other config gets the legacy entry.
- * packages/core/src/config/normalize.ts and packages/schema/src/mcp.ts of sst/opencode at 7ca7b3f.
- */
 function placeOpencode(config: Config): Placed {
 	const mcp = config.mcp ?? {};
 	if (!isRecord(mcp)) return { kind: 'refused', reason: 'its mcp is no object' };
-	// A legacy server named "servers" carries its own `type`; native servers sit one level down.
 	const native = isRecord(mcp.servers) && typeof mcp.servers.type !== 'string' ? mcp.servers : undefined;
 	if (!native) return placeUnder(config, 'mcp', { type: 'local', command: [...COMMAND], enabled: true });
 	const entry: Json = { type: 'local', command: [...COMMAND] };
@@ -56,34 +36,23 @@ function placeOpencode(config: Config): Placed {
 	return { kind: 'ok', next: { ...config, mcp: { ...rest, servers: { ...native, [NAME]: entry } } }, entry };
 }
 
-/** Where `client` reads its user-wide MCP servers, and how its entry is placed. */
 export function mcpTarget(client: McpClient, env: Env): Target {
 	const home = env.HOME || homedir();
 	const xdg = env.XDG_CONFIG_HOME || join(home, '.config');
 	switch (client) {
 		case 'claude':
-			// User scope lives in ~/.claude.json under `mcpServers`, and an entry without `type` is stdio.
-			// CLAUDE_CONFIG_DIR moves the file. https://code.claude.com/docs/en/mcp (scopes) and
-			// https://code.claude.com/docs/en/claude-directory (CLAUDE_CONFIG_DIR).
 			return { format: 'json', path: join(env.CLAUDE_CONFIG_DIR || home, '.claude.json'), place: (config) => placeUnder(config, 'mcpServers', { type: 'stdio', command, args: [...args] }) };
 		case 'cursor':
-			// ~/.cursor/mcp.json, `mcpServers`, `type: "stdio"`. https://cursor.com/docs/context/mcp
 			return { format: 'json', path: join(home, '.cursor', 'mcp.json'), place: (config) => placeUnder(config, 'mcpServers', { type: 'stdio', command, args: [...args] }) };
 		case 'vscode':
-			// Copilot Global, the destination that replaces the deprecated profile mcp.json: $COPILOT_HOME/mcp-config.json,
-			// `mcpServers`, `type: "stdio"`, `tools: ["*"]` for every tool. https://code.visualstudio.com/docs/agents/reference/mcp-configuration
 			return {
 				format: 'json',
 				path: join(env.COPILOT_HOME || join(home, '.copilot'), 'mcp-config.json'),
 				place: (config) => placeUnder(config, 'mcpServers', { type: 'stdio', command, args: [...args], tools: ['*'] }),
 			};
 		case 'opencode':
-			// The global config ~/.config/opencode/opencode.json, `type: "local"` with the command as one array.
-			// https://opencode.ai/docs/mcp-servers
 			return { format: 'json', path: join(xdg, 'opencode', 'opencode.json'), place: placeOpencode, fresh: { $schema: 'https://opencode.ai/config.json' } };
 		case 'codex':
-			// $CODEX_HOME/config.toml, default ~/.codex, table `[mcp_servers.<name>]` with `command` and `args`.
-			// codex-rs/utils/home-dir/src/lib.rs, codex-rs/config/src/config_toml.rs and mcp_types.rs of openai/codex at 44de9d9.
 			return {
 				format: 'toml',
 				path: join(env.CODEX_HOME || join(home, '.codex'), 'config.toml'),
@@ -92,7 +61,6 @@ export function mcpTarget(client: McpClient, env: Env): Target {
 	}
 }
 
-/** A parsed Codex config without this server's entry: what an edit must keep. An `mcp_servers` left empty counts as absent. */
 function withoutEntry(config: Config): Config {
 	const { mcp_servers: servers, ...others } = config;
 	if (!isRecord(servers)) return config;
@@ -100,7 +68,6 @@ function withoutEntry(config: Config): Config {
 	return Object.keys(rest).length > 0 ? { ...others, mcp_servers: rest } : others;
 }
 
-/** The entry of this server in a parsed Codex config, when it runs the command this init writes. */
 function holdsEntry(config: Config): boolean {
 	const servers = config.mcp_servers;
 	const entry = isRecord(servers) ? servers[NAME] : undefined;
@@ -115,10 +82,8 @@ const parsedToml = (text: string): Config | undefined => {
 	}
 };
 
-// A header of this server's table: bare, double or single quoted, with an optional comment after it.
 const HEADER = new RegExp(`^\\s*\\[\\s*mcp_servers\\s*\\.\\s*(?:${NAME}|"${NAME}"|'${NAME}')\\s*\\](?:\\s*#.*)?$`);
 
-/** `text` with the lines from line `start` to the next header replaced by `block`. The blank lines before the next header stay. */
 function replaceTable(lines: readonly string[], start: number, block: string): string {
 	const next = lines.findIndex((line, index) => index > start && /^\s*\[/.test(line));
 	let end = next === -1 ? lines.length : next;
@@ -126,12 +91,6 @@ function replaceTable(lines: readonly string[], start: number, block: string): s
 	return [...lines.slice(0, start), ...block.trimEnd().split('\n'), ...lines.slice(end)].join('\n');
 }
 
-/**
- * The Codex config `text` with this server's entry, or undefined when no edit keeps every other
- * setting. A config without the entry gets it appended. An entry in its own table is replaced
- * in place; each line that looks like its header is tried, since one may sit inside a string.
- * Every candidate is parsed and compared with the original before it counts.
- */
 function withCodexEntry(text: string, block: string): string | undefined {
 	const before = parsedToml(text);
 	if (!before) return undefined;
@@ -148,13 +107,6 @@ function withCodexEntry(text: string, block: string): string | undefined {
 	});
 }
 
-/**
- * Writes the server entry of `client` into its user config and prints `{ client, path, entry,
- * changed }`. Refuses with `client-config`, and writes nothing, when the file cannot take the
- * entry with everything else in it kept.
- *
- *   await mcpInit('cursor', process.env); // ~/.cursor/mcp.json gets mcpServers["telegram-agent-ui"]
- */
 export async function mcpInit(client: McpClient, env: Env): Promise<Result> {
 	const target = mcpTarget(client, env);
 	const refuse = (reason: string, entry: string) => failed({ error: 'refused', code: 'client-config', message: `${target.path} ${reason}: nothing was written. Add the entry by hand: ${entry}` });

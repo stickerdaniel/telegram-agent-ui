@@ -1,6 +1,3 @@
-// The pure core: types, builders and the functions a consumer composes into its own loop, plus
-// `createChat`, which composes them over a transport and a store. It imports no Node API and
-// makes no request of its own.
 export { type Chat, type ChatIO, createChat, type Delivered, type SendOptions, type Waited } from './chat/create.ts';
 export { choice, type ChoiceExtras, type Extras, message, text, yesNo } from './core/builders.ts';
 export { classify } from './core/classify.ts';

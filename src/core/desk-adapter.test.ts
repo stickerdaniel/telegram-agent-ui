@@ -1,5 +1,3 @@
-// Drives `reduce` from real reply desk ledger records (src/desk-ledger.json, placeholder text)
-// through the adapter in src/desk-adapter.ts, and compares each tap with what the desk decided.
 import { describe, expect, test } from 'bun:test';
 import { type DeskRecord, deskEvents, deskOutcome, deskRecords, type Driven } from '../desk-adapter.ts';
 import { ORIGIN } from '../fixtures.ts';
@@ -8,7 +6,6 @@ import { reduce } from './reduce.ts';
 import { renderEdit } from './render.ts';
 import { type Handled, type Question, ShapeError } from './types.ts';
 
-/** The records of desk message `msg`: its send, edits, taps with the desk's decisions, and replies. */
 function lifecycle(msg: number): DeskRecord[] {
 	const messages = new Set(deskRecords.flatMap((record) => (record.type === 'msg_part_delivered' && record.msg === msg ? [record.messageId] : [])));
 	const taps = new Set(deskRecords.flatMap((record) => (record.type === 'update_received' && record.kind === 'callback_query' && messages.has(record.callback.messageId ?? 0) ? [record.updateId] : [])));
@@ -31,7 +28,6 @@ function lifecycle(msg: number): DeskRecord[] {
 
 const outcome = (handled: Handled | undefined) => (handled?.kind === 'stale' ? handled.reason : handled?.kind);
 
-/** Runs every event of a ledger through `reduce`, checking each stored state with `parseQuestion`. */
 function drive(ledger: DeskRecord[]) {
 	const questions = new Map<string, Question>();
 	const steps = deskEvents(ledger).map((driven: Driven) => {
@@ -58,11 +54,9 @@ describe('the desk lifecycle through reduce', () => {
 		const ledger = lifecycle(1382);
 		const { questions, steps, taps } = drive(ledger);
 		expect(steps.map((step) => step.event.type)).toEqual(['ask', 'sent', 'input', 'close', 'input', 'close', 'close']);
-		// The tap: the desk answered it, and so does reduce, with the desk's toast.
 		expect(taps.map((step) => [outcome(step.handled), deskOutcome(ledger, updateOf(step.record))])).toEqual([['answered', 'answered']]);
 		const decided = ledger.find((record) => record.type === 'callback_decided');
 		expect(taps[0]?.calls).toEqual([{ method: 'answerCallbackQuery', payload: { callback_query_id: '4333899945803487409', text: decided?.type === 'callback_decided' ? decided.toast : '' } }]);
-		// The reply to a choice question went to the desk's chat thread: here it is ignored, for onMessage.
 		expect(outcome(steps[4]?.handled)).toBe('ignored');
 		const question = only(questions);
 		expect(question).toMatchObject({
@@ -73,7 +67,6 @@ describe('the desk lifecycle through reduce', () => {
 			resolved: { html: '<b>Decision 3 on question 1382. State: placeholder.</b>' },
 			viewOrigin: ORIGIN,
 		});
-		// Resolved: no answer buttons, the view row stays, as the desk keeps its view button through `msg resolve`.
 		expect(renderEdit(question).payload.reply_markup).toEqual({ inline_keyboard: [[{ text: 'Open view', web_app: { url: `${ORIGIN}/?v=UIDbZdFHAVxhNRS_1nBn9w&q=eqbe` } }]] });
 	});
 
@@ -82,7 +75,6 @@ describe('the desk lifecycle through reduce', () => {
 		const firstTap = ledger.findIndex((record) => record.type === 'update_received' && record.kind === 'callback_query');
 		const tapRecord = ledger[firstTap];
 		if (tapRecord?.type !== 'update_received' || tapRecord.kind !== 'callback_query') throw new Error('no tap');
-		// The desk's `choose` in listen.ts: another button is a correction with `corrects`, the same button again is refused.
 		const again = (updateId: number, id: string): DeskRecord => ({ ...tapRecord, updateId, callback: { ...tapRecord.callback, id, data: 'c:eqbe:1' } });
 		const corrected: DeskRecord[] = [
 			again(221266600, 'corr-1'),
@@ -97,14 +89,12 @@ describe('the desk lifecycle through reduce', () => {
 			['answered', 'answered'],
 			['repeat', 'repeat'],
 		]);
-		// The desk's `corrects` is the label of reduce's `previous`.
 		expect(taps[1]?.handled).toMatchObject({ kind: 'answered', seq: 2, answer: { label: 'B: Line with plus' }, previous: { label: 'A: Gap opens' } });
 	});
 
 	test('repeated taps on another button (desk msg 1453): the desk of 2026-11-16 refused the correction, reduce takes it', () => {
 		const ledger = lifecycle(1453);
 		const { questions, taps } = drive(ledger);
-		// The desk listener of that day kept the first tap; its resolve later recorded the 3 taps on A3 as Daniel's real choice.
 		expect(taps.map((step) => deskOutcome(ledger, updateOf(step.record)))).toEqual(['answered', 'repeat', 'repeat', 'repeat']);
 		expect(taps.map((step) => outcome(step.handled))).toEqual(['answered', 'answered', 'repeat', 'repeat']);
 		expect(only(questions)).toMatchObject({ status: 'closed', seq: 2, answer: { index: 0, label: 'A3 for runs without context' }, previous: { index: 2, label: 'Change nothing' }, resolved: { html: 'Decision 4 on question 1453. State: placeholder.' } });
@@ -126,7 +116,6 @@ describe('the desk lifecycle through reduce', () => {
 	test('an edited reply, and replays after a move of the bot (desk msg 1328)', () => {
 		const { questions, steps } = drive(lifecycle(1328));
 		const inputs = steps.filter((step) => step.event.type === 'input');
-		// 2415 answers; its edit is no input of the package; the same 2 updates came again under new update ids after the move to the cloud Bot API.
 		expect(inputs.map((step) => [updateOf(step.record), outcome(step.handled)])).toEqual([
 			[275634110, 'answered'],
 			[275634111, 'ignored'],

@@ -15,7 +15,6 @@ const blocksOpen = states(text({ blocks: [{ type: 'paragraph', text: 'Why?' }] }
 const inViewSpec = choice({ markdown: 'Which tab?' }, [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }, { label: 'C', tab: 'C' }], { view: VIEW, in: 'view' });
 const inViewOpen = states(inViewSpec).open;
 
-/** A stored question with some fields replaced, as JSON. A field set to undefined is removed. */
 const stored = (question: Question, change: Record<string, unknown>): unknown =>
 	Object.fromEntries(Object.entries({ ...structuredClone(question), ...change }).filter(([, value]) => value !== undefined));
 
@@ -29,7 +28,6 @@ describe('parseQuestion', () => {
 		expect(parseQuestion(stored(open, { extra: 1 }))).toEqual(open);
 	});
 
-	// One fixture per rule of 4.2, each a valid question with one rule broken.
 	const fixtures: [string, unknown][] = [
 		['not a question at all', 'q'],
 		['another version', stored(open, { v: 2 })],
@@ -122,11 +120,9 @@ describe('every state reduce produces passes parseQuestion', () => {
 		choice({ html: '<b>Which?</b>' }, [{ label: 'A' }, { label: 'B' }]),
 		inViewSpec,
 	];
-	/** `usual` 4 times in 5, else `rare`: most inputs fit, so that answers and corrections happen. */
 	const mostly = <T>(usual: T, rare: T) => fc.oneof({ arbitrary: fc.constant(usual), weight: 4 }, { arbitrary: fc.constant(rare), weight: 1 });
 	const message = mostly(MESSAGE, MESSAGE + 1);
 	const user = mostly(USER, 999);
-	// `valid: false` marks an event that breaks the stored types: reduce must throw ShapeError for it.
 	type Made = { event: QuestionEvent; valid: boolean; now?: number };
 	type Make = (question: Question, ask: QuestionEvent) => Made;
 	const ok = (event: QuestionEvent): Made => ({ event, valid: true });
@@ -155,9 +151,7 @@ describe('every state reduce produces passes parseQuestion', () => {
 			arbitrary: fc.record({ back: fc.nat(1), error: fc.option(fc.constant('exit 1'), { nil: undefined }) }).map(({ back, error }): Make => (question) => ok({ type: 'delivered', seq: Math.max(0, question.seq - back), ...(error ? { error } : {}) })),
 			weight: 2,
 		},
-		// The same ask again, as a caller that repeats a send does.
 		{ arbitrary: fc.constant((_: Question, ask: QuestionEvent): Made => ok(ask)), weight: 1 },
-		// Values at the boundary that the types let through and a question may not store.
 		{
 			arbitrary: fc
 				.constantFrom<Make>(
@@ -207,7 +201,6 @@ describe('every state reduce produces passes parseQuestion', () => {
 						const next: Question | undefined = reduce(question, made.event, { now: at, labels }).question;
 						if (!next) throw new Error('reduce lost the question');
 						question = next;
-						// What a store holds: the JSON text. It reads back equal, and it parses to the same question.
 						const json: unknown = JSON.parse(JSON.stringify(question));
 						expect(json).toStrictEqual(question);
 						expect(parseQuestion(json)).toStrictEqual(question);
@@ -216,7 +209,5 @@ describe('every state reduce produces passes parseQuestion', () => {
 			),
 			{ numRuns: 300 },
 		);
-		// About 0.05 s on an idle machine (2026-11-18). A loaded review machine ran 1,000 runs in
-		// 140 s, so 300 runs and this limit leave room for one 1,000 times slower than idle.
 	}, 120_000);
 });

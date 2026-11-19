@@ -133,7 +133,6 @@ describe('the shape checks of section 8', () => {
 		['a caption of 1,025 characters', message({ markdown: 'Files.' }, { attach: [{ path: '/p/a.png', caption: 'x'.repeat(1_025) }] })],
 		['a tab without a view', choice({ markdown: 'Which?' }, [{ label: 'A', tab: 'A' }, { label: 'B' }])],
 		['an answer in the view without a view', choice({ markdown: 'Which?' }, [{ label: 'A' }, { label: 'B' }], { in: 'view' })],
-		// The types refuse both; a caller in plain JavaScript reaches the check.
 		['a text question answered in the view', { body: { markdown: 'Why?' }, view: VIEW, answer: { type: 'text', in: 'view' } } as unknown as Spec, { ...at, viewOrigin: ORIGIN }],
 		['a yes or no question answered in the view', yesNo({ markdown: 'Ship it?' }, { view: VIEW, in: 'view' }), { ...at, viewOrigin: ORIGIN }],
 		['an answer in the view with an option that names no tab', choice({ markdown: 'Which?' }, [{ label: 'A', tab: 'A' }, { label: 'B' }], { view: VIEW, in: 'view' }), { ...at, viewOrigin: ORIGIN }],
@@ -158,7 +157,6 @@ describe('the shape checks of section 8', () => {
 		expect(() => render(choice({ markdown: `${'x'.repeat(3_499)}?` }, [{ label: 'x'.repeat(46) }, ...Array.from({ length: 7 }, (_, n) => ({ label: `O${n}` }))]), at)).not.toThrow();
 		expect(() => render(message({ markdown: 'Files.' }, { attach: Array.from({ length: 10 }, (_, n) => ({ path: `/p/${n}.png`, caption: 'x'.repeat(1_024) })) }), at)).not.toThrow();
 		expect(() => render(text({ markdown: '```\ncode\n```\n\nOK?' }), at)).not.toThrow();
-		// A plain message may close a details block of its own.
 		expect(() => render(message({ markdown: '<details><summary>a</summary>b</details>' }), at)).not.toThrow();
 	});
 });
@@ -215,7 +213,6 @@ describe('every edit body can go out', () => {
 		const shown = renderEdit(closed).payload.rich_message as Body;
 		expect(shown).toEqual({ blocks: [{ type: 'paragraph', text: 'Done' }] });
 		expect(() => render(message(shown), { chat: CHAT })).not.toThrow();
-		// Expiry follows the same rule.
 		const expiring = asked(text({ blocks: many }), { expiresAt: NOW + 1 });
 		const expired = step(step(expiring, { type: 'sent', sent: sentFor(expiring) }), { type: 'delivered', seq: 0 }, NOW + 1);
 		expect(renderEdit(expired).payload.rich_message).toEqual({ blocks: [{ type: 'paragraph', text: defaultLabels.expired }] });

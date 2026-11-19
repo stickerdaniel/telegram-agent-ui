@@ -1,15 +1,9 @@
-// The CLI's argument parser, read from a command's params: flags in kebab case (`--dry-run`),
-// short aliases (`-o`), switches that set a value (`--yes-no`), repeated flags for a list, flags
-// that take a pair of arguments (`--tab <label> <file>`) or a first argument and several seconds
-// (`--tab <label> <file>...`), and positional arguments. A positional `file` parameter names a
-// path, or `-` for stdin, which the caller reads.
 import { describeType, kebab, labelOf, type Param } from '../commands/params.ts';
 
 export type Parsed = { ok: true; raw: Record<string, unknown>; files: Map<string, string> } | { ok: false; message: string };
 
 const flagOf = (param: Param) => `--${param.cli?.flag ?? kebab(param.name)}`;
 
-/** One argument as the type of `param`, or why it is none. */
 function convert(param: Param, text: string): { ok: true; value: unknown } | { ok: false; message: string } {
 	const { type } = param;
 	if (typeof type !== 'string') return type.includes(text) ? { ok: true, value: text } : { ok: false, message: `${flagOf(param)} needs ${describeType(param)}` };
@@ -27,14 +21,6 @@ function convert(param: Param, text: string): { ok: true; value: unknown } | { o
 	return { ok: true, value: text };
 }
 
-/**
- * The input `args` gives the command of `params`, as JSON for its `invoke`, and the paths of
- * its file parameters. Positional arguments fill the required parameters, and the optional ones
- * from the left as far as the arguments reach.
- *
- *   parseArgs(params, ['-o', 'Merge', '-o', 'Wait', 'question.md']);
- *   // { ok: true, raw: { options: ['Merge', 'Wait'] }, files: Map { 'body' => 'question.md' } }
- */
 export function parseArgs(params: readonly Param[], args: readonly string[]): Parsed {
 	const flags = new Map<string, Param>();
 	const switches = new Map<string, { param: Param; value: string }>();
@@ -95,7 +81,6 @@ export function parseArgs(params: readonly Param[], args: readonly string[]): Pa
 			index += 2;
 			const issue = set(param, { [pair[0]]: first, [pair[1]]: second });
 			if (issue) return { ok: false, message: issue };
-			// `--tab <label> <file>...`: each further argument up to the next flag is one more value.
 			for (let next = args[index + 1]; param.cli?.more && next !== undefined && !next.startsWith('-'); next = args[index + 1]) {
 				index++;
 				const again = set(param, { [pair[0]]: first, [pair[1]]: next });

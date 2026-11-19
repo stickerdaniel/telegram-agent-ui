@@ -1,6 +1,3 @@
-// The command table of section 5. Each entry has a name, a description, its input schema, the
-// MCP tool that serves it, and a handler over `createChat`. The CLI parser reads the schema
-// to parse arguments, and a handler gets its input typed after `inputIssue` checked it.
 import { isAbsolute, join, resolve } from 'node:path';
 import { within } from '../chat/calls.ts';
 import { deliveryKey } from '../chat/create.ts';
@@ -33,24 +30,15 @@ import { done, Failed, type Failure, failed, failureOf, fromOutcome, type Result
 import { type Context, openSession, type Session } from './session.ts';
 import { runShell } from './shell.ts';
 
-/** One command of the table. `invoke` checks `raw` against `params` and runs the handler. */
 export type Command = {
-	/** One word, or two for a group such as `view put`. */
 	name: string;
 	description: string;
-	/** The MCP tool that serves this command; a command without one has no tool. */
 	tool?: string;
 	params: readonly Param[];
-	/** Runs the command on an input as JSON. A thrown error becomes its failure, so it always resolves. */
 	invoke(raw: unknown, context: Context): Promise<Result>;
-	/**
-	 * What the CLI prints with exit 0 in place of any failure of this command, a usage error
-	 * included: a harness that reads the output then never reads a failure as a decision.
-	 */
 	failClosed?: (failure: Failure) => Record<string, unknown>;
 };
 
-/** A command whose handler receives the input typed by its own params. */
 function command<const Ps extends readonly Param[]>(spec: {
 	name: string;
 	description: string;
@@ -117,42 +105,31 @@ const STRICT = { name: 'strict', type: 'boolean', description: 'Turns every warn
 const DRY_RUN = { name: 'dryRun', type: 'boolean', description: 'Prints what would be sent and the roots files would come from, and sends nothing.' } as const;
 
 const DAY = 86_400_000;
-/** How long `info` waits for getMe to tell topic mode. */
 const TOPIC_MODE_WAIT = 5_000;
 
-/** Writes each warning as a line of progress. */
 const report = (context: Context, warnings: Warning[]) => {
 	for (const warning of warnings) context.log(`warning ${warning.code}: ${warning.message}`);
 };
 
-/** The client of the view host, or a thrown `no-view-host`: `view deploy` records the origin and writes the upload key. */
 function viewsOf(session: Session): ViewClient {
 	if (session.views) return session.views;
 	if (session.config.views.origin === undefined) throw new Failed({ error: 'no-view-host', message: 'no view host is deployed: a message cannot open a view yet. A person runs telegram-agent-ui view deploy' });
 	throw new Failed({ error: 'no-view-host', message: `the upload key ${KEY_NAMES.upload} of the view host is missing: a person runs telegram-agent-ui view deploy` });
 }
 
-/** Refuses `--view` without a deployed view host. */
 function viewHost(session: Session, view: string | undefined): { view?: string } {
 	if (view === undefined) return {};
 	viewsOf(session);
 	return { view };
 }
 
-/** The tab labels of a view, or none when the host has no such view or gives no answer. */
 async function tabsOf(views: ViewClient, view: string): Promise<string[]> {
 	const found = await views.has(view).catch(() => undefined);
 	return found?.kind === 'present' ? found.tabs : [];
 }
 
-/** The labels of a stored question's options that `ask` bound to the tab of the same label. */
 const boundTabs = (question: Question): string[] => (question.spec.answer.type === 'choice' ? question.spec.answer.options.flatMap((option) => (option.tab === option.label ? [option.label] : [])) : []);
 
-/**
- * The questions answered in view `id` that are not closed, each with the tabs it binds and its
- * `expiresAt`. A replacement that drops one of those tabs, or expires before that time, leaves
- * the question without a way to be answered while it is open.
- */
 async function openBindings(store: Session['store'], id: string): Promise<{ ref: string; tabs: string[]; expiresAt?: number }[]> {
 	const found: { ref: string; tabs: string[]; expiresAt?: number }[] = [];
 	for (const key of await store.list('q:')) {
@@ -164,13 +141,8 @@ async function openBindings(store: Session['store'], id: string): Promise<{ ref:
 	return found;
 }
 
-/**
- * The refusal of a hook question's ref. Only the hook that asked the question reads its answer
- * and changes it, so the agent it gates cannot edit what the human approves.
- */
 const hookRefused = (ref: string) => failed({ error: 'refused', code: 'shape', message: `the ref ${ref} belongs to a permission hook, which alone reads and changes its question` });
 
-/** True when message `at` is the message of a stored hook question, found by its `sent`, whatever the reply index holds. */
 async function isHookMessage(store: Session['store'], at: { chat: number; message: number }): Promise<boolean> {
 	for (const key of await store.list(`q:${HOOK_REF_PREFIX}`)) {
 		const question = parseQuestion(await store.get(key));
@@ -180,23 +152,14 @@ async function isHookMessage(store: Session['store'], at: { chat: number; messag
 	return false;
 }
 
-/** An option of `ask` as the input names it: a label, or a label with the tab it binds. */
 type OptionInput = string | { label: string; tab?: string };
 const isOptionInput = (value: unknown): value is OptionInput =>
 	isString(value) || (isRecord(value) && Object.keys(value).every((key) => key === 'label' || key === 'tab') && isString(value.label) && optional(isString)(value.tab));
 
-/** A tab entry of `view put`: the label and the file as the input names them, and the caption of a gallery picture. */
 type TabEntry = { label: string; file: string; caption?: string };
 const isTab = (value: unknown): value is TabEntry =>
 	isRecord(value) && isString(value.label) && isString(value.file) && optional(isString)(value.caption) && Object.keys(value).every((key) => key === 'label' || key === 'file' || key === 'caption');
 
-/**
- * The tabs of `view put` from its entries, in the order of each label's first entry. A media
- * file, by its ending, is one picture of the gallery of its label; any other file is a tab of
- * its own, whose kind `prepareView` reads from its ending. A path resolves against the CLI's
- * working directory. A failure: a relative path without one, or a caption on a file that is no
- * picture. A label of a gallery and of another tab is refused by `prepareView` as used twice.
- */
 function tabInputs(entries: readonly TabEntry[], context: Context): { ok: true; tabs: TabInput[] } | { ok: false; failure: Failure } {
 	const tabs: TabInput[] = [];
 	const galleries = new Map<string, { path: string; caption?: string }[]>();
@@ -219,11 +182,6 @@ function tabInputs(entries: readonly TabEntry[], context: Context): { ok: true; 
 	return { ok: true, tabs };
 }
 
-/**
- * The attachments of `--file`, each resolved against the CLI's working directory. A relative
- * path without one, as from an MCP client, is a usage failure: it would resolve against the
- * server's own directory. `createChat` opens each through the roots before the body is sent.
- */
 function attachOf(paths: readonly string[] | undefined, context: Context): { attach?: Attachment[] } {
 	if (paths === undefined) return {};
 	return {
@@ -234,7 +192,6 @@ function attachOf(paths: readonly string[] | undefined, context: Context): { att
 	};
 }
 
-/** What a dry run prints: the calls it would make, the roots files would come from and the files it would upload. */
 const dry = (outcome: Extract<Outcome, { kind: 'dry' }>, session: Session) => ({
 	dryRun: true,
 	steps: outcome.steps,
@@ -243,11 +200,6 @@ const dry = (outcome: Extract<Outcome, { kind: 'dry' }>, session: Session) => ({
 	files: outcome.steps.flatMap((step) => (step.call.files ?? []).map((file) => file.path)),
 });
 
-/**
- * `push` when the listener runs an answer command and the meta of the stored question, which
- * the answer carries, holds every key it declared as its own property, else `wait`. A held ref
- * keeps the meta of its first ask, so the meta of a repeated ask decides nothing.
- */
 async function nextOf(session: Session, ref: string | undefined): Promise<'push' | 'wait'> {
 	const value = await session.store.get(LISTENER_KEY);
 	const record = parseListener(value);
@@ -271,7 +223,6 @@ const info = command({
 		const questions: Question[] = [];
 		for (const key of await store.list('q:')) {
 			const question = parseQuestion(await store.get(key));
-			// A hook question belongs to its hook alone.
 			if (question && !isHookRef(question.ref)) questions.push(question);
 		}
 		const messages: StoredMessage[] = [];
@@ -285,7 +236,6 @@ const info = command({
 			if (stored) receipts.push(stored);
 		}
 		const cursor = parseCursor(await store.get(CURSOR_KEY));
-		// Topic mode comes from getMe alone; a server without an answer leaves it unknown.
 		const topics = await within(
 			topicMode(session.call).catch(() => undefined),
 			TOPIC_MODE_WAIT,
@@ -293,7 +243,6 @@ const info = command({
 		);
 		const localFiles = context.env.TELEGRAM_AGENT_UI_FAKE ? undefined : context.env.TELEGRAM_AGENT_UI_LOCAL_FILES || config.localFiles;
 		const refs = (keep: (question: Question) => boolean) => questions.filter(keep).map((question) => question.ref);
-		// The baselines the delivery workers count from: only the attempts after them count.
 		const answerBase = (question: Question) => record?.renewed?.answers[deliveryKey(question)];
 		const messageBase = (stored: StoredMessage) => record?.renewed?.messages[storedKey(stored)];
 		const apiUrl = context.env.TELEGRAM_AGENT_UI_FAKE ? undefined : apiUrlOf(context.env, config);
@@ -311,7 +260,6 @@ const info = command({
 			questions: {
 				open: refs((question) => question.status === 'open' || question.status === 'answered'),
 				sending: refs((question) => question.status === 'sending'),
-				// No message is known: a tap on its buttons reveals it, and a text question stays here until it is closed.
 				unconfirmed: refs((question) => !('sent' in question && question.sent)),
 				undelivered: questions
 					.filter((question) => question.delivery.seq < question.seq && spent(question.delivery.attempts, answerBase(question)))
@@ -324,8 +272,6 @@ const info = command({
 					.filter((stored) => spent(stored.attempts, messageBase(stored)))
 					.map((stored) => ({ chat: stored.chat, message: stored.message.message, update: stored.update, attempts: attemptsSince(stored.attempts, messageBase(stored)), ...(stored.error !== undefined ? { error: stored.error } : {}) })),
 			},
-			// The updates for an update command: those the gate refused, and the receipts still owed.
-			// A receipt with 5 failed deliveries is listed; the listener retries it all the same.
 			updates: {
 				refused: cursor?.refused ?? 0,
 				pending: receipts.length,
@@ -420,11 +366,6 @@ const ask = command({
 		const session = await openSession(context);
 		const body = { markdown: input.body };
 		const extras = { ...attach, ...viewHost(session, input.view), ...(input.once ? { once: true } : {}) };
-		// An option named like a tab of the view opens that tab once picked. A held ref keeps the tabs
-		// its first ask bound, so an identical retry equals the stored spec whatever the view holds
-		// now. Only a new question reads the view's tabs; a dry run makes no request, so it reads none.
-		// A question answered in the view binds every option to the tab of its label, and the send
-		// checks those tabs on the view host. An option given with its own tab keeps that tab.
 		const held = input.ref !== undefined ? await session.chat.get(input.ref) : undefined;
 		const labels = kind === 'yesNo' ? mergeLabels(session.config.labels) : undefined;
 		const entries: Option[] = labels
@@ -535,7 +476,6 @@ const listenCommand = command({
 	},
 });
 
-/** The file a fake session reads nothing from: fake mode has no Bot API server. */
 const NO_DOWNLOAD: FileSource = {
 	download: () => Promise.reject(new Error('fake mode downloads no file')),
 };
@@ -558,7 +498,6 @@ const fetchCommand = command({
 	},
 });
 
-/** A topic call that did nothing, as a failure: a rejected token is a config to fix, a lost answer is uncertain. */
 function topicFailure(result: TopicRefused | TopicUncertain, uncertain: string): Result {
 	if (result.kind === 'uncertain') return failed({ error: 'uncertain', message: `${result.reason}: ${uncertain}` });
 	if (result.code === 'token') return failed({ error: 'no-config', message: `${result.reason}. Run init with a new token` });
@@ -602,7 +541,6 @@ const topicIcon = command({
 	},
 });
 
-/** Warns for each tab label of the earlier view `id` that `labels` lacks: a sent button that names it opens the first tab. */
 async function warnReplaced(views: ViewClient, id: string, labels: readonly string[], context: Context): Promise<void> {
 	const earlier = await views.has(id).catch(() => undefined);
 	if (!earlier) return context.log(`warning replace: the view host gave no answer about the view ${id}, so its tab labels went unchecked`);
@@ -633,9 +571,6 @@ const viewPut = command({
 		if (input.replace !== undefined && !VIEW_ID.test(input.replace)) return failed({ error: 'usage', message: `the view id "${input.replace}" is not 22 base64url characters` });
 		const session = await openSession(context);
 		if (input.replace !== undefined) {
-			// The store holds the questions answered in this view: a tab one of them binds stays, and
-			// the view lives at least as long as each of them. The put takes its expiry a moment
-			// later than this one, so a check that passes here holds for it too.
 			const labels = new Set(read.tabs.map((tab) => tab.label));
 			const bound = await openBindings(session.store, input.replace);
 			const dropped = bound.flatMap(({ ref, tabs }) => tabs.filter((tab) => !labels.has(tab)).map((tab) => `"${tab}" of question ${ref}`));
@@ -648,7 +583,6 @@ const viewPut = command({
 				return failed({ error: 'refused', code: 'shape', message: `the view ${input.replace} would expire before the open questions ${outlived.join(', ')} answered in it: give it a longer --ttl, or close those questions first` });
 			}
 		}
-		// A dry run makes no request and needs no view host.
 		const views = input.dryRun ? undefined : viewsOf(session);
 		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: read.tabs }, { roots: session.roots });
 		if (ready.kind === 'refused') return failed({ error: 'refused', code: ready.code, message: ready.reason });
@@ -723,7 +657,6 @@ const hookInitCommand = command({
 	run: (input, context) => hookInit(input.client, context),
 });
 
-/** The commands of this stage, in the order of section 5. */
 export const commands: readonly Command[] = [
 	command({ name: 'init', description: 'Pairs a bot with your private chat and writes the config.', params: [], run: (_input, context) => init(context) }),
 	info,
@@ -746,7 +679,6 @@ export const commands: readonly Command[] = [
 	mcpInitCommand,
 ];
 
-/** The command `args` names, one word or two, with the arguments after its name. */
 export function findCommand(args: readonly string[]): { command: Command; rest: string[] } | undefined {
 	for (const words of [2, 1]) {
 		const name = args.slice(0, words).join(' ');

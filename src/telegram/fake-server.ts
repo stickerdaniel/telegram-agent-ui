@@ -1,14 +1,3 @@
-// A Bot API server over HTTP for tests, not part of the package. It keeps what each message
-// shows, long-polls getUpdates, confirms updates below an offset, ends an older poll with 409
-// when a newer one arrives, refuses getUpdates with 409 while a webhook is set, answers 401 to a
-// revoked token, and answers a call from a script, such as 429 with `retry_after`. The messages
-// and updates follow facts/records/: a bot 222, a private chat 111 with user 111, the replied-to
-// message inside a reply with its keyboard, as Telegram for iOS sends it, a file message with
-// its photo, video or document, its caption and the message it replies to, one message per file
-// of an album with one `media_group_id`, and record 08's refusal of a caption over 1,024
-// characters. getFile answers for the files `file` registers, and `/file/bot<token>/<path>`
-// serves them, records each download as the method `download`, and can redirect, hide the size
-// or cut a transfer off. getMe reports topic mode while `setTopics(true)` holds.
 import captionRefused from '../../facts/records/08-caption-1025.json';
 import { isRecord } from '../core/check.ts';
 import { NOT_MODIFIED } from '../core/classify.ts';
@@ -19,16 +8,12 @@ const PERSON = { id: 111, is_bot: false, first_name: 'Dana' };
 const DATE = 1794908513;
 const CONFLICT = 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running';
 const WEBHOOK_CONFLICT = "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first";
-// The file methods and the kind of file each sends.
 const FILE_SENDS: Record<string, 'photo' | 'video' | 'document'> = { sendPhoto: 'photo', sendVideo: 'video', sendDocument: 'document' };
 const CAPTION_LIMIT = 1_024;
 
-/** One call as the server received it. `at` is the time it arrived, `files` the uploaded parts. */
 export type Received = { method: string; payload: Record<string, unknown>; files: { field: string; name: string; type: string; bytes: Uint8Array }[]; at: number };
-/** A scripted answer: a refusal with its HTTP status and description, and `retryAfter` in seconds for a 429. */
 export type Scripted = { status: number; description?: string; retryAfter?: number };
 type Message = Record<string, unknown> & { message_id: number; chat: { id: number; type: string; first_name: string } };
-/** An update as the server sends it: JSON with its id. */
 export type FakeUpdate = Record<string, unknown> & { update_id: number };
 
 const json = (status: number, body: unknown) => Response.json(body, { status });
@@ -44,10 +29,8 @@ const parsed = (value: string): unknown => {
 };
 
 type Upload = Received['files'][number];
-/** One file a files call sends: its kind, its caption and its uploaded part. */
 type Item = { kind: string; caption: unknown; file: Upload | undefined };
 
-/** The files a call of `method` sends, in order: the items of an album's `media`, else the one file of its field. */
 function itemsOf(method: string, payload: Record<string, unknown>, files: Upload[]): Item[] {
 	const single = FILE_SENDS[method];
 	if (single) return [{ kind: single, caption: payload.caption, file: files.find((file) => file.field === single) }];
@@ -59,7 +42,6 @@ function itemsOf(method: string, payload: Record<string, unknown>, files: Upload
 	});
 }
 
-/** The content of a file message as records 06 and 07 show it: a photo as its sizes, a video or a document with its name. */
 function contentOf(item: Item, id: string): Record<string, unknown> {
 	const size = item.file?.bytes.length ?? 0;
 	const named = { file_id: id, file_unique_id: id, file_name: item.file?.name ?? '', mime_type: item.file?.type ?? '', file_size: size };
@@ -68,7 +50,6 @@ function contentOf(item: Item, id: string): Record<string, unknown> {
 	return { document: named };
 }
 
-/** The request's fields and files: JSON, or multipart with each field's JSON read back. */
 async function read(request: Request): Promise<Pick<Received, 'payload' | 'files'>> {
 	const type = request.headers.get('content-type') ?? '';
 	if (type.startsWith('multipart/form-data')) {
@@ -85,14 +66,6 @@ async function read(request: Request): Promise<Pick<Received, 'payload' | 'files
 	return { payload: isRecord(body) ? body : {}, files: [] };
 }
 
-/**
- * Starts the server on a free local port. `url` is the root to give a transport as its apiUrl.
- * `stop()` ends it and every open poll.
- *
- *   const server = fakeBotApi();
- *   const call = fetchCall({ token: TOKEN, apiUrl: server.url });
- *   server.tap(1001, 0); // the next getUpdates returns a tap on button 0 of message 1001
- */
 export function fakeBotApi() {
 	const messages = new Map<number, Message>();
 	const queue: FakeUpdate[] = [];
@@ -106,7 +79,6 @@ export function fakeBotApi() {
 	let webhook = '';
 	let revoked = false;
 	let topics = false;
-	/** The files getFile knows, by file id: the path it names, the bytes the download serves, and how a download ends. */
 	const served = new Map<string, { unique: string; path: string; bytes: Uint8Array; size?: number; end?: 'redirect' | 'cut' | 'unsized' }>();
 	const ICONS = [
 		{ custom_emoji_id: '5312536423851630001', emoji: '💡' },
@@ -122,11 +94,6 @@ export function fakeBotApi() {
 		return stored;
 	}
 
-	/**
-	 * A files call: one message per file, each replying to the message `reply_parameters` names
-	 * when it exists, an album's under one `media_group_id`. A caption over 1,024 characters
-	 * refuses the whole call, as record 08 shows.
-	 */
 	function sendFiles(method: string, payload: Record<string, unknown>, files: Upload[]): Response {
 		const items = itemsOf(method, payload, files);
 		if (items.some((item) => typeof item.caption === 'string' && item.caption.length > CAPTION_LIMIT)) return refusal(captionRefused.status, captionRefused.body.description);
@@ -143,7 +110,6 @@ export function fakeBotApi() {
 		return ok(method === 'sendMediaGroup' ? sent : sent[0]);
 	}
 
-	/** Answers the open poll with every queued update. */
 	function deliver(): void {
 		if (!poll || queue.length === 0) return;
 		const open = poll;
@@ -155,7 +121,6 @@ export function fakeBotApi() {
 	function getUpdates(payload: Record<string, unknown>): Response | Promise<Response> {
 		if (webhook !== '') return refusal(409, WEBHOOK_CONFLICT);
 		if (poll) {
-			// Telegram gives the updates to the newest poll and ends the older one.
 			clearTimeout(poll.timer);
 			poll.respond(refusal(409, CONFLICT));
 			poll = undefined;
@@ -208,7 +173,6 @@ export function fakeBotApi() {
 		}
 	}
 
-	/** A download: the file of `path`, a redirect to another route, the file as a stream without its size, or the first half of it and a cut connection. */
 	async function serveFile(token: string, path: string): Promise<Response> {
 		received.push({ method: 'download', payload: { path }, files: [], at: Date.now() });
 		await stalls.get('download');
@@ -217,9 +181,6 @@ export function fakeBotApi() {
 		if (!file) return json(404, { ok: false, error_code: 404, description: 'Not Found' });
 		if (file.end === 'redirect') return new Response(null, { status: 302, headers: { location: `${url}/file/bot${TOKEN}/elsewhere` } });
 		if (file.end === 'unsized') {
-			// A stream whose second part comes later goes out chunked: no Content-Length names its
-			// size, which shows only as the bytes arrive. Bun gives a stream it can read at once,
-			// such as a Blob's, the header.
 			const parts = [file.bytes.slice(0, 8), file.bytes.slice(8)];
 			const body = new ReadableStream<Uint8Array>({
 				async pull(controller) {
@@ -245,7 +206,6 @@ export function fakeBotApi() {
 	const server = Bun.serve({
 		port: 0,
 		hostname: '127.0.0.1',
-		// A long poll holds its request for up to 50 s.
 		idleTimeout: 0,
 		async fetch(request) {
 			const download = /^\/file\/bot([^/]+)\/(.+)$/.exec(new URL(request.url).pathname);
@@ -263,7 +223,6 @@ export function fakeBotApi() {
 		},
 	});
 
-	/** Queues an update and answers the open poll with it. `id` sets its update id, as Telegram's restart of ids after a week does. */
 	function push(update: Record<string, unknown>, id?: number): FakeUpdate {
 		const full: FakeUpdate = { ...update, update_id: id ?? nextUpdate++ };
 		queue.push(full);
@@ -274,25 +233,16 @@ export function fakeBotApi() {
 	const url = `http://127.0.0.1:${server.port}`;
 	return {
 		url,
-		/**
-		 * Registers a file for getFile and its download. `path` is what getFile names: relative for the
-		 * cloud, absolute for a local server. `size` is the file_size getFile names, the length of
-		 * `bytes` by default.
-		 */
 		file(id: string, options: { unique: string; path: string; bytes: Uint8Array; size?: number; end?: 'redirect' | 'cut' | 'unsized' }) {
 			served.set(id, options);
 		},
-		/** Turns topic mode in private chats on or off, as getMe reports it. */
 		setTopics(on: boolean) {
 			topics = on;
 		},
-		/** Every call in arrival order. */
 		received,
 		messages,
-		/** The calls of one method. */
 		calls: (method: string) => received.filter((call) => call.method === method),
 		push,
-		/** A tap by `user` on button `button` of message `id`, with the message as it shows now. */
 		tap(id: number, button: number, options: { user?: number; callback?: string } = {}): FakeUpdate {
 			const shown = messages.get(id);
 			if (!shown) throw new Error(`message ${id} does not exist`);
@@ -304,7 +254,6 @@ export function fakeBotApi() {
 			const from = { ...PERSON, id: options.user ?? PERSON.id };
 			return push({ callback_query: { id: options.callback ?? String(nextUpdate), from, message: structuredClone(shown), chat_instance: '-3510754414410900789', data } });
 		},
-		/** A reply by `user` to message `id`, which carries that message with its keyboard. */
 		reply(id: number, text: string, options: { user?: number } = {}): FakeUpdate {
 			const shown = messages.get(id);
 			if (!shown) throw new Error(`message ${id} does not exist`);
@@ -312,17 +261,14 @@ export function fakeBotApi() {
 			const message = { message_id: ++nextMessage, from, chat: shown.chat, date: DATE + 2, reply_to_message: structuredClone(shown), text };
 			return push({ message });
 		},
-		/** A message that replies to nothing, such as `/start <code>`. */
 		say(text: string, options: { user?: number; chat?: { id: number; type: string }; update?: number } = {}): FakeUpdate {
 			const from = { ...PERSON, id: options.user ?? PERSON.id };
 			const chat = options.chat ? { ...options.chat, first_name: PERSON.first_name } : chatOf(from.id);
 			return push({ message: { message_id: ++nextMessage, from, chat, date: DATE + 2, text } }, options.update);
 		},
-		/** Answers the next calls of `method` with these refusals, in order. */
 		fail(method: string, ...answers: Scripted[]) {
 			scripts.set(method, [...(scripts.get(method) ?? []), ...answers]);
 		},
-		/** Holds every call of `method` until the returned function runs. */
 		stall(method: string): () => void {
 			let release = () => {};
 			stalls.set(
@@ -336,7 +282,6 @@ export function fakeBotApi() {
 			);
 			return release;
 		},
-		/** Sets a webhook: an open poll ends with 409, and every later one too. */
 		setWebhook(url: string) {
 			webhook = url;
 			if (poll) {
@@ -345,11 +290,9 @@ export function fakeBotApi() {
 				poll = undefined;
 			}
 		},
-		/** From now on every call answers 401. */
 		revoke() {
 			revoked = true;
 		},
-		/** Waits until a call of `method` matching `match` arrived, or throws after `ms`. */
 		async waitFor(method: string, match: (call: Received) => boolean = () => true, ms = 60_000): Promise<Received> {
 			const deadline = Date.now() + ms;
 			for (;;) {
@@ -361,7 +304,6 @@ export function fakeBotApi() {
 		},
 		stop() {
 			if (poll) clearTimeout(poll.timer);
-			// A stalled call stays open until the server closes its connection.
 			stalls.clear();
 			void server.stop(true);
 		},

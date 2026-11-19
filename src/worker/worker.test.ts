@@ -1,15 +1,9 @@
-// The Cloudflare entry on a KV stand-in that answers as Workers KV does: values as ArrayBuffer
-// with their metadata, and an expiration in seconds that KV refuses under 60 s ahead.
 import { expect, test } from 'bun:test';
 import { BOT, ID, launchKey, MEDIA, MEDIA_KEY, ORIGIN, UPLOAD_KEY, USER } from '../view/fixtures.ts';
 import worker, { type Env } from './index.ts';
 
 type Stored = { value: Uint8Array; expiration: number; metadata?: { type: string } };
 
-/**
- * Workers KV over a Map. A put with an expiration under 60 s ahead throws, as KV answers 400. A
- * list answers pages of 2 keys in key order, with a cursor until the last.
- */
 function fakeKv() {
 	const map = new Map<string, Stored>();
 	const kv: Env['VIEWS'] = {
@@ -52,7 +46,6 @@ test('a view published through the Worker opens with its media, stored in KV wit
 	expect((await call(env, `/api/media/${ID}/g1/0?e=${expiresAt}`, { method: 'PUT', headers: { ...auth, 'Content-Type': 'image/png' }, body: MEDIA.png })).status).toBe(200);
 	const upload = { generation: 'g1', expiresAt, media: [{ type: 'image/png', size: MEDIA.png.byteLength }], view: { v: 1, tabs: [{ label: 'A', content: { markdown: '![a](media:0)' } }] } };
 	expect((await call(env, `/api/view/${ID}`, { method: 'PUT', headers: auth, body: JSON.stringify(upload) })).status).toBe(200);
-	// An expiry 30 s ahead is stored 60 s ahead, the least KV takes.
 	expect(map.get(`m:${ID}:g1:0`)?.metadata).toEqual({ type: 'image/png' });
 	expect(map.get(`v:${ID}`)?.expiration).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + 59);
 
@@ -76,7 +69,6 @@ test('choices posted through the Worker are listed across every page of KV and r
 	expect((await call(env, `/api/view/${ID}/context/ask1`, { method: 'PUT', headers: auth, body: JSON.stringify({ body: { markdown: 'Which?' }, choice }) })).status).toBe(200);
 	const ids = ['a', 'b', 'c'].map((letter) => letter.repeat(22));
 	for (const id of ids) expect((await call(env, `/api/answer?v=${ID}&q=ask1&n=1&c=${id}`, { method: 'POST', headers: { Authorization: `tma ${await launch()}` } })).status).toBe(200);
-	// KV answers pages of 2 keys: the 3 choices take 2 pages beside the view, its manifest and the context.
 	expect(map.size).toBe(6);
 	const listed = async () => ((await (await call(env, '/api/answers', { headers: auth })).json()) as { choices: { key: string; id: string }[] }).choices;
 	expect((await listed()).map((choice) => choice.id)).toEqual(ids);

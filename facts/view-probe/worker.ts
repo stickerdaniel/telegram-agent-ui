@@ -1,13 +1,3 @@
-// The view probe: a Cloudflare Worker that serves one stored view to ALLOWED_USER inside
-// Telegram and stores what the phone observed while showing it. `publish.ts` PUTs a view and
-// sends its Web App button; the shell at `GET /?v=<id>` fetches the view with the launch data,
-// draws a text tab and a sandboxed page tab, and POSTs its observations to `/api/report`.
-// `/hit` logs any request the sandboxed page manages to make. The bearer routes read it all back.
-// Launch data is checked as a third party, by Telegram's Ed25519 signature, without the bot token.
-// https://core.telegram.org/bots/webapps#validating-data-for-third-party-use
-// workerd takes every value this module exports as an entrypoint, so it exports only the handler.
-
-/** The part of a Workers KV binding the probe uses. */
 export type Kv = {
 	get(key: string): Promise<string | null>;
 	put(key: string, value: string, options: { expirationTtl: number }): Promise<void>;
@@ -16,17 +6,12 @@ export type Kv = {
 
 export type Env = {
 	VIEWS: Kv;
-	/** The bot's numeric ID, the part of its token before the colon. */
 	BOT_ID: string;
-	/** The one Telegram user ID the view is served to. */
 	ALLOWED_USER: string;
-	/** The bearer token of the write and read routes, a Worker secret. */
 	READ_KEY: string;
-	/** An Ed25519 public key as hex for tests; Telegram's production key without it. */
 	PUBLIC_KEY?: string;
 };
 
-/** Telegram's production Ed25519 public key for third-party validation, as hex. */
 const TELEGRAM_KEY = 'e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d';
 const MAX_AGE = 600;
 const MAX_SKEW = 60;
@@ -42,19 +27,12 @@ async function importKey(hex: string): Promise<CryptoKey> {
 	return crypto.subtle.importKey('raw', bytes, { name: 'Ed25519' }, false, ['verify']);
 }
 
-/** Base64url without padding to bytes; undefined for any other text. */
 function base64url(text: string): Uint8Array<ArrayBuffer> | undefined {
 	if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return undefined;
 	const binary = atob(text.replaceAll('-', '+').replaceAll('_', '/'));
 	return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-/**
- * Checks `initData` as Telegram's client sent it: every field once, an Ed25519 signature of bot
- * `botId` over `<botId>:WebAppData`, then every field except `hash` and `signature` as
- * `key=value` with its decoded value, sorted by key, one per line; `auth_date` at most MAX_AGE
- * seconds old and MAX_SKEW ahead; `user.id` equal to `userId`.
- */
 async function verifyInitData(initData: string, opts: { botId: string; publicKey: CryptoKey; userId: number; nowSeconds: number }): Promise<Verdict> {
 	const fail = (reason: string): Verdict => ({ ok: false, reason });
 	const fields = new Map<string, string>();
@@ -90,10 +68,6 @@ async function verifyInitData(initData: string, opts: { botId: string; publicKey
 	return { ok: true, authDate: Number(authDate), hasSignature: fields.has('signature') };
 }
 
-// The one inline script of the shell; the CSP names it by the SHA-256 of this exact text. It runs
-// first in <head>: it registers the violation and message listeners before the SDK loads, and
-// does the rest on DOMContentLoaded, after the SDK has read the launch data from the fragment.
-// It holds no backticks, `${` or backslashes, so the template literal keeps it verbatim.
 const SHELL_SCRIPT = `
 const seen = {
 	platform: null, version: null, colorScheme: null, initDataLength: 0, hasSignatureField: false,
@@ -261,7 +235,6 @@ iframe { flex: 1; border: 0; background: #ffffff; }
 `;
 
 let shellHash: Promise<string> | undefined;
-/** The CSP source of the shell script, `sha256-<base64>`, computed once per isolate. */
 function scriptHash(): Promise<string> {
 	shellHash ??= crypto.subtle.digest('SHA-256', new TextEncoder().encode(SHELL_SCRIPT)).then((digest) => `sha256-${btoa(String.fromCharCode(...new Uint8Array(digest)))}`);
 	return shellHash;
@@ -272,10 +245,8 @@ const shellPolicy = (origin: string, hash: string) =>
 
 const text = (body: string, status: number) => new Response(body, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
-// A transparent 1x1 GIF.
 const GIF = Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), (char) => char.charCodeAt(0));
 
-/** Every value under `prefix`, following the list cursor, as `{ key, value }` with parsed JSON. */
 async function readAll(kv: Kv, prefix: string): Promise<{ key: string; value: unknown }[]> {
 	const out: { key: string; value: unknown }[] = [];
 	let cursor: string | undefined;
@@ -369,7 +340,6 @@ export default {
 			return json(await readAll(env.VIEWS, 'hit:'));
 		}
 
-		// Records the request as `hit:<label>:<ms>` with the headers that say what made it.
 		if (route === 'GET /hit') {
 			const label = (url.searchParams.get('from') ?? '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'unlabelled';
 			const seen = {

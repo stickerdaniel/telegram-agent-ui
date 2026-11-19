@@ -1,4 +1,3 @@
-// Records the updates of a person's tap and reply. Run: TELEGRAM_BOT_TOKEN=... CHAT=... bun facts/listen.ts <seconds>
 import { writeFile } from 'node:fs/promises';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;

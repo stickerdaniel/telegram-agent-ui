@@ -2,9 +2,6 @@ import { expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import worker, { type Env, type Kv } from './worker.ts';
 
-// A generated Ed25519 key stands in for Telegram's; `launch` builds `tma <initData>` the way
-// Telegram's client sends it: percent-encoded fields in client order, signed over the sorted
-// data-check string with decoded values.
 const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
 const publicHex = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('hex');
 const now = () => Math.floor(Date.now() / 1000);
@@ -16,7 +13,6 @@ async function launch(opts: { authDate?: number; userId?: number } = {}): Promis
 	return `tma user=${encodeURIComponent(user)}&chat_instance=-479031&chat_type=private&auth_date=${authDate}&signature=${signature}&hash=0c4f8e1d`;
 }
 
-/** Workers KV over a Map, without expiry or list pages. */
 function fakeKv(): Kv {
 	const map = new Map<string, string>();
 	return {

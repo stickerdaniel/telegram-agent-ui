@@ -1,7 +1,3 @@
-// The publisher's side against the merged view host: `prepareView` on real files, and
-// `viewClient` over HTTP to `createViewHandler` on a storage in memory, served by a local server.
-// `createChat` with `views` runs on the Telegram model of the chat harness. What a user sees is
-// read back the way the shell reads it: GET /api/view with launch data.
 import { afterEach, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,10 +18,6 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/**
- * The view host on a storage in memory behind a local HTTP server. `fail(match)` answers the
- * next request whose method and path `match` accepts with 503 before the handler sees it.
- */
 function host(storage: Parameters<typeof memoryStorage>[0] = {}) {
 	const memory = memoryStorage(storage);
 	const handle = createViewHandler({ storage: memory.storage, botId: BOT, allowedUsers: [USER], uploadKey: UPLOAD_KEY, mediaKey: MEDIA_KEY, publicKey: hex });
@@ -51,7 +43,6 @@ function host(storage: Parameters<typeof memoryStorage>[0] = {}) {
 		fail(match: (request: Request) => boolean) {
 			failing.push(match);
 		},
-		/** What the shell gets for view `id` opened from question `ref`: the view, the context and the media URLs. */
 		async open(id: string, ref?: string): Promise<Opened> {
 			const response = await fetch(`${origin}/api/view?v=${id}${ref !== undefined ? `&q=${ref}` : ''}`, { headers: { Authorization: `tma ${await launch()}` } });
 			const json: unknown = response.ok ? await response.json() : {};
@@ -64,10 +55,8 @@ function host(storage: Parameters<typeof memoryStorage>[0] = {}) {
 type Opened = { status: number; view: unknown; context: unknown; media: string[] };
 
 const path = (request: Request) => new URL(request.url).pathname;
-/** The tab labels of an opened view. */
 const labelsOf = (opened: Opened) => (isRecord(opened.view) && Array.isArray(opened.view.tabs) ? opened.view.tabs.map((tab: unknown) => (isRecord(tab) ? tab.label : undefined)) : []);
 
-/** A project below a temp directory, with a file and a secret beside it. */
 function project() {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-view-')));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -136,7 +125,6 @@ test('a Markdown image inside code or behind an escape stays literal text, and a
 	const ready = await prepared({ tabs: [{ label: 'Docs', content: { markdown: source, base: at.dir } }] }, at.roots);
 	expect(ready.prepared.view.tabs[0]?.content).toEqual({ markdown: source, media: { 'shots/a(b).png': 0 } });
 	expect(ready.files).toEqual([{ path: join(at.dir, 'shots', 'a(b).png'), bytes: MEDIA.png.length }]);
-	// An unclosed fence runs to the end, as the shell draws it.
 	expect((await prepared({ tabs: [{ label: 'Docs', content: { markdown: '~~~\n![x](missing.png)', base: at.dir } }] }, at.roots)).files).toEqual([]);
 });
 
@@ -152,7 +140,6 @@ test('code in a quote or a list stays literal text, as the shell draws it, and a
 		expect(ready.prepared.view.tabs[0]?.content, source).toEqual({ markdown: source, media: { 'shots/a.png': 0 } });
 		expect(ready.files, source).toEqual([{ path: join(at.dir, 'shots', 'a.png'), bytes: MEDIA.png.length }]);
 	}
-	// A real image's destination that code repeats: the source stays, and the map names the image.
 	const repeated = '![shot](shots/a.png)\n\n```md\n![shot](shots/a.png)\n```';
 	const both = await prepared({ tabs: [{ label: 'Docs', content: { markdown: repeated, base: at.dir } }] }, at.roots);
 	expect(both.prepared.view.tabs[0]?.content).toEqual({ markdown: repeated, media: { 'shots/a.png': 0 } });
@@ -165,13 +152,11 @@ test('an image in a table cell maps the destination the shell reads, and a code 
 	const ready = await prepared({ tabs: [{ label: 'Docs', content: { markdown: source, base: at.dir } }] }, at.roots);
 	expect(ready.prepared.view.tabs[0]?.content).toEqual({ markdown: source, media: { 'a|b.png': 0 } });
 	expect(ready.files).toEqual([{ path: join(at.dir, 'a|b.png'), bytes: MEDIA.png.length }]);
-	// The host stores the map, and gives the view back with a signed URL for its index.
 	const server = host();
 	const put = await published(server.client(), ready);
 	const opened = await server.open(put.id);
 	expect(opened.view).toEqual({ v: 1, tabs: [{ label: 'Docs', content: { markdown: source, media: { 'a|b.png': 0 } } }] });
 	expect(opened.media).toEqual([expect.stringContaining(`/m/${put.id}/`)]);
-	// A video is no Markdown image.
 	writeFileSync(join(at.dir, 'clip.mp4'), MEDIA.mp4);
 	expect(await prepareView({ tabs: [{ label: 'A', content: { markdown: '![clip](clip.mp4)', base: at.dir } }] }, { roots: at.roots })).toMatchObject({ kind: 'refused', code: 'shape' });
 });
@@ -192,19 +177,16 @@ test('a page publishes the images of quoted, unquoted and entity-encoded src and
 		page: '<!-- <img src=missing.png> --><img alt="x src=missing.png" src="media:0"><video poster="media:1"></video><img src="media:2"><img SRC = "media:0">',
 	});
 	expect(ready.prepared.media.map((item) => item.type)).toEqual(['image/png', 'image/jpeg', 'image/png']);
-	// A newly recognized form still passes the roots and the secret names.
 	writeFileSync(join(at.dir, '.env.png'), MEDIA.png);
 	const roots = at.roots;
 	expect(await prepareView({ tabs: [{ label: 'A', content: { page: '<img src=../outside.png>', base: at.dir } }] }, { roots })).toMatchObject({ kind: 'refused', code: 'outside-roots' });
 	expect(await prepareView({ tabs: [{ label: 'A', content: { page: '<video poster=.env.png>', base: at.dir } }] }, { roots })).toMatchObject({ kind: 'refused', code: 'secret-file' });
 	expect(await prepareView({ tabs: [{ label: 'A', content: { page: '<img src="&#46;&#46;/outside.png">', base: at.dir } }] }, { roots })).toMatchObject({ kind: 'refused', code: 'outside-roots' });
-	// A source set of local files is refused with its reason, never published without them.
 	expect(await prepareView({ tabs: [{ label: 'A', content: { page: '<img srcset="shots/a.png 1x, shots/b.jpg 2x">', base: at.dir } }] }, { roots })).toMatchObject({ kind: 'refused', code: 'shape', reason: expect.stringContaining('srcset') });
 });
 
 test('prepareView refuses media that each pass 20 MiB and together exceed 50 MiB, before any upload', async () => {
 	const at = project();
-	// 3 sparse PNG files of 18 MiB each: a PNG signature, then zeros the file system does not store.
 	const paths = ['one', 'two', 'three'].map((name) => {
 		const path = join(at.dir, 'shots', `${name}.png`);
 		writeFileSync(path, MEDIA.png);
@@ -213,7 +195,6 @@ test('prepareView refuses media that each pass 20 MiB and together exceed 50 MiB
 	});
 	const gallery = (count: number) => ({ tabs: [{ label: 'Shots', content: { gallery: paths.slice(0, count).map((path) => ({ path })) } }] });
 	expect(await prepareView(gallery(3), { roots: at.roots })).toMatchObject({ kind: 'refused', code: 'shape', reason: expect.stringContaining(String(50 * 1024 * 1024)) });
-	// 2 of them stay within the total.
 	expect((await prepareView(gallery(2), { roots: at.roots })).kind).toBe('ok');
 });
 
@@ -240,7 +221,6 @@ test('prepareView refuses a path outside the roots, a secret, a link that leaves
 	];
 	at.file('notes.txt', 'not an image');
 	for (const [input, code] of cases) expect(await prepareView(input, { roots }), JSON.stringify(input)).toMatchObject({ kind: 'refused', code });
-	// A file whose bytes are not of its ending is refused before any upload.
 	at.file('fake.png', 'no png at all');
 	expect(await prepareView({ tabs: [{ label: 'A', content: { gallery: [{ path: join(at.dir, 'fake.png') }] } }] }, { roots })).toMatchObject({ kind: 'refused', code: 'shape' });
 });
@@ -271,14 +251,12 @@ test('a publish that fails after its media leaves the earlier view readable with
 	server.fail((request) => request.method === 'PUT' && path(request) === `/api/view/${earlier.id}`);
 	const replacement = await prepared({ tabs: [{ label: 'New', content: { markdown: '![b](shots/b.jpg)', base: at.dir } }] }, at.roots);
 	expect(await client.put(replacement.prepared, { id: earlier.id })).toMatchObject({ kind: 'uncertain', id: earlier.id });
-	// The new generation's media arrived, and nothing committed them.
 	expect(server.writes.filter((write) => write.startsWith('put m:')).length).toBe(2);
 	const opened = await server.open(earlier.id);
 	expect(labelsOf(opened)).toEqual(['Old']);
 	const media = await fetch(opened.media[0] ?? '');
 	expect(media.headers.get('Content-Type')).toBe('image/png');
 	expect(new Uint8Array(await media.arrayBuffer())).toEqual(MEDIA.png);
-	// A media upload that fails changes no view either, and says so.
 	server.fail((request) => request.method === 'PUT' && path(request).startsWith('/api/media/'));
 	expect(await client.put(replacement.prepared, { id: earlier.id })).toMatchObject({ kind: 'refused', reason: expect.stringContaining('No view changed') });
 	expect(labelsOf(await server.open(earlier.id))).toEqual(['Old']);
@@ -287,7 +265,6 @@ test('a publish that fails after its media leaves the earlier view readable with
 test('context asks again while the view is not visible yet, and reports missing after the late window', async () => {
 	const at = project();
 	const ready = await prepared({ tabs: [{ label: 'A', content: { diff: '+a' } }] }, at.roots);
-	// The view object stays hidden from its first 3 reads, as a storage that shows a new key late.
 	let hide = false;
 	const server = host({ hidden: (key, read) => hide && key.startsWith('v:') && read <= 3 });
 	const put = await published(server.client(), ready);
@@ -297,7 +274,6 @@ test('context asks again while the view is not visible yet, and reports missing 
 	expect(await server.client(0).has('AAAAAAAAAAAAAAAAAAAAAA')).toEqual({ kind: 'missing' });
 	expect(await server.client().delete(put.id)).toEqual({ kind: 'ok' });
 	expect(await server.client().delete(put.id)).toEqual({ kind: 'missing' });
-	// A wrong upload key is a refusal with its status, and a host that is gone rejects.
 	expect(await viewClient({ origin: server.origin, uploadKey: 'another-key-0123456789' }).has(put.id)).toMatchObject({ kind: 'refused', status: 401 });
 	await expect(viewClient({ origin: 'http://127.0.0.1:9', uploadKey: UPLOAD_KEY }).context(put.id, 'q1', { markdown: 'x' })).rejects.toThrow('no answer');
 });
@@ -328,7 +304,6 @@ test('a question with 3 options and a view with 3 tabs opens on the picked tab, 
 		{ view: put.id },
 	);
 	const sent = sentOf(await chat.send(spec, { ref: 'layout' }));
-	/** The URL of the view button that the message shows now. */
 	const viewButton = () => {
 		const markup = telegram.shows.get(sent.message)?.reply_markup;
 		const rows: unknown[] = isRecord(markup) && Array.isArray(markup.inline_keyboard) ? markup.inline_keyboard.flat() : [];
@@ -383,7 +358,6 @@ test('a question keeps the view origin its ask stored after the configured one m
 	const before = setup({ viewOrigin: OLD, views: fakeViews().views });
 	const asked = sentOf(await before.chat.send(yesNo({ markdown: 'Merge now?' }, { view: id }), { ref: 'old' }));
 	const plain = sentOf(await before.chat.send(message({ markdown: 'See the view.' }, { view: id })));
-	// The same store and Telegram, after view deploy moved the configured origin to ORIGIN.
 	const { chat: moved } = setup({ viewOrigin: ORIGIN, views: fakeViews().views, store: before.inner, call: before.server.call });
 	const viewRow = (message: number) => JSON.stringify(before.server.shows.get(message)?.reply_markup);
 
@@ -401,7 +375,6 @@ test('a question keeps the view origin its ask stored after the configured one m
 test('after the configured origin moved, a question writes no context to the new host, counts as shown and warns not-shown', async () => {
 	const at = project();
 	const ready = await prepared({ tabs: [{ label: 'Diff', content: { diff: '+a' } }] }, at.roots);
-	/** A real handler on a storage of its own, reached by its client through the Fetch seam at `origin`. */
 	const hostAt = (origin: string) => {
 		const memory = memoryStorage();
 		const handle = createViewHandler({ storage: memory.storage, botId: BOT, allowedUsers: [USER], uploadKey: UPLOAD_KEY, mediaKey: MEDIA_KEY, publicKey: hex });
@@ -429,7 +402,6 @@ test('after the configured origin moved, a question writes no context to the new
 	const question = await after.chat.get('origin_review');
 	expect(question?.shown).toMatchObject({ failures: 0, error: expect.stringContaining(OLD) });
 	expect(question?.shown.done).toBe(question?.shown.want ?? -1);
-	// The button still opens the old host, which keeps the context of the ask; the new host got none.
 	expect(JSON.stringify(before.server.shows.get(asked.message)?.reply_markup)).toContain(`${OLD}/?v=${id}&q=origin_review`);
 	expect(await old.context(id, 'origin_review')).toEqual({ markdown: 'Merge now?' });
 	expect(await moved.context(id, 'origin_review')).toBeUndefined();

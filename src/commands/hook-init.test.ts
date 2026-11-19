@@ -1,7 +1,3 @@
-// `hook init` on temp settings files: the entries of section 9, every other key and handler
-// kept, a second run that changes nothing, and the refusal of a Claude Code without onFailure.
-// `claude --version` runs a stand-in script on PATH that prints what the real CLI prints,
-// "2.1.327 (Claude Code)" on 2026-11-19.
 import { afterEach, expect, test } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -15,7 +11,6 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** A HOME with a `claude` on PATH that reports `version`, and a context that collects the log. */
 function home(version = '2.1.327') {
 	const root = mkdtempSync(join(tmpdir(), 'tau-hook-init-'));
 	roots.push(root);
@@ -34,9 +29,7 @@ const write = (path: string, value: unknown) => {
 };
 const read = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8'));
 
-// The installation these tests run: Bun on the source, so the bin is src/cli/bin.ts. Its path holds no single quote.
 const BIN = realpathSync(join(import.meta.dir, '..', 'cli', 'bin.ts'));
-/** The command `hook init` writes for this installation. */
 const pinned = (rest: string) => `'${process.execPath}' '${BIN}' hook ${rest}`;
 const PERMISSION = pinned('permission-request --client claude --seconds 570');
 const NOTIFICATION = pinned('notification --client claude');
@@ -47,7 +40,6 @@ test('hook init --client claude writes both hooks into settings.json and keeps e
 	const own = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/audit.sh' }] };
 	const notice = { matcher: 'idle_prompt', hooks: [{ type: 'command', command: 'say idle' }] };
 	write(settings, { model: 'opus', permissions: { allow: ['Bash(git status)'], deny: ['Bash(rm *)'] }, hooks: { PreToolUse: [own], Notification: [notice] }, statusLine: { type: 'command', command: 'status.sh' } });
-	// The warning comes before the file changes.
 	const seen: boolean[] = [];
 	const watched: Context = {
 		...context,
@@ -151,7 +143,6 @@ test('hook init --client codex writes the permission hook into hooks.json of COD
 
 test('another PermissionRequest handler in a layer the harness loads for the working directory refuses, and the written file stays', async () => {
 	const { root, context } = home();
-	// A repository with its root at repo/, and the session in repo/sub.
 	const repo = join(root, 'repo');
 	const cwd = join(repo, 'sub');
 	mkdirSync(join(repo, '.git'), { recursive: true });
@@ -161,12 +152,10 @@ test('another PermissionRequest handler in a layer the harness loads for the wor
 	const layers = [join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json'), join(repo, '.claude', 'settings.local.json')];
 	expect(await hookInit('claude', inRepo)).toMatchObject({ ok: true, output: { checked: [settings, ...layers] } });
 	const written = readFileSync(settings, 'utf8');
-	// Claude Code keeps the local settings at the repository root.
 	write(join(repo, '.claude', 'settings.local.json'), { hooks: { PermissionRequest: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'approve.sh' }] }] } });
 	expect(await hookInit('claude', inRepo)).toMatchObject({ ok: false, failure: { code: 'other-hook', message: expect.stringContaining(join(repo, '.claude', 'settings.local.json')) } });
 	expect(readFileSync(settings, 'utf8')).toBe(written);
 
-	// Codex: the [hooks] of a project layer's config.toml.
 	const codexHome = join(root, 'codex');
 	const codex: Context = { ...inRepo, env: { ...context.env, CODEX_HOME: codexHome } };
 	const projectConfig = join(repo, '.codex', 'config.toml');
@@ -209,7 +198,6 @@ test('a pinned-looking command of another runtime and bin is another handler: ke
 
 test('a command that names this package in a comment is another handler: kept, and for PermissionRequest refused', async () => {
 	const { root, context } = home();
-	// The input of the review: the shell runs audit.sh, and the rest is a comment.
 	const audit = { type: 'command', command: 'audit.sh # telegram-agent-ui hook permission-request --client codex', timeout: 5 };
 	const file = join(root, 'codex', 'hooks.json');
 	write(file, { hooks: { PermissionRequest: [{ hooks: [audit] }] } });
@@ -227,7 +215,6 @@ test('the written command runs this installation by absolute paths, with no npm 
 	await hookInit('codex', { ...context, env: { ...context.env, CODEX_HOME: join(root, 'codex') } });
 	const command = JSON.stringify(read(join(root, 'codex', 'hooks.json'))).match(/"command":"([^"]+)"/)?.[1] ?? '';
 	expect(command).toBe(pinned('permission-request --client codex --seconds 570'));
-	// The shell form a harness runs, from a project directory, with a PATH that holds no npm.
 	const project = join(root, 'project');
 	mkdirSync(project);
 	const out = execFileSync('/bin/sh', ['-c', command], { cwd: project, env: { HOME: root, PATH: '/nowhere' }, input: 'not json', encoding: 'utf8' });
@@ -236,7 +223,6 @@ test('the written command runs this installation by absolute paths, with no npm 
 
 test('hook init run from an npx cache refuses and asks for an install', () => {
 	const { root } = home();
-	// An install as npx unpacks it: <cache>/_npx/<hash>/node_modules/telegram-agent-ui.
 	const pkg = join(root, 'npm-cache', '_npx', '3f2a', 'node_modules', 'telegram-agent-ui');
 	mkdirSync(pkg, { recursive: true });
 	cpSync(join(import.meta.dir, '..'), join(pkg, 'src'), { recursive: true });

@@ -1,7 +1,3 @@
-// The answer protocol of 4.6 as one pure function. `reduce` takes a question and one event and
-// returns the next question, the calls that are safe to lose (a toast, a reaction) and what
-// the event meant. Whatever must survive a crash lives in the question: `shown.want` above
-// `shown.done` owes an edit, `seq` above `delivery.seq` owes a delivery.
 import type { CallbackQuery, InlineKeyboardMarkup, Message, Update } from '@grammyjs/types';
 import { arrayOf, isInt, isNat, isRecord, isString, optional, storable } from './check.ts';
 import { isBody, isCallClass, isSent, isSpec, isUser } from './guards.ts';
@@ -10,23 +6,17 @@ import { bodyLike, inView } from './render.ts';
 import { CHOICE_ID, checkQuestionBody, checkSpec, metaIssue, sameForm } from './shape.ts';
 import { type Answer, type Body, type Call, type CallClass, defaultLabels, type Handled, type Labels, type Question, type QuestionEvent, type Sent, ShapeError, type User } from './types.ts';
 
-/** How many input keys a question keeps to find replays. */
 export const APPLIED_WINDOW = 32;
-/** How many edits without an answer turn into `shown.error`. */
 export const EDIT_FAILURES = 10;
-/** How long after an uncertain edit ended the message is edited once more: the edit may still reach the server after a later one. */
 export const RECHECK_DELAY = 60_000;
 
-// Callback data `q:<ref>:<n>`, with the ref pattern of shape.ts.
 const DATA = /^q:([A-Za-z0-9_-]{1,32}):(\d{1,2})$/;
 
-/** The ref and button index of callback data `q:<ref>:<n>`. */
 function parseData(data: string | undefined): { ref: string; button: number } | undefined {
 	const match = data === undefined ? null : DATA.exec(data);
 	return match?.[1] !== undefined && match[2] !== undefined ? { ref: match[1], button: Number(match[2]) } : undefined;
 }
 
-/** The ref named by the first answer button of a keyboard. */
 function refOf(markup: InlineKeyboardMarkup | undefined): string | undefined {
 	for (const button of markup?.inline_keyboard.flat() ?? []) {
 		const parsed = 'callback_data' in button ? parseData(button.callback_data) : undefined;
@@ -35,11 +25,6 @@ function refOf(markup: InlineKeyboardMarkup | undefined): string | undefined {
 	return undefined;
 }
 
-/**
- * Which question an update belongs to, without a store. A tap names its ref, button and
- * message. A reply names its chat and the replied-to message, plus the ref of that message's
- * answer buttons when it has some: a reply from a phone carries the replied-to markup.
- */
 export function locate(update: Update): { ref: string; button: number; message: number } | { chat: number; replyTo: number; ref?: string } | undefined {
 	const callback = update.callback_query;
 	if (callback) {
@@ -60,7 +45,6 @@ const remember = (applied: string[], key: string) => [...applied, key].slice(-AP
 const userOf = (from: { id: number; first_name: string; last_name?: string }): User => ({ id: from.id, name: from.last_name ? `${from.first_name} ${from.last_name}` : from.first_name });
 const viewOf = (question: Question) => (question.spec.view !== undefined && question.viewOrigin !== undefined ? { view: { id: question.spec.view, origin: question.viewOrigin } } : {});
 
-/** The `Sent` of a question whose message an input revealed: the message id is all a tap or a reply adds. */
 const revealed = (question: Question, message: number): Sent => ({
 	chat: question.chat,
 	...(question.topic !== undefined ? { topic: question.topic } : {}),
@@ -70,31 +54,21 @@ const revealed = (question: Question, message: number): Sent => ({
 	...viewOf(question),
 });
 
-/**
- * Gives a question without a message the one an input revealed. A `sending` question opens. A
- * closed one stores it and owes the edit that removes its answer buttons.
- */
 function reveal(question: Question, message: number): Question {
 	if (question.status === 'sending') return { ...question, status: 'open', sent: revealed(question, message) };
 	if (question.status === 'closed' && !question.sent) return { ...question, sent: revealed(question, message), shown: raise(question.shown) };
 	return question;
 }
 
-/**
- * The question closed, with `resolved` as the body it shows. Closing raises `shown.want`, and a
- * question answered in its view owes the view host its closed binding.
- */
 function close(question: Question, resolved: Body | undefined): Question {
 	return { ...question, status: 'closed', ...(resolved ? { resolved } : {}), shown: raise(question.shown), ...(inView(question.spec.answer) ? { bindingOwed: true as const } : {}) };
 }
 
-/** Closes a question whose `expiresAt` has come, with `labels.expired` as its resolved body. */
 function expire(question: Question, now: number, labels: Labels): Question {
 	if (question.status === 'closed' || question.expiresAt === undefined || now < question.expiresAt) return question;
 	return close(question, bodyLike(question.spec.body, labels.expired));
 }
 
-/** An answer on an open or answered question: `seq` rises, the old answer becomes `previous`. */
 function answered(question: Extract<Question, { status: 'open' | 'answered' }>, answer: Answer, by: User, now: number, key: string): Extract<Question, { status: 'answered' }> {
 	const { status, ...rest } = question;
 	const previous = status === 'answered' ? question.answer : undefined;
@@ -132,10 +106,6 @@ const stale = (question: Question | undefined, reason: Extract<Handled, { kind: 
 const ignored = (question: Question | undefined): Result => ({ ...(question ? { question } : {}), calls: [], handled: { kind: 'ignored' } });
 const toast = (callback: CallbackQuery, text: string): Call[] => [{ method: 'answerCallbackQuery', payload: { callback_query_id: callback.id, text } }];
 
-/**
- * A tap. It counts only on the question's own message in the question's chat, on a button
- * that exists. The first failing check wins: unknown, forbidden, closed, repeat.
- */
 function tap(question: Question, callback: CallbackQuery, now: number, labels: Labels): Result {
 	const at = parseData(callback.data);
 	const message = callback.message;
@@ -158,13 +128,6 @@ function tap(question: Question, callback: CallbackQuery, now: number, labels: L
 	return { question: next, calls: toast(callback, `✓ ${option.label}`), handled: handledAnswer(next) };
 }
 
-/**
- * A reply. It belongs to the question when it is in the question's chat and replies to the
- * question's message, or, while that message is unknown, to a message whose buttons name the
- * question. Only a text question takes it as an answer, and only with the sender's own words: a
- * forward, which carries `forward_origin`, answers nothing, its text and its caption alike. Any
- * other reply is `ignored`.
- */
 function reply(question: Question, message: Message, now: number, labels: Labels): Result {
 	const replyTo = message.reply_to_message;
 	const sent = sentOf(question);
@@ -181,13 +144,6 @@ function reply(question: Question, message: Message, now: number, labels: Labels
 	return { question: next, calls: [reaction], handled: handledAnswer(next) };
 }
 
-/**
- * A choice stored on the view host, applied like a tap on button `index` without a toast. It
- * counts only on a question answered in its view, on an option that exists. The first failing
- * check wins: unknown, forbidden, closed, repeat. A closed question takes no choice, whenever the
- * host stored it, and a `sending` question takes none either: its message is unknown, and no tap
- * on its view row can reveal it. A choice id among the last 32 applied keys is a repeat.
- */
 function choose(question: Question, event: Extract<QuestionEvent, { type: 'choice' }>, now: number): Result {
 	const { answer } = question.spec;
 	const option = answer.type === 'choice' && answer.in === 'view' ? answer.options[event.index] : undefined;
@@ -203,16 +159,10 @@ function choose(question: Question, event: Extract<QuestionEvent, { type: 'choic
 	return { question: next, calls: [], handled: handledAnswer(next) };
 }
 
-/** An input for a ref the store lacks: a tap gets the toast `labels.unknown`, anything else is ignored. */
 function orphan(update: Update, labels: Labels): Result {
 	return update.callback_query ? stale(undefined, 'unknown', toast(update.callback_query, labels.unknown)) : ignored(undefined);
 }
 
-/**
- * The answer to an edit of `want`. `now` is the time the edit ended: its answer or its deadline.
- * An uncertain edit sets `recheckAt`, and a later success keeps it, since the uncertain edit may
- * still reach the server after the later one.
- */
 function shown(question: Question, event: Extract<QuestionEvent, { type: 'shown' }>, now: number): Question {
 	const { want, outcome } = event;
 	if (want > question.shown.want) return question;
@@ -223,7 +173,6 @@ function shown(question: Question, event: Extract<QuestionEvent, { type: 'shown'
 		case 'unchanged':
 			return { ...question, shown: { ...rest, done: want, failures: 0 } };
 		case 'refused':
-			// A rejected token stops the listener and leaves the question as it was.
 			return outcome.code === 'token' ? question : { ...question, shown: { ...rest, done: want, error: outcome.reason } };
 		case 'retry':
 			return { ...question, shown: { ...question.shown, retryAt: outcome.at ?? now } };
@@ -236,12 +185,6 @@ function shown(question: Question, event: Extract<QuestionEvent, { type: 'shown'
 	}
 }
 
-/**
- * The answer to the edit that confirms a message already shown, sent once `recheckAt` has come.
- * A success or "message is not modified" confirms the message: it clears `recheckAt`, the
- * failures and the error. An uncertain answer counts as a failed edit, 10 of them set the error,
- * and it moves `recheckAt`, so the recheck goes on.
- */
 function recheck(question: Question, want: number, outcome: CallClass, now: number): Question {
 	const { recheckAt, retryAt: _retryAt, error: _error, ...rest } = question.shown;
 	if (recheckAt === undefined || want !== question.shown.want) return question;
@@ -267,11 +210,9 @@ function delivered(question: Question, event: Extract<QuestionEvent, { type: 'de
 		return event.seq === question.seq && delivery.seq < question.seq ? { ...question, delivery: { ...delivery, attempts: delivery.attempts + 1, error: event.error } } : question;
 	}
 	if (event.seq <= delivery.seq || event.seq > question.seq) return question;
-	// An older answer's success moves the mark; the attempts and error belong to the newest answer.
 	return { ...question, delivery: event.seq === question.seq ? { seq: event.seq, attempts: 0 } : { ...delivery, seq: event.seq } };
 }
 
-/** Applies the `Sent` of a send: a `sending` question opens, a known message takes its file ids. */
 function applySent(question: Question, sent: Sent): Question {
 	const view = viewOf(question).view;
 	if (sent.chat !== question.chat || sent.ref !== question.ref || sent.view?.id !== view?.id || sent.view?.origin !== view?.origin) {
@@ -291,9 +232,7 @@ function refuse(reason: string): never {
 const isFrom = (value: unknown): value is Record<string, unknown> => isRecord(value) && isInt(value.id) && isString(value.first_name) && optional(isString)(value.last_name);
 const isMessageId = (value: unknown): value is number => isInt(value) && value > 0;
 
-/** Throws ShapeError for an update whose fields that `reduce` stores break their types. */
 function checkUpdate(update: Update): void {
-	// Read as unknown: grammY's interfaces carry no index signature, so a plain-object check would narrow them to never.
 	const callback = update.callback_query;
 	if (callback) {
 		const message: unknown = callback.message;
@@ -309,15 +248,7 @@ function checkUpdate(update: Update): void {
 	if (replyTo !== undefined && (!isRecord(replyTo) || !isMessageId(replyTo.message_id))) refuse('the replied-to message breaks its type');
 }
 
-/**
- * Throws ShapeError for an event whose values break the types a question stores, with the
- * predicates `parseQuestion` uses: integers, non-negative counters and times, JSON meta and
- * typed bodies, also where TypeScript lets them through.
- */
 function checkEvent(event: QuestionEvent): void {
-	// JSON first: a cycle, a hole, a BigInt or any other value JSON cannot store fails here. An
-	// input is an update from Telegram, which `checkUpdate` reads field by field: only its
-	// scalars reach the question.
 	if (event.type !== 'input' && !storable(event)) refuse(`the ${String(event.type)} event is not JSON`);
 	switch (event.type) {
 		case 'ask': {
@@ -354,16 +285,6 @@ function checkEvent(event: QuestionEvent): void {
 	}
 }
 
-/**
- * One event against one question. `now` at or past `expiresAt` closes the question first, for
- * every event, `ask` included, so a late input is `stale: closed`. Throws ShapeError for an
- * event, a `now` or labels that break their types, and for an `ask`, `edit` or `close` whose
- * spec or body breaks a check of section 8, so every question it returns passes `parseQuestion`.
- *
- *   let { question } = reduce(undefined, { type: 'ask', spec, ref, chat, allow: [chat] }, { now });
- *   ({ question } = reduce(question, { type: 'sent', sent }, { now }));
- *   const { question: next, calls, handled } = reduce(question, { type: 'input', update }, { now });
- */
 export function reduce(question: Question | undefined, event: QuestionEvent, ctx: { now: number; labels?: Labels }): Result {
 	if (!isNat(ctx.now)) refuse('now is not a non-negative integer');
 	const labels = ctx.labels ? checkLabels(ctx.labels) : defaultLabels;

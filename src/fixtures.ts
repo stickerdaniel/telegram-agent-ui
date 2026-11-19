@@ -1,6 +1,3 @@
-// Test fixtures derived from the records in facts/records/: a real tap and a real reply from
-// Telegram for iOS, and real answers to sends and edits. Chat 111 is a private chat with user
-// 111, the bot is 222, and the recorded question is `probe001` on message 632.
 import type { Update } from '@grammyjs/types';
 import send from '../facts/records/01-send-rich-with-keyboard.json';
 import unchanged from '../facts/records/02-edit-unchanged.json';
@@ -22,7 +19,6 @@ if (!recordedTap?.callback_query?.message || !recordedReply?.message?.reply_to_m
 const tapRecord = recordedTap;
 const replyRecord = recordedReply;
 
-/** A tap as Telegram for iOS sent it, with the given callback data, message, chat and user. */
 export function tap(options: { button: number; ref?: string; id?: string; message?: number; chat?: number; user?: number; inaccessible?: boolean }): Update {
 	const update = structuredClone(tapRecord);
 	const callback = update.callback_query;
@@ -33,19 +29,11 @@ export function tap(options: { button: number; ref?: string; id?: string; messag
 	callback.id = options.id ?? callback.id;
 	callback.from = { ...callback.from, id: options.user ?? USER };
 	callback.data = `q:${options.ref ?? REF}:${options.button}`;
-	// An InaccessibleMessage holds only chat, message id and date 0.
 	callback.message = options.inaccessible ? { chat, message_id: messageId, date: 0 } : { ...message, chat, message_id: messageId };
 	return update;
 }
 
-/**
- * A reply as Telegram for iOS sent it. The replied-to message carries the recorded keyboard
- * with `markupRef` as its ref, or no keyboard when `markupRef` is null. `text: null` drops
- * the text, so `caption` alone or nothing remains. `forwarded` makes it a forward of a hidden
- * user's message.
- */
 export function reply(options: { id?: number; replyTo?: number; markupRef?: string | null; text?: string | null; caption?: string; chat?: number; user?: number; forwarded?: boolean } = {}): Update {
-	// The clone is edited in place: grammY's ReplyMessage type cannot be rebuilt by a spread.
 	const update = structuredClone(replyRecord);
 	const message = update.message;
 	const replyTo = message?.reply_to_message;
@@ -66,14 +54,12 @@ export function reply(options: { id?: number; replyTo?: number; markupRef?: stri
 	return update;
 }
 
-/** A message that replies to nothing. */
 export function plain(text = 'hello'): Update {
 	const update = reply({ text });
 	delete update.message?.reply_to_message;
 	return update;
 }
 
-/** The recorded answers of the cloud Bot API, as a transport reports them. */
 export const responses = {
 	send: send.body as CallResponse,
 	album: album.body as CallResponse,
@@ -83,7 +69,6 @@ export const responses = {
 
 export const NOW = 1_794_908_513_000;
 
-/** One event at `now`, returning the next question. Throws when the event leaves none. */
 export function step(question: Question | undefined, event: QuestionEvent, now = NOW): Question {
 	const next = reduce(question, event, { now }).question;
 	if (!next) throw new Error(`${event.type} left no question`);
@@ -92,20 +77,14 @@ export function step(question: Question | undefined, event: QuestionEvent, now =
 
 export const input = (update: Update): QuestionEvent => ({ type: 'input', update });
 
-/** A freshly asked question in chat 111, answerable by user 111. */
 export function asked(spec: Question['spec'], extra: { expiresAt?: number; meta?: Json; topic?: number } = {}): Question {
 	return step(undefined, { type: 'ask', spec, ref: REF, chat: CHAT, allow: [USER], ...(spec.view !== undefined ? { viewOrigin: ORIGIN } : {}), ...extra });
 }
 
-/** The `Sent` a body step on message 632 gives a question. */
 export function sentFor(question: Question): Sent {
 	return { chat: CHAT, message: MESSAGE, files: [], ref: REF, ...(question.spec.view !== undefined ? { view: { id: question.spec.view, origin: ORIGIN } } : {}) };
 }
 
-/**
- * The question of `spec` in every status: answered by a tap on button 0 with callback id
- * `a0`, or by reply 700, and closed from each of sending, open and answered.
- */
 export function states(spec: Question['spec']) {
 	const sending = asked(spec);
 	const open = step(sending, { type: 'sent', sent: sentFor(sending) });

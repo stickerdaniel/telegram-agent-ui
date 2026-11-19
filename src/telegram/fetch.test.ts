@@ -1,5 +1,3 @@
-// fetchCall against a local Bot API server: JSON calls, multipart uploads streamed from the
-// opened file, and each kind of answer as `classify` reads it.
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { memoryFile } from '../chat/harness.ts';
 import { classify } from '../core/classify.ts';
@@ -13,7 +11,6 @@ beforeEach(() => {
 });
 afterEach(() => server.stop());
 
-/** A file of `size` bytes whose stream yields 64 KiB chunks and counts what was read. */
 function streamedFile(path: string, size: number, type: string): Publishable & { read: number } {
 	const chunk = 65_536;
 	const file = {

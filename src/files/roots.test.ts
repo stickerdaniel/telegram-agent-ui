@@ -1,4 +1,3 @@
-// The rules of 4.7 for files that leave the machine, on real files and links in a temp tree.
 import { afterEach, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -11,7 +10,6 @@ afterEach(() => {
 	for (const tree of trees.splice(0)) rmSync(tree, { recursive: true, force: true });
 });
 
-/** A home directory with a project below it and a file beside the project. */
 function tree() {
 	const home = mkdtempSync(join(tmpdir(), 'tau-roots-'));
 	trees.push(home);
@@ -44,9 +42,7 @@ test('a path outside the roots, a link that leaves them and a secret name are re
 	expect(await readTextInRoots(join(home, 'outside.md'), options)).toMatchObject({ kind: 'refused', code: 'outside-roots' });
 	expect(await readTextInRoots('link.md', options)).toMatchObject({ kind: 'refused', code: 'outside-roots' });
 	expect(await readTextInRoots('.env', options)).toMatchObject({ kind: 'refused', code: 'secret-file' });
-	// A link judged by where it leads: the target's name is a secret.
 	expect(await readTextInRoots('innocent.md', options)).toMatchObject({ kind: 'refused', code: 'secret-file' });
-	// A second root widens the set.
 	expect(await readTextInRoots('../outside.md', { ...options, roots: [project, home] })).toMatchObject({ kind: 'refused', code: 'publish-root' });
 });
 

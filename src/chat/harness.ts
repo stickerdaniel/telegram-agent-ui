@@ -1,6 +1,3 @@
-// Test doubles for createChat: a Telegram model on `fakeCall` that keeps what each message shows
-// and fails chosen calls, and a store wrapper that records every stored value that would not
-// read back. Not part of the package.
 import { NOT_MODIFIED } from '../core/classify.ts';
 import { isRecord, sameJson } from '../core/check.ts';
 import { parseQuestion } from '../core/parse.ts';
@@ -11,28 +8,15 @@ import { fakeCall, faultyStore } from '../testing/index.ts';
 import { PACING } from './calls.ts';
 import { type ChatIO, createChat } from './create.ts';
 
-// Every chat test of this process sends to chat 111. Pacing it to one call per second would
-// serialize hundreds of runs, so it is off here; the pacing test turns it on for itself.
 PACING.interval = 0;
 
-/**
- * How a scripted call fails. `lost` and `gateway` reach the server, which applies them, and lose
- * or garble the answer. `refused`, `token` and `busy` are refused before the server applies them.
- * `busy` carries the time from which a retry is allowed.
- */
 export type Fault = 'lost' | 'gateway' | 'refused' | 'token' | { busy: number };
 
-/** What a message shows: its body and keyboard, as the last call that reached the server left them. */
 export type Shown = { rich_message: unknown; reply_markup?: unknown };
 
 export const shownOf = (payload: Record<string, unknown>): Shown => ({ rich_message: payload.rich_message, ...(payload.reply_markup !== undefined ? { reply_markup: payload.reply_markup } : {}) });
 const MEDIA = new Set(['sendPhoto', 'sendVideo', 'sendDocument']);
 
-/**
- * A Telegram model behind `fakeCall`. It numbers messages from 1001, keeps what each shows,
- * answers an edit that changes nothing with 400 "message is not modified", and fails the call
- * with index `n` (0-based, counted over the model's life) as `fail(n, fault)` says.
- */
 export function telegram() {
 	const shows = new Map<number, Shown>();
 	const replies = new Map<number, unknown>();
@@ -76,21 +60,16 @@ export function telegram() {
 
 	const fake = fakeCall(Array.from({ length: 500 }, () => answer));
 	return {
-		/** The transport for createChat. */
 		call: (call: Call, files?: Record<string, Publishable>) => fake.call(call, files),
 		calls: fake.calls,
 		shows,
-		/** The message id each files message replied to. */
 		replies,
-		/** Fails the call with index `n` from the model's start. */
 		fail(n: number, fault: Fault) {
 			faults.set(n, fault);
 		},
-		/** How many calls the model has answered. */
 		get count() {
 			return index;
 		},
-		/** The id the next message will get. */
 		get nextMessage() {
 			return next + 1;
 		},
@@ -98,12 +77,6 @@ export function telegram() {
 }
 export type Telegram = ReturnType<typeof telegram>;
 
-/**
- * Wraps a store so that every value written is checked as it would be read back: a question
- * must pass `parseQuestion` after a JSON round trip and equal it, an index entry is a ref, a
- * tombstone `{ v: 1, at }`. Each breach lands in `breaches`; the write goes on, so a test sees
- * the state that the breach produced.
- */
 export function checkedStore(inner: Store) {
 	const breaches: string[] = [];
 	const check = (key: string, value: unknown) => {
@@ -122,14 +95,12 @@ export function checkedStore(inner: Store) {
 	return { store, breaches };
 }
 
-/** Every question in a store, as `parseQuestion` reads it, by ref. */
 export async function questions(store: Store): Promise<Map<string, Question | undefined>> {
 	const found = new Map<string, Question | undefined>();
 	for (const key of await store.list('q:')) found.set(key.slice(2), parseQuestion(await store.get(key)));
 	return found;
 }
 
-/** A Publishable over bytes in memory. `closed` counts its closes. */
 export function memoryFile(path: string, bytes = new Uint8Array([1, 2, 3]), type = 'image/png'): Publishable & { closed: number } {
 	return {
 		path,
@@ -144,10 +115,6 @@ export function memoryFile(path: string, bytes = new Uint8Array([1, 2, 3]), type
 	};
 }
 
-/**
- * A chat over a checked, faulty memory store and a Telegram model, at a clock that a test can
- * move. `io` overrides any part of createChat's input.
- */
 export function setup(io: Partial<ChatIO> = {}) {
 	const server = telegram();
 	const checked = checkedStore(memoryStore());
@@ -157,7 +124,6 @@ export function setup(io: Partial<ChatIO> = {}) {
 	return { server, store, inner: checked.store, breaches: checked.breaches, clock, chat };
 }
 
-/** A view client whose `context` records each write and fails the writes `failing` names by their 0-based index. It holds no view and no choice. */
 export function fakeViews(failing: number[] = []) {
 	const writes: { id: string; ref: string; body: unknown; choice?: unknown }[] = [];
 	const views: ViewClient = {
@@ -177,7 +143,6 @@ export function fakeViews(failing: number[] = []) {
 	return { views, writes };
 }
 
-/** A file reader over memory: every path opens as a small file, and `opened` keeps each one. */
 export function fakeFiles() {
 	const opened: ReturnType<typeof memoryFile>[] = [];
 	const files = async (paths: string[]): Promise<Readable> => {

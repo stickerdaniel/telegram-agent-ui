@@ -1,6 +1,3 @@
-// `flush` delivers answers to `onAnswer`: at least once, the newest answer, retried per pass,
-// undelivered after 5 rejections until the seq rises or `flush({ restart: true })` renews them.
-// It is serial per chat. `wait` polls the store.
 import { describe, expect, test } from 'bun:test';
 import { choice, text } from '../core/builders.ts';
 import { defaultLabels } from '../core/types.ts';
@@ -11,7 +8,6 @@ import { setup } from './harness.ts';
 const BODY = 1001;
 const deploy = choice({ markdown: 'Deploy now?' }, [{ label: 'Deploy' }, { label: 'Wait' }]);
 
-/** Waits until `condition` holds, polling every 2 ms, for at most 10 s. */
 async function until(condition: () => boolean) {
 	const deadline = Date.now() + 10_000;
 	while (!condition()) {
@@ -20,7 +16,6 @@ async function until(condition: () => boolean) {
 	}
 }
 
-/** A chat whose onAnswer records each delivery and runs `consumer` on it. */
 function delivering(consumer: (answer: Delivered, chat: Chat) => Promise<void> = async () => {}) {
 	const got: Delivered[] = [];
 	const holder: { chat?: Chat } = {};
@@ -52,7 +47,6 @@ describe('onAnswer', () => {
 		const { chat, store, got } = delivering();
 		await chat.send(deploy, { ref: REF });
 		await chat.handle(tap({ button: 0, message: BODY }));
-		// The pass reads and writes nothing before the delivery; the next set is the delivered record.
 		store.fail('set', 'before');
 		await expect(chat.flush()).rejects.toThrow('failed before it ran');
 		await chat.flush();
@@ -95,7 +89,6 @@ describe('onAnswer', () => {
 		expect(got).toHaveLength(DELIVERY_ATTEMPTS);
 		expect((await chat.get(REF))?.delivery).toMatchObject({ seq: 0, attempts: DELIVERY_ATTEMPTS });
 
-		// A new chat alone renews nothing: only a listener start, flush({ restart: true }), does.
 		const other: Delivered[] = [];
 		const listener = createChat({
 			call: server.call,
@@ -114,7 +107,6 @@ describe('onAnswer', () => {
 		expect(other).toHaveLength(DELIVERY_ATTEMPTS);
 		expect((await chat.get(REF))?.delivery).toMatchObject({ seq: 0, attempts: 2 * DELIVERY_ATTEMPTS });
 
-		// A rising seq gets a fresh budget.
 		await chat.handle(tap({ button: 1, id: 'correction', message: BODY }));
 		await chat.flush();
 		expect(got.at(-1)?.delivery).toBe(`${REF}:2`);
@@ -132,7 +124,6 @@ describe('onAnswer', () => {
 				first = false;
 				await gate;
 			}
-			// The consumer's check: commit only the answer that is still current.
 			if ((await own.get(answer.ref))?.seq === answer.seq) committed.push(answer.delivery);
 		});
 		await chat.send(deploy, { ref: REF });
@@ -165,12 +156,10 @@ describe('flush', () => {
 		await chat.send(deploy, { ref: 'a' });
 		await chat.send(deploy, { ref: 'b' });
 		await chat.handle(tap({ button: 0, ref: 'b', message: BODY + 1 }));
-		// The pass delivers b and waits there; a is answered after the pass looked at it.
 		const first = chat.flush();
 		await until(() => got.length === 1);
 		await chat.handle(tap({ button: 1, ref: 'a', message: BODY }));
 		const second = chat.flush();
-		// A second pass that ran beside the first would deliver a now.
 		await Bun.sleep(50);
 		expect(got.map((answer) => answer.delivery)).toEqual(['b:1']);
 		release();
@@ -209,7 +198,6 @@ describe('wait', () => {
 		await chat.send(deploy, { ref: REF });
 		const started = Date.now();
 		expect(await chat.wait(REF, { seconds: 50 })).toEqual({ status: 'pending', listener: { alive: false } });
-		// At once: far below the 50 s it would wait for a live listener, with room for a loaded machine.
 		expect(Date.now() - started).toBeLessThan(10_000);
 	});
 

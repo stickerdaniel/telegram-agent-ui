@@ -1,9 +1,7 @@
-// The CLI parser, read from the params of the real commands.
 import { expect, test } from 'bun:test';
 import { findCommand } from '../commands/table.ts';
 import { parseArgs } from './args.ts';
 
-/** What `args` parse to for the named command. */
 function parse(args: string[]) {
 	const found = findCommand(args);
 	if (!found) throw new Error(`no command in ${args.join(' ')}`);

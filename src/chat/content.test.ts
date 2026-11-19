@@ -1,6 +1,3 @@
-// Attachments end to end: real files below a root, opened through `readPublishable`, sent by
-// `createChat` over `fetchCall` to the Bot API server of fake-server.ts, which answers file sends
-// as records 06 to 08 show. These are the deterministic items of the stage 7 row of the plan.
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,25 +13,16 @@ import { isUpdate } from '../telegram/listen.ts';
 import { PACING } from './calls.ts';
 import { createChat } from './create.ts';
 
-// One send per second would make each test wait for every file step.
 PACING.interval = 0;
 
 const CHAT = 111;
 const BODY = 1001;
 
-// Real files and loopback HTTP take seconds on a loaded host: each test has 30 s.
 const DEADLINE = 30_000;
 
 const cleanups: (() => unknown)[] = [];
-// The body of the running test: `settled` resolves once it ends, and `torn` marks a teardown that
-// ran before it ended.
 const bodies: { settled: Promise<void>; torn: boolean }[] = [];
 
-/**
- * A test with DEADLINE whose body teardown waits for. A body that outlives its deadline still
- * runs, so the directory and the server stay until it settles, or for one more DEADLINE. A body
- * that fails after its teardown rejects `settled` unhandled, so the run reports it.
- */
 function acceptance(name: string, body: () => Promise<void>): void {
 	test(
 		name,
@@ -69,11 +57,6 @@ afterEach(
 	{ timeout: 2 * DEADLINE },
 );
 
-/**
- * A chat over `fetchCall` to a fresh fake Bot API, with a file reader that opens below a temp
- * root through `readPublishable` and counts what it was asked to open. `wrap` changes what the
- * chat's transport answers.
- */
 function machine(wrap: (call: Transport) => Transport = (call) => call) {
 	const server: FakeBotApi = fakeBotApi();
 	cleanups.push(() => server.stop());
@@ -89,18 +72,15 @@ function machine(wrap: (call: Transport) => Transport = (call) => call) {
 	};
 	const store = memoryStore();
 	const chat = createChat({ call: wrap(fetchCall({ token: TOKEN, apiUrl: server.url })), store, chat: CHAT, files });
-	/** Writes `bytes` to `name` below the root and returns its path. */
 	const file = (name: string, bytes: number[] = [1, 2, 3]) => {
 		const path = join(root, name);
 		writeFileSync(path, Uint8Array.from(bytes));
 		return path;
 	};
-	/** The calls that send or edit a message, by method. */
 	const sends = () => server.received.map((call) => call.method).filter((method) => method !== 'answerCallbackQuery');
 	return { server, chat, store, asked, closed, file, sends };
 }
 
-/** The id of the message a stored message replies to. */
 function replyOf(server: FakeBotApi, id: number): unknown {
 	const reply = server.messages.get(id)?.reply_to_message;
 	return typeof reply === 'object' && reply !== null && 'message_id' in reply ? reply.message_id : undefined;
@@ -126,7 +106,6 @@ acceptance('an album of 3 images under a body of 1,500 characters, with the ques
 	expect(album[0]?.caption).toBe('before');
 	expect(server.calls('sendMediaGroup')[0]?.files.map((part) => [...part.bytes])).toEqual([[1], [2, 2], [3, 3, 3]]);
 
-	// The buttons answer on the body: the album carries none.
 	const tapped = server.tap(BODY, 1);
 	if (!isUpdate(tapped)) throw new Error('the tap has no update id');
 	expect(await chat.handle(tapped)).toMatchObject({ kind: 'answered', ref: 'album1', answer: { kind: 'choice', label: 'Revert' } });
@@ -152,7 +131,6 @@ acceptance('photos, a video and 2 documents under one body all reply to the body
 	expect([1002, 1003, 1004, 1005, 1006].map((id) => replyOf(server, id))).toEqual([BODY, BODY, BODY, BODY, BODY]);
 	expect([1002, 1003, 1004, 1005, 1006].map((id) => Object.keys(server.messages.get(id) ?? {}).find((key) => ['photo', 'video', 'document'].includes(key)))).toEqual(['photo', 'photo', 'video', 'document', 'document']);
 
-	// One file of each kind goes out as its own method, a reply to its own body.
 	for (const [name, method] of [
 		['one.png', 'sendPhoto'],
 		['one.mp4', 'sendVideo'],
@@ -180,7 +158,6 @@ acceptance('a caption of 1,025 characters is refused before the body is sent, an
 	expect(asked).toEqual([]);
 	expect(await store.list('')).toEqual([]);
 
-	// The server refuses the same caption, as record 08 shows: the package's limit is the server's.
 	const direct = await fetchCall({ token: TOKEN, apiUrl: server.url })({ method: 'sendMediaGroup', payload: { chat_id: CHAT, media: [{ type: 'photo', media: 'https://x/1.png', caption: 'x'.repeat(1_025) }] } });
 	expect(classify('sendMediaGroup', direct)).toEqual({ kind: 'refused', code: 'server', reason: 'Bad Request: message caption is too long' });
 
@@ -195,12 +172,10 @@ acceptance('a files step that the server refuses after the body returns partial,
 	expect(await chat.send(spec, { ref: 'part1' })).toMatchObject({ ...partial, failed: { step: 2, class: 'refused', reason: 'Bad Request: file is too big' } });
 	expect(await chat.get('part1')).toMatchObject({ status: 'open', sent: { message: BODY, files: [1002, 1003] } });
 
-	// The retry answers from the stored question: the report is still missing, and nothing goes out.
 	expect(await chat.send(spec, { ref: 'part1' })).toMatchObject({ ...partial, failed: { step: 2, class: 'uncertain' } });
 	await chat.flush();
 	expect(sends()).toEqual(['sendRichMessage', 'sendMediaGroup', 'sendDocument']);
 
-	// A plain message has no store: its partial names the files that arrived.
 	server.fail('sendMediaGroup', { status: 502, description: 'Bad Gateway' });
 	expect(await chat.send(message({ markdown: 'The screens.' }, { attach: [{ path: file('c.png') }, { path: file('d.png') }] }))).toMatchObject({
 		kind: 'partial',
@@ -210,14 +185,12 @@ acceptance('a files step that the server refuses after the body returns partial,
 });
 
 acceptance('a files step whose answer is lost after the server applied it returns partial, and a retry and flush send nothing again', async () => {
-	// The transport loses every answer to an album: the server keeps the messages.
 	const { server, chat, file, sends } = machine((call) => async (request, files) => {
 		const response = await call(request, files);
 		return request.method === 'sendMediaGroup' ? { noAnswer: true } : response;
 	});
 	const spec = choice({ markdown: 'Keep the new screens?' }, [{ label: 'Keep' }, { label: 'Revert' }], { attach: [{ path: file('a.png') }, { path: file('b.png') }, { path: file('report.pdf') }] });
 	expect(await chat.send(spec, { ref: 'lost1' })).toMatchObject({ kind: 'partial', ref: 'lost1', sent: { message: BODY, files: [] }, failed: { step: 1, class: 'uncertain' } });
-	// The album arrived; the report after it was never sent.
 	expect([1002, 1003].map((id) => replyOf(server, id))).toEqual([BODY, BODY]);
 	expect(sends()).toEqual(['sendRichMessage', 'sendMediaGroup']);
 

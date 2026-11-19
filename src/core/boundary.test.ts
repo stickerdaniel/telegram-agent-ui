@@ -1,4 +1,3 @@
-// What may cross into a stored question: labels, buttons, JSON values, refs and rich blocks.
 import { describe, expect, test } from 'bun:test';
 import type { RichText } from '@grammyjs/types';
 import { asked, CHAT, NOW, ORIGIN, REF, sentFor, states, step, USER } from '../fixtures.ts';
@@ -48,7 +47,6 @@ describe('buttons inside a body', () => {
 	const foreignCallback: Body = { blocks: [{ type: 'paragraph', text: ['Pick ', { type: 'button', button: { text: 'Other', callback_data: 'q:other:1' } }, '?'] }] };
 	const nested: Body = { blocks: [{ type: 'details', summary: 'More', blocks: [{ type: 'table', cells: [[{ text: { type: 'button', button: { text: 'Copy', copy_text: { text: 'x' } } }, align: 'left', valign: 'top' }]] }] }] };
 
-	// The 2 Markdown inputs whose recorded sendRichMessage answers held a button node, and the same tags in HTML and other cases.
 	const recordedMarkdown: Body[] = [
 		{ markdown: 'F: <tg-button type="callback_data" data="q:other:1">x</tg-button> end' },
 		{ markdown: 'G: [btn](tg://btn) and <tg-button type="url" url="https://t.me">u</tg-button>' },
@@ -79,7 +77,6 @@ describe('buttons inside a body', () => {
 			expect(() => reduce(undefined, ask({ spec: text(body) }), { now: NOW })).toThrow(ShapeError);
 			expect(parseQuestion({ ...structuredClone(textOpen), spec: { ...textOpen.spec, body } })).toBeUndefined();
 		}
-		// A Markdown link is no button.
 		expect(() => render(message({ markdown: 'G: [btn](tg://btn) and the tg-button docs' }), { chat: CHAT })).not.toThrow();
 	});
 });
@@ -116,7 +113,6 @@ describe('values JSON cannot store', () => {
 		const question = asked(text({ markdown: 'Go?' }));
 		expect(parseQuestion({ ...structuredClone(question), meta: cyclic })).toBeUndefined();
 		expect(parseQuestion({ ...structuredClone(question), spec: { ...question.spec, body: cyclicBody } })).toBeUndefined();
-		// The same object twice without a cycle: JSON writes it twice.
 		const shared: Json = { id: 7 };
 		const ok = reduce(undefined, ask({ meta: { first: shared, second: shared } }), { now: NOW }).question;
 		expect(ok?.meta).toEqual({ first: { id: 7 }, second: { id: 7 } });
@@ -166,7 +162,6 @@ test('the fixtures used here survive a JSON round trip', () => {
 });
 
 describe('nesting of a body and a meta', () => {
-	/** A one-paragraph blocks body of `levels` objects and arrays: body, blocks, paragraph, then bold wrappers. */
 	const bodyOf = (levels: number): Body => {
 		let rich: RichText = 'Go?';
 		for (let n = 0; n < levels - 3; n++) rich = { type: 'bold', text: rich };
@@ -191,7 +186,6 @@ describe('nesting of a body and a meta', () => {
 		roundTrip(edited);
 		const closed = reduce(sentOpen({ blocks: [{ type: 'paragraph', text: 'Old?' }] }), { type: 'close', body: at48 }, { now: NOW }).question;
 		roundTrip(closed);
-		// Quoting a 48-level original would nest 50 levels: the resolved form is the new body alone.
 		const resolved = step(fromAsk, { type: 'close', body: { blocks: [{ type: 'paragraph', text: 'Done' }] } });
 		const shown = renderEdit(resolved).payload.rich_message as Body;
 		expect(shown).toEqual({ blocks: [{ type: 'paragraph', text: 'Done' }] });
@@ -209,7 +203,6 @@ describe('nesting of a body and a meta', () => {
 		expect(() => render(message(at49), { chat: CHAT })).toThrow(ShapeError);
 		expect(() => renderEdit({ sent: { chat: CHAT, message: 1, files: [] }, body: at49 })).toThrow(ShapeError);
 		expect(parseQuestion({ ...structuredClone(open), spec: { ...open.spec, body: at49 } })).toBeUndefined();
-		// The review's case: 61 bold wrappers in an edit.
 		expect(() => reduce(open, { type: 'edit', body: bodyOf(64) }, { now: NOW })).toThrow(ShapeError);
 	});
 
@@ -295,7 +288,6 @@ describe('hint words', () => {
 	});
 });
 
-/** How many levels of objects and arrays a value nests, as the 48-level rule counts them. */
 function storableLevels(value: unknown): number {
 	return Array.isArray(value) ? 1 + Math.max(0, ...value.map(storableLevels)) : value !== null && typeof value === 'object' ? 1 + Math.max(0, ...Object.values(value).map(storableLevels)) : 0;
 }

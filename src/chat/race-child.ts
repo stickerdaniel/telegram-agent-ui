@@ -1,9 +1,3 @@
-// One side of the two-process race test: `bun race-child.ts <dir> <log> <op> <id> <run>`. It
-// builds a chat on `fileStore(dir)`, writes `<log>.ready-<id>`, waits up to 300 s for `<log>.go`
-// (else exits 3), runs `op` on question `probe001` and prints the result as JSON. Both sides
-// append every call to `<log>`, one JSON line each, so the file holds the calls in the order they
-// were made. Each side also writes `<log>.trace-<id>`: its store operations, lock phases and calls
-// with wall-clock times, which the test prints when a run fails.
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { choice } from '../core/builders.ts';
 import type { Call, CallResponse, Store } from '../core/types.ts';
@@ -16,7 +10,6 @@ export const SPEC = choice({ markdown: 'Deploy now?' }, [{ label: 'Deploy' }, { 
 export const OPS = ['send', 'tap0', 'tap1', 'close', 'edit'] as const;
 export type Op = (typeof OPS)[number];
 
-/** A transport that appends each call to `log` and answers as the Bot API does on success, with message 1001 for a send. */
 export function logged(log: string) {
 	return async (call: Call): Promise<CallResponse> => {
 		appendFileSync(log, `${JSON.stringify({ method: call.method, payload: call.payload })}\n`);
@@ -40,7 +33,6 @@ export function act(chat: Chat, op: Op, id: string) {
 	}
 }
 
-/** A store that notes each operation, and each phase of a lock, with the wall-clock time in `trace`. */
 export function traced(store: Store, note: (what: string) => void): Store {
 	const timed =
 		<A extends unknown[], R>(name: string, op: (...args: A) => Promise<R>) =>
@@ -83,7 +75,6 @@ if (import.meta.main) {
 	const [dir, log, op, id, run] = process.argv.slice(2);
 	const known = OPS.find((name) => name === op);
 	if (!dir || !log || !known || !id) throw new Error('usage: race-child.ts <dir> <log> <op> <id> <run>');
-	// Appended at once, so a child that is killed or hangs still leaves its trace.
 	const note = (what: string) => appendFileSync(`${log}.trace-${id}`, `${Date.now()} pid ${process.pid} run ${run} ${op}: ${what}\n`);
 	const transport = logged(log);
 	const call = async (request: Call) => {
@@ -92,11 +83,8 @@ if (import.meta.main) {
 		note(`call ${request.method} done`);
 		return response;
 	};
-	// This test checks consistency, not timeouts: LockTimeout has its own tests in the store.
-	// A starved holder kept the lock 172 s at load average 30, so the wait per holder is 30 min.
 	const chat = createChat({ call, store: traced(fileStore(dir, { lockWait: 1_800_000 }), note), chat: CHAT });
 	writeFileSync(`${log}.ready-${id}`, '');
-	// A parent that died never writes the go file: give up after 300 s instead of waiting for good.
 	const deadline = Date.now() + 300_000;
 	while (!existsSync(`${log}.go`)) {
 		if (Date.now() > deadline) process.exit(3);

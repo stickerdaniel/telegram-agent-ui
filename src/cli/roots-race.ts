@@ -1,11 +1,3 @@
-// Loaded with `bun --preload` by the CLI tests, not part of the package: it schedules real link
-// swaps between the filesystem calls of the body file reader, as a process racing the reader
-// would. TAU_RACE_GIVEN is the path argument, a link; TAU_RACE_SAFE a file in the root;
-// TAU_RACE_TARGET the file that must not leave. TAU_RACE_MODE picks the schedule:
-// - `retarget`: after the open, the link turns to the safe file; after its resolution, the safe
-//   file turns into a link to the target. The opened file stays the target throughout.
-// - `read`: the link leads to the safe file until the first read on the handle, and to the
-//   target after it.
 import { mock } from 'bun:test';
 import * as fs from 'node:fs/promises';
 
@@ -24,7 +16,6 @@ mock.module('node:fs/promises', () => ({
 			await actual.symlink(safe, path);
 		}
 		if (mode === 'read') {
-			// The reader takes the content in `read` calls on the handle; the first one swaps the link.
 			const read = handle.read.bind(handle);
 			let swapped = false;
 			Object.assign(handle, {

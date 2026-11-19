@@ -1,14 +1,9 @@
-// Runtime checks for the rich blocks of a `{ blocks }` body: each block and each RichText node
-// is checked by its `type` and the required fields of its variant in @grammyjs/types 5.0.0
-// (`InputRichBlock` and `RichText` in rich.d.ts), recursively. Optional fields are checked
-// when present, and fields the types do not name pass.
 import type { InputRichBlock, RichText } from '@grammyjs/types';
 import { arrayOf, type Check, isBool, isInt, isNat, isRecord, isString, oneOf, optional } from './check.ts';
 
 type Fields = Record<string, unknown>;
 const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const isTrue = (value: unknown): value is true => value === true;
-/** A Telegram User (manage.d.ts), as a text mention names it. */
 const isTelegramUser = (value: unknown): value is Fields =>
 	isRecord(value) &&
 	isInt(value.id) &&
@@ -21,7 +16,6 @@ const isTelegramUser = (value: unknown): value is Fields =>
 	optional(isTrue)(value.added_to_attachment_menu);
 const isDateTimeFormat = (value: unknown): value is string => isString(value) && /^(r|w?[dD]?[tT]?)$/.test(value);
 
-// RichText nodes that wrap `text` and add at most one string field.
 const WRAPS: Record<string, string | undefined> = {
 	bold: undefined,
 	italic: undefined,
@@ -44,7 +38,6 @@ const WRAPS: Record<string, string | undefined> = {
 	reference: 'name',
 	reference_link: 'reference_name',
 };
-// The action field of a RichMessageButton, with the check of its value.
 const ACTIONS: Record<string, Check<unknown>> = {
 	url: isString,
 	callback_data: isString,
@@ -63,7 +56,6 @@ const isButton = (value: unknown): value is Fields =>
 function richNode(node: Fields): boolean {
 	const { type } = node;
 	if (!isString(type)) return false;
-	// Own keys only: `type: '__proto__'` or `'toString'` names no wrapper.
 	if (Object.hasOwn(WRAPS, type)) {
 		const field = WRAPS[type];
 		return isRichText(node.text) && (field === undefined || isString(node[field]));
@@ -86,7 +78,6 @@ function richNode(node: Fields): boolean {
 	}
 }
 
-/** A RichText: a string, an array of RichText, or a node of a known type with its fields. */
 export function isRichText(value: unknown): value is RichText {
 	if (isString(value)) return true;
 	if (Array.isArray(value)) return arrayOf(isRichText)(value);
@@ -104,10 +95,8 @@ const isCell = (value: unknown): value is Fields =>
 	oneOf('top', 'middle', 'bottom')(value.valign);
 const isItem = (value: unknown): value is Fields =>
 	isRecord(value) && isBlocks(value.blocks) && optional(isTrue)(value.has_checkbox) && optional(isTrue)(value.is_checked) && optional(isInt)(value.value) && optional(oneOf('a', 'A', 'i', 'I', '1'))(value.type);
-// The `type` values of MessageEntity.CommonMessageEntity, which carry no field beside offset and length.
 const COMMON_ENTITIES = new Set(['mention', 'hashtag', 'cashtag', 'bot_command', 'url', 'email', 'phone_number', 'bold', 'italic', 'underline', 'strikethrough', 'spoiler', 'blockquote', 'expandable_blockquote', 'code']);
 
-/** A MessageEntity of the union in message.d.ts: its variant by `type`, with that variant's required and optional fields. */
 function isEntity(value: unknown): value is Fields {
 	if (!isRecord(value) || !isString(value.type) || !isNat(value.offset) || !isNat(value.length)) return false;
 	switch (value.type) {
@@ -125,8 +114,6 @@ function isEntity(value: unknown): value is Fields {
 			return COMMON_ENTITIES.has(value.type);
 	}
 }
-// The optional fields of each InputMedia variant (methods.d.ts) beside type, media and the caption
-// fields every variant has. `thumbnail` is a file to upload, which a JSON body (InputMedia<never>) cannot hold.
 const MEDIA: Record<string, Record<string, Check<unknown>>> = {
 	animation: { show_caption_above_media: isBool, width: isNat, height: isNat, duration: isNat, has_spoiler: isBool },
 	audio: { duration: isNat, performer: isString, title: isString },
@@ -135,7 +122,6 @@ const MEDIA: Record<string, Record<string, Check<unknown>>> = {
 	video: { cover: isString, start_timestamp: isNat, show_caption_above_media: isBool, width: isNat, height: isNat, duration: isNat, supports_streaming: isBool, has_spoiler: isBool },
 	voice_note: { duration: isNat },
 };
-/** The InputMedia that a media block of type `variant` requires, with the declared types of its optional fields. */
 function isMedia(value: unknown, variant: string): value is Fields {
 	const fields = Object.hasOwn(MEDIA, variant) ? MEDIA[variant] : undefined;
 	if (!fields || !isRecord(value) || value.type !== variant || !isString(value.media) || Object.hasOwn(value, 'thumbnail')) return false;
@@ -190,10 +176,8 @@ function block(node: Fields): boolean {
 	}
 }
 
-/** One InputRichBlock of a known type with its fields. */
 export const isRichBlock = (value: unknown): value is InputRichBlock<never> => isRecord(value) && block(value);
 
-/** An array of InputRichBlocks. */
 export function isBlocks(value: unknown): value is InputRichBlock<never>[] {
 	return arrayOf(isRichBlock)(value);
 }

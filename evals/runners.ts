@@ -1,9 +1,3 @@
-// What one eval run needs and the two ways to make one. `prepare` builds a run's directory: the
-// project with the eval's files, a `telegram-agent-ui` on PATH that runs this checkout's bin in
-// fake mode, and with `skill` the skill under `.claude/skills/`. A runner then works in the
-// project and reports how its process ended: `claudeRunner` starts `claude -p` on a named model,
-// and `recordedRunner` replays commands recorded beforehand, so the grader is tested without a
-// model. `storedQuestions` reads the questions fake mode stored, for the grader.
 import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { arrayOf, isInt, isRecord, isString } from '../src/core/check.ts';
@@ -15,12 +9,6 @@ import type { Expectation } from './grade.ts';
 const REPO = join(import.meta.dir, '..');
 const SKILL = join(REPO, 'skills', 'telegram-agent-ui');
 
-/**
- * One prompt of `evals.json`. `files` maps a path relative to the project to its text; `../`
- * reaches outside the project. A `guardrail` prompt tests a behaviour no run may break, such as
- * sending nothing or leaking no file: one failed run of it fails the criterion. `scenario`
- * names a failure script of fake mode, such as `no-view-host`.
- */
 export type Eval = { id: number; name: string; prompt: string; expected: string; files: Record<string, string>; expectations: Expectation[]; guardrail?: boolean; scenario?: string };
 
 const isExpectation = (value: unknown): value is Expectation =>
@@ -46,7 +34,6 @@ const isEval = (value: unknown): value is Eval =>
 	(value.guardrail === undefined || typeof value.guardrail === 'boolean') &&
 	(value.scenario === undefined || isString(value.scenario));
 
-/** The evals of an `evals.json` value, or a thrown error that names the first one that breaks the format. */
 export function parseEvals(value: unknown): Eval[] {
 	const evals = isRecord(value) && Array.isArray(value.evals) ? value.evals : [];
 	const broken = evals.findIndex((item) => !isEval(item));
@@ -54,21 +41,14 @@ export function parseEvals(value: unknown): Eval[] {
 	return evals.filter(isEval);
 }
 
-/** One run of one eval: its directory, the project inside it, and the environment of every command. */
 export type Job = { eval: Eval; skill: boolean; run: number; root: string; work: string; fake: string; env: Record<string, string> };
 
-/**
- * How a run ended: `done` when the agent finished, else the process failure that makes its
- * calls no evidence of behaviour. `transcript` is for a person to read.
- */
 export type Ran = { transcript: string } & ({ status: 'done' } | { status: 'failed'; code: number } | { status: 'timeout'; seconds: number });
 
-/** A runner works through a prepared job. `signal` stops it: no further step starts, and the running process is killed. */
 export type Runner = { name: string; run(job: Job, signal?: AbortSignal): Promise<Ran> };
 
 const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
-/** Builds the directory of one run under `root` and returns the job. */
 export function prepare(evalCase: Eval, skill: boolean, run: number, root: string): Job {
 	const work = join(root, 'project');
 	const fake = join(root, 'fake');
@@ -81,11 +61,9 @@ export function prepare(evalCase: Eval, skill: boolean, run: number, root: strin
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, text);
 	}
-	// This checkout's bin under the published name, so the skill's commands and allowed tools match.
 	const shim = join(bin, 'telegram-agent-ui');
 	writeFileSync(shim, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(REPO, 'src', 'cli', 'bin.ts'))} "$@"\n`);
 	chmodSync(shim, 0o755);
-	// The skill without its evals, which hold the expectations.
 	const evals = join(SKILL, 'evals');
 	if (skill) cpSync(SKILL, join(work, '.claude', 'skills', 'telegram-agent-ui'), { recursive: true, filter: (path) => path !== evals && !path.startsWith(`${evals}${sep}`) });
 	const env: Record<string, string> = {};
@@ -94,23 +72,15 @@ export function prepare(evalCase: Eval, skill: boolean, run: number, root: strin
 	return { eval: evalCase, skill, run, root, work, fake, env: { ...env, PATH: `${bin}:${env.PATH ?? '/usr/bin:/bin'}`, TELEGRAM_AGENT_UI_FAKE: fake, ...scenario } };
 }
 
-/** One recorded command: the arguments after `telegram-agent-ui`, and its stdin. */
 export type Step = { args: string[]; stdin?: string };
 
 const isStep = (value: unknown): value is Step => isRecord(value) && arrayOf(isString)(value.args) && (value.stdin === undefined || isString(value.stdin));
 
-/** The transcripts of a recorded runner, by eval id and condition, or a thrown error for a value of another shape. */
 export function parseTranscripts(value: unknown): Record<string, Step[]> {
 	if (!isRecord(value) || !Object.values(value).every(arrayOf(isStep))) throw new Error('the transcripts are no object of eval ids to lists of { args, stdin? }');
 	return Object.fromEntries(Object.entries(value).map(([id, steps]) => [id, arrayOf(isStep)(steps) ? steps : []]));
 }
 
-/**
- * Replays the transcript of a job in its project, one command after the other: the one keyed
- * `<eval id>:with` or `<eval id>:without` for the job's condition, else the one keyed by the eval
- * id. An eval without a transcript runs nothing. A run that `signal` stopped ends as failed with
- * code 130, so its calls are no evidence.
- */
 export function recordedRunner(transcripts: Readonly<Record<string, readonly Step[]>>): Runner {
 	return {
 		name: 'recorded',
@@ -136,10 +106,8 @@ export function recordedRunner(transcripts: Readonly<Record<string, readonly Ste
 	};
 }
 
-// What both conditions know: the CLI exists and reaches the user. The skill adds the how.
 export const CONTEXT = "The command telegram-agent-ui is installed on this machine: it sends to the user's Telegram chat and reads their answers. telegram-agent-ui help lists its commands.";
 
-/** The arguments of `claude -p` for one job; the prompt goes on stdin. */
 export function claudeArgs(model: string): string[] {
 	return [
 		'-p',
@@ -149,7 +117,6 @@ export function claudeArgs(model: string): string[] {
 		'stream-json',
 		'--verbose',
 		'--no-session-persistence',
-		// Only the run's project settings and skills load, and no MCP server.
 		'--setting-sources',
 		'project',
 		'--strict-mcp-config',
@@ -164,7 +131,6 @@ export function claudeArgs(model: string): string[] {
 	];
 }
 
-/** Runs `claude -p` on `model` in the job's project, with a deadline of `seconds` per run. A nonzero exit or the deadline ends the run as a failure. */
 export function claudeRunner(options: { model: string; claude?: string; seconds?: number }): Runner {
 	const { model, claude = 'claude', seconds = 600 } = options;
 	return {
@@ -180,7 +146,6 @@ export function claudeRunner(options: { model: string; claude?: string; seconds?
 	};
 }
 
-/** The questions fake mode stored in `fake`, for the grader. */
 export async function storedQuestions(fake: string): Promise<Question[]> {
 	const dir = join(fake, 'store');
 	if (!existsSync(dir)) return [];

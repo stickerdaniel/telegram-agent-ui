@@ -1,8 +1,3 @@
-// The served shell, started as a page starts it: the body the handler serves, Telegram's SDK as
-// a stand-in, and the exact inline script of that page run against happy-dom's document, with
-// every request going to the handler. It checks what the browser builds: the frame and its
-// empty sandbox, the page prefix, `q` and `t`, the context, Telegram's main button, a theme
-// change and the expiry. Layout, scrolling and swipes need a real browser and a phone.
 import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import { mergeLabels } from '../core/labels.ts';
@@ -11,7 +6,6 @@ import { createViewHandler } from './handler.ts';
 import { MEDIA_WAIT, PLACEHOLDER_SVG } from './media.ts';
 import { SHELL_SCRIPT } from './shell.ts';
 
-// A missing media object is asked for again over 200 ms here, in place of 10 s.
 MEDIA_WAIT.window = 200;
 MEDIA_WAIT.pause = 50;
 
@@ -23,7 +17,6 @@ afterEach(async () => {
 
 const { hex, launch } = await launchKey();
 
-/** Polls `read` every 10 ms until it returns a value, for at most 5 s. */
 async function until<T>(read: () => T | null | undefined | false): Promise<T> {
 	for (const end = Date.now() + 5_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 10))) {
 		const value = read();
@@ -32,25 +25,16 @@ async function until<T>(read: () => T | null | undefined | false): Promise<T> {
 	throw new Error('the shell did not get there within 5 s');
 }
 
-/** A binding of `ask1` to the Markdown tab and the page tab. */
 const BINDING = { options: [{ index: 0, label: 'Keep notes', tab: 'Notes' }, { index: 1, label: 'Use mock', tab: 'Mock' }], once: false };
 
-// The view most tests open: a Markdown tab and a page tab with one image each.
 const NOTES_AND_MOCK = {
 	media: [{ type: 'image/png', bytes: MEDIA.png }],
 	tabs: [
-		// The image's destination in a table cell carries an escaped pipe; the code example names the same file.
 		{ label: 'Notes', content: { markdown: '# Notes\n\n<script>alert(1)</script>\n\n| Image |\n| --- |\n| ![shot](a\\|b.png) |\n\n`![example](a|b.png)`', media: { 'a|b.png': 0 } } },
 		{ label: 'Mock', content: { page: '<h1>Mock</h1><img src="media:0">' } },
 	],
 };
 
-/**
- * A published view of `published`'s tabs and media, NOTES_AND_MOCK by default, the context of
- * `ask1` hidden from its first read, and the shell opened at `path` with launch data. With
- * `binding` the context carries it, and with `diff` the view ends with a diff tab no option
- * names. `answer(status)` makes the next POST of a choice get that status before the host sees it.
- */
 async function openShell(
 	path: string,
 	hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1,
@@ -74,7 +58,6 @@ async function openShell(
 	const html = await (await handle(new Request(`${ORIGIN}${path}`))).text();
 	const inline = `<script>${SHELL_SCRIPT}</script>`;
 	expect(html).toContain(inline);
-	// The body as served, without the one script, which runs below: innerHTML runs no script.
 	window.document.body.innerHTML = (/<body>([\s\S]*)<\/body>/.exec(html)?.[1] ?? '').replace(inline, '');
 
 	const app = {
@@ -90,7 +73,6 @@ async function openShell(
 		openLink: (url: string) => void app.calls.push(`openLink ${url}`),
 		openTelegramLink: (url: string) => void app.calls.push(`openTelegramLink ${url}`),
 		onEvent: (name: string, handler: () => void) => void app.handlers.set(name, handler),
-		/** What the main button shows now. */
 		main: { text: '', shown: false, enabled: true },
 		MainButton: {
 			setText: (text: string) => {
@@ -124,7 +106,6 @@ async function openShell(
 		if (scripted !== undefined) return Response.json({ error: 'scripted' }, { status: scripted });
 		return handle(new Request(new URL(url, ORIGIN).href, init));
 	};
-	// Pauses of the shell's own asks run at once; the 2 hours of expiry wait for `activated`.
 	const timeout = (run: () => void, ms: number) => (ms > 60_000 ? 0 : setTimeout(run, 0));
 	const globals = { window, document: window.document, location: window.location, history: window.history, fetch: fetchHost, getComputedStyle: window.getComputedStyle.bind(window), DOMParser: window.DOMParser, setTimeout: timeout, clearTimeout: () => {} };
 	new Function(...Object.keys(globals), SHELL_SCRIPT)(...Object.values(globals));
@@ -148,7 +129,6 @@ test('the served shell draws a page in a frame with an empty sandbox behind the 
 		['Notes', 'false'],
 		['Mock', 'true'],
 	]);
-	// Raw HTML in Markdown is a text node.
 	const notes = await until(() => shell.document.querySelector('.markdown'));
 	expect(notes.textContent).toContain('<script>alert(1)</script>');
 	expect(notes.querySelector('script')).toBeNull();
@@ -158,12 +138,10 @@ test('the served shell draws a page in a frame with an empty sandbox behind the 
 });
 
 test("a page's image whose load misses the object after the probe found it gets the placeholder image from the host", async () => {
-	// The probe's read finds the object; every later read misses it.
 	const shell = await openShell(`/?v=${ID}&t=Mock`, (key, read) => key === objectKey && read >= 2);
 	const frame = await until(() => shell.document.querySelector('iframe'));
 	const source = /<img src="([^"]+)">$/.exec(frame.getAttribute('srcdoc') ?? '')?.[1] ?? '';
 	expect(source).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
-	// The frame's own load of that image, as the browser makes it: no Range, the URL as written.
 	const loaded = await shell.fetchHost(source.replaceAll('&amp;', '&'));
 	expect(loaded.status).toBe(200);
 	expect(loaded.headers.get('Content-Type')).toBe('image/svg+xml');
@@ -206,12 +184,10 @@ test('a gallery tab draws its images and an mp4 video that plays inline, each ca
 	expect(gallery.querySelector('b')).toBeNull();
 	const [image, video, missing] = figures.map((figure) => figure.firstElementChild);
 	expect(image?.getAttribute('src')).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
-	// The object the probe found missing shows as the placeholder image.
 	expect(missing?.getAttribute('src')).toBe(placeholderUrl);
 	expect([video?.getAttribute('controls'), video?.getAttribute('playsinline'), video?.getAttribute('preload')]).toEqual(['', '', 'metadata']);
 	expect(shell.document.querySelector('iframe')).toBeNull();
 
-	// The player reads the video in parts: the first bytes, then a seek to the middle.
 	const source = video?.getAttribute('src') ?? '';
 	expect(source).toStartWith(`${ORIGIN}/m/${ID}/g1/1?`);
 	const size = MEDIA.mp4.byteLength;
@@ -227,14 +203,12 @@ test('a gallery tab draws its images and an mp4 video that plays inline, each ca
 });
 
 test('a gallery video whose object goes missing after its probe shows the placeholder image above its caption', async () => {
-	// The probe's read finds the video; every later read misses it.
 	const videoKey = `m:${ID}:g1:0`;
 	const shell = await openShell(`/?v=${ID}`, (key, read) => key === videoKey && read > 1, {
 		published: { media: [{ type: 'video/mp4', bytes: MEDIA.mp4 }], tabs: [{ label: 'Run', content: { gallery: [{ media: 0, type: 'video/mp4', caption: 'The run' }] } }] },
 	});
 	const video = await until(() => shell.document.querySelector('.gallery video'));
 	const figure = video.parentElement;
-	// The player's own load: the host answers the placeholder image, which no video element plays.
 	const loaded = await shell.fetchHost(video.getAttribute('src') ?? '', { headers: { Range: 'bytes=0-1' } });
 	expect([loaded.status, loaded.headers.get('Content-Type'), await loaded.text()]).toEqual([200, 'image/svg+xml', PLACEHOLDER_SVG]);
 	video.dispatchEvent(new shell.window.Event('error'));
@@ -258,7 +232,6 @@ test('a diff tab draws one text line per line of the diff, classed by its kind',
 		['add', '+new'],
 	]);
 	expect(drawn.querySelector('b')).toBeNull();
-	// One tab needs no tab row.
 	expect(shell.document.querySelector('#tabs')).toBeNull();
 });
 
@@ -291,7 +264,6 @@ test("a view without a choice shows no main button and closes through Telegram's
 	expect(shell.document.querySelector('iframe')).toBeNull();
 });
 
-/** The text of the line below the content, or null while it is hidden. */
 const hintOf = (document: Window['document']) => {
 	const hint = document.querySelector('.hint');
 	return hint && !hint.hasAttribute('hidden') ? hint.textContent : null;
@@ -309,7 +281,6 @@ test('on a bound tab the main button alone chooses its option; an unbound tab an
 	await until(() => unbound.document.querySelector('.diff'));
 	await until(() => unbound.document.querySelector('.context'));
 	expect(unbound.app.main.shown).toBe(false);
-	// A stray tap, such as a late event of a hidden button, neither posts nor closes.
 	unbound.app.mainButton();
 	expect(posts(unbound.requests)).toEqual([]);
 	expect(unbound.app.calls).not.toContain('close');
@@ -349,7 +320,6 @@ test('a failed POST keeps the view open and sends the same choice id again, and 
 
 	const stale = await openShell(`/?v=${ID}&q=ask1&t=Notes`, () => false, { binding: BINDING });
 	await until(() => stale.app.main.text === 'Choose Keep notes');
-	// The launch data turns 601 s old while the view stays open.
 	setSystemTime(new Date(Date.now() + 601_000));
 	stale.app.mainButton();
 	await until(() => hintOf(stale.document) === labels.viewExpired);
@@ -366,7 +336,6 @@ test('a binding that shows late turns the main button into Choose, and one still
 
 	const missing = await openShell(`/?v=${ID}&q=ask1&t=Mock`, (key) => key === `c:${ID}:ask1`, { binding: BINDING });
 	await until(() => missing.document.querySelector('iframe'));
-	// The shell's pauses run at once here; its 10 s of asking end once the clock passes them.
 	setSystemTime(new Date(Date.now() + 11_000));
 	await until(() => hintOf(missing.document) === labels.viewLate);
 	expect(missing.app.main.shown).toBe(false);

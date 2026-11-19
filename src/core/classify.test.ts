@@ -4,7 +4,6 @@ import conflict from '../../facts/records/05-two-polls.json';
 import { responses } from '../fixtures.ts';
 import { classify } from './classify.ts';
 
-// The rows of the outcome table of 4.5.
 test('success is ok with its result', () => {
 	expect(classify('sendRichMessage', responses.send)).toEqual({ kind: 'ok', result: (responses.send as { result: unknown }).result });
 });

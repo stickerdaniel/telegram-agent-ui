@@ -1,6 +1,3 @@
-// fetchFile against the local fake Bot API: the authorization record before any read, the
-// cache and its one object per file, two processes on one file, a killed downloader, cut-off
-// and redirected transfers, hostile names and links, and a local server's directory.
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +11,6 @@ import { FETCH_LIMITS, type FileSource, fetchFile } from './fetch-file.ts';
 import { isUpdate } from './listen.ts';
 import { recordFiles, sha256 } from './inbound.ts';
 
-// Tests that start processes get room for a machine 10 times slower than an idle one.
 const SPAWNING = 120_000;
 const CHILD = join(import.meta.dir, 'fetch-child.ts');
 
@@ -25,7 +21,6 @@ afterEach(async () => {
 
 const BYTES = new TextEncoder().encode('%PDF-1.7 a report of 48 bytes, more or less....');
 
-/** A fresh store and cache under a temp root of its real path, and a fake Bot API. */
 function setup() {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-fetch-')));
 	const server = fakeBotApi();
@@ -41,7 +36,6 @@ function setup() {
 	return { root, server, storeDir, store, cache, fetch };
 }
 
-/** Records a document `id` of message `message` by `sender` in `chat`, as the listener does for an admitted message. */
 async function sent(store: Store, id: string, options: { unique?: string; name?: string; chat?: number; sender?: number; message?: number } = {}) {
 	const update: unknown = {
 		update_id: 1,
@@ -57,7 +51,6 @@ async function sent(store: Store, id: string, options: { unique?: string; name?:
 	await recordFiles(store, update);
 }
 
-/** The calls that reached the server: getFile and downloads. */
 const reads = (server: FakeBotApi) => server.received.filter((call) => call.method === 'getFile' || call.method === 'download');
 
 test('fetch makes no Bot API call for an unknown id, another chat or a sender removed from allow, cached or not', async () => {
@@ -66,7 +59,6 @@ test('fetch makes no Bot API call for an unknown id, another chat or a sender re
 	await sent(store, 'elsewhere', { chat: 222 });
 	server.file('elsewhere', { unique: 'u-elsewhere', path: 'documents/file_1.pdf', bytes: BYTES });
 	expect(await fetch('elsewhere')).toMatchObject({ kind: 'refused', code: 'forbidden' });
-	// A sender in allow when the file came, and since removed: a copy in the cache stays unread.
 	await sent(store, 'theirs', { sender: 333 });
 	server.file('theirs', { unique: 'u-theirs', path: 'documents/file_2.pdf', bytes: BYTES });
 	expect(await fetch('theirs', { allow: [111, 333] })).toMatchObject({ kind: 'ok', cached: false });
@@ -95,7 +87,6 @@ test('the copy is reused after a restart and under a new name, without another g
 	server.file('first', { unique: 'u-same', path: 'documents/file_4.pdf', bytes: BYTES });
 	const first = await fetch('first');
 	expect(first).toMatchObject({ kind: 'ok', cached: false, path: join(cache, await sha256('u-same'), 'report.pdf') });
-	// Another file id of the same file, sent later under another name, read by a new process.
 	const restarted = fileStore(storeDir);
 	await sent(restarted, 'second', { unique: 'u-same', name: 'renamed.pdf', message: 702 });
 	expect(await fetch('second', { store: restarted })).toEqual({ kind: 'ok', id: 'second', path: join(cache, await sha256('u-same'), 'report.pdf'), bytes: BYTES.length, cached: true });
@@ -124,7 +115,6 @@ test('a redirect is not followed, and an absolute path from the cloud is refused
 	expect(await fetch('absolute')).toMatchObject({ kind: 'refused', code: 'shape' });
 	expect(server.calls('download')).toHaveLength(1);
 	expect(readdirSync(cache)).toEqual([]);
-	// No error names the URL with the token.
 	expect(JSON.stringify(await fetch('moved'))).not.toContain(TOKEN.slice(TOKEN.indexOf(':') + 1));
 });
 
@@ -137,13 +127,11 @@ test('a file past the cap is refused, and the cache keeps nothing of it', async 
 		server.file('big', { unique: 'u-big', path: 'documents/file_8.pdf', bytes: BYTES });
 		expect(await fetch('big')).toMatchObject({ kind: 'refused', code: 'too-large' });
 		expect(readdirSync(cache)).toEqual([]);
-		// getFile names a size below the cap and the download names none: the stream itself is cut at the cap.
 		await sent(store, 'understated');
 		server.file('understated', { unique: 'u-understated', path: 'documents/file_14.pdf', bytes: BYTES, size: 5, end: 'unsized' });
 		const probe = await globalThis.fetch(`${server.url}/file/bot${TOKEN}/documents/file_14.pdf`);
 		expect(probe.headers.get('content-length')).toBeNull();
 		expect((await probe.arrayBuffer()).byteLength).toBe(BYTES.length);
-		// The refusal of the streamed count, not of a declared size: that one names the size.
 		expect(await fetch('understated')).toEqual({ kind: 'refused', code: 'too-large', reason: 'the file has more than 10 bytes' });
 		expect(server.calls('download')).toHaveLength(2);
 		expect(readdirSync(cache)).toEqual([]);
@@ -152,12 +140,7 @@ test('a file past the cap is refused, and the cache keeps nothing of it', async 
 	}
 });
 
-/**
- * Makes every FileHandle write of this process take at most `most` bytes, until the returned
- * function runs. `started` runs as each write starts.
- */
 async function shortWrites(dir: string, most: number, started: () => void = () => {}): Promise<() => void> {
-	// The (buffer, offset, length) form of FileHandle.write, the one fetchFile uses.
 	type Write = (this: FileHandle, buffer: Uint8Array, offset?: number, length?: number) => Promise<{ bytesWritten: number }>;
 	const probe = await open(join(dir, 'probe'), 'w');
 	const prototype: { write: Write } = Object.getPrototypeOf(probe);
@@ -195,7 +178,6 @@ test('no write of a transfer starts past its deadline, and an expired transfer l
 	server.file('slow', { unique: 'u-slow', path: join(local, 'slow.pdf'), bytes: BYTES.slice(0, 6) });
 	const ms = FETCH_LIMITS.local.ms;
 	FETCH_LIMITS.local.ms = 200;
-	// A clock that each write moves on by 120 ms: the deadline at 200 ms falls after the second write.
 	const clock = { now: 0 };
 	const starts: number[] = [];
 	const restore = await shortWrites(root, 2, () => {
@@ -213,7 +195,6 @@ test('no write of a transfer starts past its deadline, and an expired transfer l
 		restore();
 		FETCH_LIMITS.local.ms = ms;
 	}
-	// The same copy with time to spare completes.
 	expect(await fetch('slow', { from: { localFiles: local } })).toMatchObject({ kind: 'ok', bytes: 6 });
 });
 
@@ -237,7 +218,6 @@ test('a hostile name and a planted link stay inside the cache', async () => {
 	expect(hostile).toMatchObject({ kind: 'ok', path: join(cache, await sha256('u-hostile'), 'sshauthorized_keys') });
 	expect(existsSync(join(root, '.ssh'))).toBe(false);
 
-	// A link in place of an object's directory, to a directory outside the cache.
 	const outside = join(root, 'outside');
 	mkdirSync(outside);
 	writeFileSync(join(outside, 'report.pdf'), 'OUTSIDE');
@@ -274,7 +254,6 @@ test("a local server's file is copied only from localFiles, also under a secret 
 	expect(server.calls('download')).toEqual([]);
 });
 
-/** Starts fetch-child.ts on the setup's store and server and resolves once it runs. */
 async function child(at: ReturnType<typeof setup>, id: string) {
 	const process = Bun.spawn([globalThis.process.execPath, CHILD, at.storeDir, at.cache, at.server.url, id], { stdout: 'pipe', stderr: 'inherit' });
 	cleanups.push(() => process.kill('SIGKILL'));
@@ -287,7 +266,6 @@ async function child(at: ReturnType<typeof setup>, id: string) {
 	}
 	return {
 		process,
-		/** The child's result line. */
 		async result(): Promise<unknown> {
 			for (;;) {
 				const line = out.split('\n').find((candidate) => candidate.startsWith('{'));
@@ -300,7 +278,6 @@ async function child(at: ReturnType<typeof setup>, id: string) {
 	};
 }
 
-/** Resolves once `check` holds, polling every 20 ms; throws after `ms`. */
 async function until(check: () => boolean, what: string, ms = 60_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (!check()) {
@@ -320,7 +297,6 @@ test(
 		const first = await child(at, 'slow');
 		await until(() => at.server.calls('download').length === 1, 'the first download');
 		const second = await child(at, 'slow');
-		// Longer than the store's lock wait of 10 s: the second waits on with the wait of a transfer.
 		await Bun.sleep(11_000);
 		release();
 		const [one, two] = await Promise.all([first.result(), second.result()]);
@@ -347,7 +323,6 @@ test(
 		const second = await child(at, 'taken');
 		expect(await second.result()).toMatchObject({ kind: 'ok', cached: false, path: join(at.cache, await sha256('u-taken'), 'report.pdf') });
 		expect(at.server.calls('download')).toHaveLength(2);
-		// The killed process's staging directory is gone: the cache holds the one object.
 		expect(readdirSync(at.cache)).toEqual([await sha256('u-taken')]);
 	},
 	SPAWNING,

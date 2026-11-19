@@ -1,5 +1,3 @@
-// The bin as a subprocess against a local Bot API server, on a fresh machine of its own: temp
-// HOME and XDG directories, the token in the config's .env, and every call to the server's URL.
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +12,6 @@ import { fileStore } from '../store/file.ts';
 import { type FakeBotApi, fakeBotApi, TOKEN } from '../telegram/fake-server.ts';
 import { MEDIA } from '../view/fixtures.ts';
 
-// A loaded machine starts a Bun process in seconds; every wait below has its own deadline.
 setDefaultTimeout(240_000);
 
 const BIN = join(import.meta.dir, 'bin.ts');
@@ -22,7 +19,6 @@ const FAST = join(import.meta.dir, 'fast-clock.ts');
 const RACE = join(import.meta.dir, 'roots-race.ts');
 const CONFIG: Config = { v: 1, bot: { id: 222, username: 'probe_bot' }, chat: 111, users: [111], labels: {}, publishRoots: [], views: {} };
 
-// Run last first: a process ends before its directory and its server go.
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -30,7 +26,6 @@ afterEach(async () => {
 
 type Machine = { root: string; work: string; env: Record<string, string>; server: FakeBotApi; store: Store; question: (ref: string) => Promise<ReturnType<typeof parseQuestion>> };
 
-/** A machine with its own HOME and XDG directories and its own Bot API server, configured unless `fresh`. */
 async function machine(options: { fresh?: boolean } = {}): Promise<Machine> {
 	const server = fakeBotApi();
 	const root = mkdtempSync(join(tmpdir(), 'tau-cli-'));
@@ -39,13 +34,11 @@ async function machine(options: { fresh?: boolean } = {}): Promise<Machine> {
 	const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), TELEGRAM_AGENT_UI_API_URL: server.url };
 	if (!options.fresh) await writeConfig(env, { ...CONFIG, apiUrl: server.url }, TOKEN);
 	const store = fileStore(paths(env).store(222));
-	// The working directory lies below HOME: HOME itself is no root files may come from.
 	const work = join(root, 'work');
 	mkdirSync(work);
 	return { root, work, env, server, store, question: async (ref) => parseQuestion(await store.get(`q:${ref}`)) };
 }
 
-/** Starts the bin with `args` in the machine's directory. */
 function spawn(at: Machine, args: string[], options: { stdin?: string; env?: Record<string, string>; cwd?: string; preload?: string } = {}) {
 	const child = Bun.spawn([process.execPath, '--preload', FAST, ...(options.preload ? ['--preload', options.preload] : []), BIN, ...args], {
 		cwd: options.cwd ?? at.work,
@@ -61,9 +54,7 @@ function spawn(at: Machine, args: string[], options: { stdin?: string; env?: Rec
 	cleanups.push(() => child.kill('SIGKILL'));
 	return {
 		child,
-		/** What the child wrote on stderr so far. */
 		err: () => err,
-		/** The exit code and the one JSON object on stdout. */
 		async result(): Promise<{ code: number; out: Record<string, unknown>; err: string }> {
 			const text = await new Response(child.stdout).text();
 			const code = await child.exited;
@@ -79,10 +70,8 @@ function spawn(at: Machine, args: string[], options: { stdin?: string; env?: Rec
 	};
 }
 
-/** Runs the bin to its end. */
 const run = (at: Machine, args: string[], options: { stdin?: string; env?: Record<string, string>; cwd?: string; preload?: string } = {}) => spawn(at, args, options).result();
 
-/** Resolves once `check` holds, polling every 50 ms; throws after `ms`. */
 async function until(check: () => boolean | Promise<boolean>, what: string, ms = 120_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (!(await check())) {
@@ -91,7 +80,6 @@ async function until(check: () => boolean | Promise<boolean>, what: string, ms =
 	}
 }
 
-/** A listener of the bin, started once its first poll reached the server. */
 async function listener(at: Machine, args: string[] = []) {
 	const polls = at.server.calls('getUpdates').length;
 	const process = spawn(at, ['listen', ...args]);
@@ -99,15 +87,12 @@ async function listener(at: Machine, args: string[] = []) {
 	return process;
 }
 
-/** Writes `text` to a file in the machine's working directory and returns its name. */
 function file(at: Machine, name: string, text: string): string {
 	writeFileSync(join(at.work, name), text);
 	return name;
 }
 
-/** The id of the message the last send created. */
 const lastMessage = (at: Machine) => [...at.server.messages.keys()].at(-1) ?? 0;
-/** The lines of a JSON lines file the machine's commands wrote, once it has `count`. */
 async function lines(at: Machine, name: string, count: number): Promise<Record<string, unknown>[]> {
 	const path = join(at.work, name);
 	const read = () => (existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean) : []);
@@ -117,7 +102,6 @@ async function lines(at: Machine, name: string, count: number): Promise<Record<s
 
 test('init, listen, ask, a tap and wait return the answer, and a text reply answers a text question', async () => {
 	const at = await machine({ fresh: true });
-	// The token is typed on stdin; init pairs through /start <code>.
 	const pairing = spawn(at, ['init'], { stdin: `${TOKEN}\n` });
 	await until(() => /start=([a-z2-7]{12})/.test(pairing.err()), 'the pairing link');
 	const code = /https:\/\/t\.me\/probe_bot\?start=([a-z2-7]{12})/.exec(pairing.err())?.[1];
@@ -152,7 +136,6 @@ test('a listener killed after an answer was stored shows the mark and delivers a
 	const asked = await run(at, ['ask', '-o', 'Merge', '-o', 'Wait', file(at, 'q.md', 'Merge now?')]);
 	const ref = String(asked.out.ref);
 	const message = lastMessage(at);
-	// The toast is the first call after the answer's set: it hangs, and the listener dies there.
 	const release = at.server.stall('answerCallbackQuery');
 	at.server.tap(message, 0);
 	await until(async () => (await at.question(ref))?.status === 'answered', 'the stored answer');
@@ -167,8 +150,6 @@ test('a listener killed after an answer was stored shows the mark and delivers a
 	expect(delivered).toMatchObject({ kind: 'answered', ref, seq: 1, answer: { label: 'Merge' }, delivery: `${ref}:1` });
 	await until(() => at.server.calls('editMessageText').length > 0, 'the edit with the mark');
 	expect(at.server.messages.get(message)?.reply_markup).toMatchObject({ inline_keyboard: [[{ text: '✓ Merge' }], [{ text: 'Wait' }]] });
-	// The listener stores the delivery once the command exited. The tap comes again with the
-	// restart's first poll and changes nothing.
 	await until(async () => (await at.question(ref))?.delivery.seq === 1, 'the stored delivery');
 	expect(await at.question(ref)).toMatchObject({ seq: 1, applied: [expect.stringMatching(/^cq:/)] });
 	second.child.kill('SIGTERM');
@@ -180,7 +161,6 @@ test('two listen starts leave one lease holder, and the second exits 5', async (
 	const first = await listener(at);
 	const second = await spawn(at, ['listen']).result();
 	expect(second).toMatchObject({ code: EXIT.stopped, out: { error: 'stopped', code: 'lease' } });
-	// The second never held the lease, so it made no call at all.
 	expect(at.server.calls('getWebhookInfo')).toHaveLength(1);
 	expect(first.child.exitCode).toBeNull();
 	first.child.kill('SIGTERM');
@@ -194,9 +174,7 @@ test('an answer command that fails 5 times shows as undelivered in info, and a r
 	const ref = String(asked.out.ref);
 	at.server.tap(lastMessage(at), 0);
 	await lines(at, 'attempts.jsonl', 5);
-	// The listener stores each failure once the command exited.
 	await until(async () => (await at.question(ref))?.delivery.attempts === 5, 'the fifth stored failure');
-	// The listener flushes every 200 ms here: 10 more flushes try no sixth time.
 	await Bun.sleep(2_000);
 	expect((await lines(at, 'attempts.jsonl', 5)).length).toBe(5);
 	const info = await run(at, ['info', '--json']);
@@ -204,8 +182,6 @@ test('an answer command that fails 5 times shows as undelivered in info, and a r
 	failing.child.kill('SIGTERM');
 	await failing.result();
 
-	// A restart renews the budget: one more failure leaves 4 attempts, and the next one runs. It
-	// hangs, so the stored count stays at 6 while info reads it.
 	const renewed = await listener(at, ['--on-answer', 'cat >> attempts.jsonl; [ "$(wc -l < attempts.jsonl)" -ge 7 ] && sleep 60; exit 1']);
 	await until(async () => (await at.question(ref))?.delivery.attempts === 6, 'the renewed failure');
 	await lines(at, 'attempts.jsonl', 7);
@@ -239,7 +215,6 @@ test('a rejected token stops the listener with exit 5, and any other command wit
 	const listening = await listener(at);
 	await run(at, ['ask', '--yes-no', file(at, 'q.md', 'Deploy now?')]);
 	at.server.revoke();
-	// The toast of this tap meets the 401 inside handle, which rejects with TokenRefused.
 	at.server.tap(lastMessage(at), 0);
 	expect(await listening.result()).toMatchObject({ code: EXIT.stopped, out: { error: 'stopped', code: 'token' } });
 	expect(await run(at, ['send', file(at, 'm.md', 'Build passed.')])).toMatchObject({ code: EXIT['no-config'], out: { error: 'no-config' } });
@@ -275,7 +250,6 @@ test('send prints the Sent that edit takes, and edit --ref and close change a qu
 	expect(await run(at, ['edit', JSON.stringify(sent.out), '-'], { stdin: 'Build passed.' })).toMatchObject({ code: 0, out: { sent: sent.out } });
 	expect(at.server.messages.get(1001)?.rich_message).toEqual({ markdown: 'Build passed.' });
 
-	// A heartbeat in the store stands for a live listener.
 	await fileStore(paths(at.env).store(222)).set('listener', { v: 1, heartbeat: Date.now() });
 	const asked = await run(at, ['ask', '-o', 'Merge', '-o', 'Wait', file(at, 'q.md', 'Merge now?')]);
 	const ref = String(asked.out.ref);
@@ -336,10 +310,8 @@ test('a body file outside the roots, through a link that leaves them or with a s
 		[['close', 'merge1', '.env'], 'secret-file'],
 	];
 	for (const [args, code] of cases) expect(await run(at, args), args.join(' ')).toMatchObject({ code: EXIT.refused, out: { error: 'refused', code } });
-	// Run from HOME, every file of the home directory would be allowed.
 	expect(await run(at, ['send', 'outside.md'], { cwd: at.root })).toMatchObject({ code: EXIT.refused, out: { code: 'publish-root' } });
 	expect(at.server.received).toEqual([]);
-	// A root from publishRoots widens the set.
 	const extra = join(at.root, 'shared');
 	mkdirSync(extra);
 	writeFileSync(join(extra, 'note.md'), 'a shared note');
@@ -365,14 +337,12 @@ test('send and ask with --file send each file as a reply to the body, after the 
 		['report.pdf', 3],
 	]);
 
-	// A heartbeat in the store stands for a live listener.
 	await at.store.set('listener', { v: 1, heartbeat: Date.now() });
 	const asked = await run(at, ['ask', '--yes-no', '--file', bytes('run.mp4', 4), file(at, 'q.md', 'Ship the recording?')]);
 	expect(asked).toMatchObject({ code: 0, out: { status: 'pending' } });
 	expect(at.server.calls('sendVideo')[0]?.payload).toMatchObject({ reply_parameters: { message_id: 1005 }, supports_streaming: true });
 	expect(await at.question(String(asked.out.ref))).toMatchObject({ status: 'open', sent: { message: 1005, files: [1006] } });
 
-	// A dry run names the files it would upload and sends nothing.
 	const calls = at.server.received.length;
 	expect(await run(at, ['send', '--dry-run', '--file', 'a.png', 'm.md'])).toMatchObject({ code: 0, out: { dryRun: true, files: [join(realpathSync(at.work), 'a.png')] } });
 	expect(at.server.received).toHaveLength(calls);
@@ -400,14 +370,12 @@ test('a file outside the roots or with a secret name is refused before the body,
 	at.server.fail('sendDocument', { status: 400, description: 'Bad Request: file is too big' });
 	const ask = ['ask', '--yes-no', '--ref', 'part1', '--file', 'a.png', '--file', 'report.pdf', body];
 	expect(await run(at, ask)).toMatchObject({ code: EXIT.uncertain, out: { error: 'uncertain', ref: 'part1', message: expect.stringContaining('files step 2') } });
-	// The retry sends nothing and still reports the missing report.
 	expect(await run(at, ask)).toMatchObject({ code: EXIT.uncertain, out: { error: 'uncertain', ref: 'part1' } });
 	expect(at.server.received.map((call) => call.method)).toEqual(['sendRichMessage', 'sendPhoto', 'sendDocument']);
 });
 
 test('a link retargeted between the checks of a body file, or during its read, refuses the file', async () => {
 	const at = await machine();
-	// The real path of the work directory, as realpath gives it: the preload compares exact paths.
 	const work = realpathSync(at.work);
 	writeFileSync(join(at.root, 'outside.md'), 'OUTSIDE_SENTINEL');
 	writeFileSync(join(work, '.env'), 'SECRET_SENTINEL');
@@ -420,7 +388,6 @@ test('a link retargeted between the checks of a body file, or during its read, r
 		const given = join(work, `link${index}.md`);
 		const safe = join(work, `safe${index}.md`);
 		writeFileSync(safe, 'a safe note');
-		// `retarget` starts from a link to the target, `read` from a link to the safe file.
 		symlinkSync(mode === 'retarget' ? target : safe, given);
 		const env = { TAU_RACE_GIVEN: given, TAU_RACE_SAFE: safe, TAU_RACE_TARGET: target, TAU_RACE_MODE: mode };
 		const result = await run(at, ['send', given], { env, preload: RACE });
@@ -442,7 +409,6 @@ test('view put --replace keeps the id and warns for each tab label of the earlie
 	expect(replaced).toMatchObject({ code: 0, out: { id } });
 	expect(replaced.err).toContain(`warning missing-tab: the view ${id} had the tab "B: Wide"`);
 	expect(replaced.err).not.toContain('"A: Compact"');
-	// The same labels replace without a warning.
 	expect((await run(at, ['view', 'put', '--replace', id, '--tab', 'A: Compact', 'a.html', '--tab', 'C: Split', 'c.html'], { env })).err).not.toContain('warning');
 	expect(await run(at, ['view', 'put', '--tab', 'A'], { env })).toMatchObject({ code: EXIT.usage, out: { error: 'usage', message: expect.stringContaining('--tab needs <label> <file>') } });
 });
@@ -463,12 +429,10 @@ test('ask --answer-in view binds each option to its tab, fake mode answers it, a
 	expect(asked).toMatchObject({ code: 0, out: { status: 'pending' } });
 	const ref = String(asked.out.ref);
 
-	// The open question binds Compact and Wide: a replacement without Wide is refused before any upload.
 	const replace = (tabs: string[], ttl?: number) =>
 		run(at, ['view', 'put', '--replace', id, ...(ttl !== undefined ? ['--ttl', String(ttl)] : []), ...tabs.flatMap((label) => ['--tab', label, { Compact: 'a.html', Wide: 'b.html', Notes: 'c.html' }[label] ?? ''])], { env });
 	const viewPuts = () => readFileSync(join(at.work, 'fake', 'views.jsonl'), 'utf8').split('\n').filter((line) => line.includes(`"PUT","path":"/api/view/${id}"`)).length;
 	expect(await replace(['Compact', 'Notes'])).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining(`"Wide" of question ${ref}`) } });
-	// The question lives as long as the first view, 7 days: a replacement of 1 day would end its only answer first.
 	const puts = viewPuts();
 	expect(await replace(['Compact', 'Wide'], 1)).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining(`open questions ${ref}`) } });
 	expect(viewPuts()).toBe(puts);
@@ -480,13 +444,11 @@ test('ask --answer-in view binds each option to its tab, fake mode answers it, a
 	const markup = (call: Record<string, unknown> | undefined) => (isRecord(call?.payload) ? call.payload.reply_markup : undefined);
 	expect(markup(calls[0])).toMatchObject({ inline_keyboard: [[{ text: 'Open view' }]] });
 	expect(markup(calls.at(-1))).toMatchObject({ inline_keyboard: [[{ text: '✓ Compact' }]] });
-	// A closed question binds nothing any more.
 	expect((await run(at, ['close', ref], { env })).code).toBe(0);
 	expect(await replace(['Compact', 'Notes'], 1)).toMatchObject({ code: 0, out: { id } });
 });
 
 test('view put --replace without --ttl refuses a view whose open question lives longer, and a stored question without expiresAt blocks every replacement', async () => {
-	// The command table in this process, in fake mode: no process start is needed for this check.
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tau-replace-')));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 	for (const name of ['a', 'b']) writeFileSync(join(dir, `${name}.html`), `<h1>${name}</h1>`);
@@ -506,10 +468,8 @@ test('view put --replace without --ttl refuses a view whose open question lives 
 	const asked = await invoke('ask', { view: id, answerIn: 'view', options: ['A', 'B'], body: 'Which one should stay?' });
 	if (!asked.ok) throw new Error(JSON.stringify(asked.failure));
 	const ref = String(asked.output.ref);
-	// The question lives as long as its view of 30 days, and a replacement takes 7 days by default.
 	expect(await invoke('view put', { replace: id, tabs })).toMatchObject({ ok: false, failure: { code: 'shape', message: expect.stringContaining(`open questions ${ref}`) } });
 	expect(await invoke('view put', { replace: id, tabs, ttl: 30 })).toMatchObject({ ok: true });
-	// ask never stores a question answered in its view without expiresAt; one written so by hand still blocks.
 	const store = fileStore(join(dir, 'fake', 'store'));
 	const question = parseQuestion(await store.get(`q:${ref}`));
 	if (!question) throw new Error('no question');
@@ -527,7 +487,6 @@ test('view put makes one gallery tab of the images and mp4 videos given under on
 	writeFileSync(join(at.work, 'run.mp4'), MEDIA.mp4);
 	const put = await run(at, ['view', 'put', '--tab', 'Notes', 'notes.md', '--tab', 'Shots', 'a.png', 'run.mp4'], { env });
 	expect(put).toMatchObject({ code: 0, out: { files: [{ bytes: 7 }, { bytes: MEDIA.png.length }, { bytes: MEDIA.mp4.length }] } });
-	// The media go up first, the view last.
 	const uploads = await lines(at, 'fake/views.jsonl', 3);
 	expect(uploads.slice(0, 2).map((upload) => upload.type).sort()).toEqual(['image/png', 'video/mp4']);
 	expect(uploads[2]?.path).toBe(`/api/view/${String(put.out.id)}`);
@@ -539,7 +498,6 @@ test('view put makes one gallery tab of the images and mp4 videos given under on
 			],
 		},
 	});
-	// A label of a gallery and of a text tab is one label used twice.
 	expect(await run(at, ['view', 'put', '--tab', 'Shots', 'a.png', '--tab', 'Shots', 'notes.md'], { env })).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining('used twice') } });
 });
 
@@ -556,7 +514,6 @@ test('an identical ask with its ref returns the stored question after its view l
 	expect(await ask('Which one should stay?')).toMatchObject({ code: 0, out: { ref: 'retry', status: 'pending' } });
 	const stored = parseQuestion(await fileStore(join(fake, 'store')).get('q:retry'));
 	expect(stored?.spec.answer).toMatchObject({ options: [{ label: 'A', tab: 'A' }, { label: 'B', tab: 'B' }] });
-	// The view now holds other labels, and then is gone, so a read of its tabs finds none.
 	expect((await put('C', 'D')).code).toBe(0);
 	expect(await ask('Which one should stay?')).toMatchObject({ code: 0, out: { ref: 'retry', status: 'pending' } });
 	expect((await run(at, ['view', 'delete', id], { env })).code).toBe(0);
@@ -610,7 +567,6 @@ test('a listener killed while its answer command runs leaves no command running'
 	expect(alive()).toBe(true);
 	listening.child.kill('SIGKILL');
 	await listening.child.exited;
-	// Well before the command's deadline of 30 s.
 	await until(() => !alive(), 'the end of the orphaned command', 15_000);
 });
 
@@ -621,7 +577,6 @@ test('init refuses while a listener of the bot runs, and holds the lease while i
 	expect(await run(at, ['init'])).toMatchObject({ code: EXIT.refused, out: { error: 'refused', code: 'conflict' } });
 	expect(at.server.calls('getUpdates')).toHaveLength(polls);
 	expect(listening.child.exitCode).toBeNull();
-	// A killed listener leaves a fresh heartbeat and a lease of a dead process: init takes it over.
 	listening.child.kill('SIGKILL');
 	await listening.child.exited;
 
@@ -636,7 +591,6 @@ test('init pairs again through the configured apiUrl and keeps it with the label
 	const at = await machine();
 	const kept = { ...CONFIG, apiUrl: at.server.url, labels: { yes: 'Ja' }, publishRoots: [join(at.root, 'shared')] };
 	await writeConfig(at.env, kept, TOKEN);
-	// No TELEGRAM_AGENT_UI_API_URL: the config alone names the server.
 	const pairing = spawn(at, ['init'], { env: { TELEGRAM_AGENT_UI_API_URL: '' } });
 	await until(() => /start=([a-z2-7]{12})/.test(pairing.err()), 'the pairing link');
 	at.server.say(`/start ${/start=([a-z2-7]{12})/.exec(pairing.err())?.[1]}`);
@@ -661,10 +615,8 @@ test('next is push only when the stored question carries every meta key as its o
 	await pushing(['session']);
 	expect(await run(at, ['ask', '--yes-no', '--meta', '{"session":"s1"}', body])).toMatchObject({ code: 0, out: { next: 'push' } });
 	expect(await run(at, ['ask', '--yes-no', '--ref', 'held1', body])).toMatchObject({ out: { next: 'wait' } });
-	// The held ref keeps the meta of its first ask, which the answer carries.
 	expect(await run(at, ['ask', '--yes-no', '--ref', 'held1', '--meta', '{"session":"s2"}', body])).toMatchObject({ code: 0, out: { ref: 'held1', next: 'wait' } });
 	expect((await at.question('held1'))?.meta).toBeUndefined();
-	// An inherited property is no key of the meta.
 	await pushing(['toString']);
 	expect(await run(at, ['ask', '--yes-no', body])).toMatchObject({ out: { next: 'wait' } });
 });
@@ -682,7 +634,6 @@ test('listen --on-update hands each admitted update to the command once under it
 	const edit = at.server.push({ edited_message: { message_id: 600, from: DANA, chat: PRIVATE, date: 1, edit_date: 2, caption: 'release notes', document: document('mine') } });
 	const react = at.server.push({ message_reaction: { chat: PRIVATE, message_id: 600, user: DANA, date: 3, old_reaction: [], new_reaction: [{ type: 'emoji', emoji: '👍' }] } });
 	at.server.push({ callback_query: { id: 'cq-desk', from: DANA, chat_instance: '1', data: 'desk:draft:7', message: { message_id: 600, date: 1, chat: PRIVATE } } });
-	// Refused: another chat, another user, a reaction made as a chat.
 	at.server.push({ message: { message_id: 601, from: DANA, chat: { id: 222, type: 'private', first_name: 'Dana' }, date: 1, text: 'elsewhere' } });
 	at.server.push({ message: { message_id: 602, from: { ...DANA, id: 999 }, chat: PRIVATE, date: 1, document: document('theirs') } });
 	at.server.push({ message_reaction: { chat: PRIVATE, message_id: 600, actor_chat: { id: -100, type: 'channel', title: 'News' }, date: 3, old_reaction: [], new_reaction: [] } });
@@ -735,7 +686,6 @@ for (const point of ['record', 'cursor'] as const) {
 		await doomed.child.exited;
 		expect(doomed.child.signalCode).toBe('SIGKILL');
 		const keys = async () => (await at.store.list('up:')).length;
-		// Killed before its receipt write, the listener left no receipt; before its cursor write, it left one.
 		expect(await keys()).toBe(point === 'record' ? 0 : 1);
 		const second = await listener(at, ['--on-update', 'cat >> updates.jsonl']);
 		const received = await lines(at, 'updates.jsonl', 1);
