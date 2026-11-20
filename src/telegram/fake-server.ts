@@ -73,6 +73,7 @@ export function fakeBotApi() {
 	const scripts = new Map<string, Scripted[]>();
 	const stalls = new Map<string, Promise<void>>();
 	let nextUpdate = 125546275;
+	let batching = false;
 	let nextMessage = 1000;
 	let nextTopic = 40;
 	let nextGroup = 14359268162828234;
@@ -111,7 +112,7 @@ export function fakeBotApi() {
 	}
 
 	function deliver(): void {
-		if (!poll || queue.length === 0) return;
+		if (batching || !poll || queue.length === 0) return;
 		const open = poll;
 		poll = undefined;
 		clearTimeout(open.timer);
@@ -243,6 +244,15 @@ export function fakeBotApi() {
 		messages,
 		calls: (method: string) => received.filter((call) => call.method === method),
 		push,
+		batch(pushes: () => void): void {
+			batching = true;
+			try {
+				pushes();
+			} finally {
+				batching = false;
+				deliver();
+			}
+		},
 		tap(id: number, button: number, options: { user?: number; callback?: string } = {}): FakeUpdate {
 			const shown = messages.get(id);
 			if (!shown) throw new Error(`message ${id} does not exist`);

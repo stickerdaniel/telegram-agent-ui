@@ -208,6 +208,47 @@ test('a killed hook prints nothing, and a later hook never takes the answer of i
 	expect(refs[1]).not.toBe(first.ref);
 });
 
+test('two Allow taps that reach the listener in one getUpdates batch allow both waiting hooks', async () => {
+	const at = await machine();
+	await listener(at);
+	const claude = hook(at, 'claude', CLAUDE_INPUT, 10);
+	const first = await question(at);
+	const codex = hook(at, 'codex', CODEX_INPUT, 10);
+	const second = await question(at, 1);
+	at.server.batch(() => {
+		at.server.tap(first.id, 0);
+		at.server.tap(second.id, 0);
+	});
+	const [allowedClaude, allowedCodex] = await Promise.all([claude.result(), codex.result()]);
+	expect(decision(allowedClaude.out)).toEqual(ALLOW);
+	expect(decision(allowedCodex.out)).toEqual(ALLOW);
+	expect(at.server.calls('answerCallbackQuery').map((call) => call.payload.text)).toEqual(['✓ Allow', '✓ Allow']);
+	expect(await stored(at, first.ref)).toMatchObject({ status: 'closed', answer: { value: 'allow' } });
+	expect(await stored(at, second.ref)).toMatchObject({ status: 'closed', answer: { value: 'allow' } });
+});
+
+test('a Deny stays a denial when Allow is tapped on it later, and a new hook for the same call takes nothing from it', async () => {
+	const at = await machine();
+	await listener(at);
+	const denying = hook(at, 'claude', CLAUDE_INPUT, 60);
+	const first = await question(at);
+	at.server.tap(first.id, 1);
+	expect(decision((await denying.result()).out)).toEqual(denied(/Dana denied this on Telegram/));
+	const allowOn = (callback: string) => at.server.push({ callback_query: { id: callback, from: { id: 111, is_bot: false, first_name: 'Dana' }, message: structuredClone(first.sent), chat_instance: '1', data: `q:${first.ref}:0` } });
+	allowOn('reversal');
+	const reversal = await at.server.waitFor('answerCallbackQuery', (call) => call.payload.callback_query_id === 'reversal');
+	expect(reversal.payload.text).toBe(defaultLabels.closed);
+	const asking = hook(at, 'claude', CLAUDE_INPUT, 2);
+	const again = await question(at, 1);
+	expect(again.ref).not.toBe(first.ref);
+	allowOn('stale-allow');
+	await at.server.waitFor('answerCallbackQuery', (call) => call.payload.callback_query_id === 'stale-allow');
+	expect(decision((await asking.result()).out)).toEqual(denied(/deadline/));
+	expect(await stored(at, first.ref)).toMatchObject({ status: 'closed', answer: { index: 1, value: 'deny' } });
+	const reasked = await stored(at, again.ref);
+	expect(reasked && 'answer' in reasked ? reasked.answer : undefined).toBeUndefined();
+});
+
 test('malformed stdin, no config, no listener and a refused send each print a denial', async () => {
 	const at = await machine();
 	for (const input of ['not json', JSON.stringify({ ...(isRecord(CLAUDE_INPUT) ? CLAUDE_INPUT : {}), hook_event_name: 'PreToolUse' }), JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' })]) {
