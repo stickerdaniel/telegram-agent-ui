@@ -97,9 +97,11 @@ function storeStorage(store: Store): ViewStorage {
 	};
 }
 
-function fakeViews(dir: string, log: string, command: string | undefined): ViewClient {
+function fakeViews(dir: string, log: string, command: string | undefined, scenario: Scenario | undefined): ViewClient {
 	const handle = createViewHandler({ storage: storeStorage(fileStore(dir)), botId: String(FAKE_CONFIG.bot.id), allowedUsers: FAKE_CONFIG.users, uploadKey: FAKE_KEYS.upload, mediaKey: FAKE_KEYS.media });
 	const recorded = async (request: Request): Promise<Response> => {
+		if (scenario === 'uncertain') throw new TypeError('fake mode: uncertain');
+		if (scenario === 'refused') return Response.json({ error: 'fake mode: refused' }, { status: 403 });
 		const bytes = new Uint8Array(await request.clone().arrayBuffer());
 		const type = request.headers.get('Content-Type') ?? undefined;
 		let body: unknown;
@@ -144,7 +146,7 @@ async function fakeSession(context: Context, dir: string, onAnswer: ((answer: De
 	const store = fileStore(join(dir, 'store'));
 	await writeListener(store, { heartbeat: Date.now(), ...(scenario === 'no-listener' ? { stopped: 'fake mode: no-listener' } : {}) });
 	const call = recorder(join(dir, 'calls.jsonl'), store, scenario, context.command);
-	const views = scenario === 'no-view-host' ? undefined : fakeViews(join(dir, 'views'), join(dir, 'views.jsonl'), context.command);
+	const views = scenario === 'no-view-host' ? undefined : fakeViews(join(dir, 'views'), join(dir, 'views.jsonl'), context.command, scenario);
 	const config: Config = views ? FAKE_CONFIG : { ...FAKE_CONFIG, views: {} };
 	const roots = await rootsOf(context);
 	const chat = createChat({ call, store, chat: config.chat, allow: config.users, files: fileReader(roots, context), ...(views ? { viewOrigin: FAKE_VIEW_ORIGIN, views } : {}), ...(onAnswer ? { onAnswer } : {}) });

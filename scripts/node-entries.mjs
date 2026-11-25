@@ -143,7 +143,7 @@ assert.deepEqual((await version.json()).formats, [1, 'answers']);
 
 assert.deepEqual(
 	commands.map((command) => command.name),
-	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'hook permission-request', 'hook notification', 'hook init', 'mcp init'],
+	['init', 'info', 'send', 'edit', 'ask', 'wait', 'close', 'view put', 'view delete', 'view context', 'view status', 'view deploy', 'listen', 'fetch', 'topic create', 'topic icons', 'topic icon', 'hook permission-request', 'hook notification', 'hook init', 'mcp init'],
 );
 assert.deepEqual(Object.values(EXIT), [1, 2, 3, 4, 5, 6, 7]);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli', 'bin.js');

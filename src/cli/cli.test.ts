@@ -428,6 +428,23 @@ test('ask --answer-in view binds each option to its tab, fake mode answers it, a
 	const asked = await ask('--view', id, '--answer-in', 'view', '-o', 'Compact', '-o', 'Wide');
 	expect(asked).toMatchObject({ code: 0, out: { status: 'pending' } });
 	const ref = String(asked.out.ref);
+	expect(await run(at, ['view', 'context', id, '--ref', ref, question], { env })).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining(ref) } });
+	const store = fileStore(join(at.work, 'fake', 'store'));
+	const saved = await store.get(`q:${ref}`);
+	let inside = () => {};
+	const entered = new Promise<void>((resolve) => {
+		inside = resolve;
+	});
+	const creating = store.lock(`q:${ref}`, async () => {
+		await store.delete(`q:${ref}`);
+		inside();
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		await store.set(`q:${ref}`, saved);
+	});
+	await entered;
+	const racing = run(at, ['view', 'context', id, '--ref', ref, question], { env });
+	await creating;
+	expect(await racing).toMatchObject({ code: EXIT.refused, out: { code: 'shape' } });
 
 	const replace = (tabs: string[], ttl?: number) =>
 		run(at, ['view', 'put', '--replace', id, ...(ttl !== undefined ? ['--ttl', String(ttl)] : []), ...tabs.flatMap((label) => ['--tab', label, { Compact: 'a.html', Wide: 'b.html', Notes: 'c.html' }[label] ?? ''])], { env });
@@ -514,6 +531,27 @@ test('view put --raw stores each page tab as raw, which the view host takes, and
 	expect(first?.body).toMatchObject({ view: { tabs: [{ label: 'A', content: { page: '<h1>Mock</h1>', raw: true } }, { label: 'Notes', content: { markdown: '# Notes' } }] } });
 	expect(second?.body).toMatchObject({ view: { tabs: [{ label: 'A', content: { page: '<h1>Mock</h1>' } }] } });
 	expect(JSON.stringify(second?.body)).not.toContain('raw');
+});
+
+test('view context writes a Markdown question for a ref and view status reads the tabs and expiry, each apart from a missing view, a refusal and no answer', async () => {
+	const at = await machine();
+	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.work, 'fake') };
+	file(at, 'mock.html', '<h1>Mock</h1>');
+	file(at, 'q.md', 'Which **one**?');
+	const put = await run(at, ['view', 'put', '--ttl', '7', '--tab', 'A', 'mock.html', '--tab', 'B', 'mock.html'], { env });
+	const { id, expiresAt } = put.out as { id: string; expiresAt: number };
+	expect(await run(at, ['view', 'context', id, '--ref', 'legacy1', 'q.md'], { env })).toMatchObject({ code: 0, out: { id, ref: 'legacy1' } });
+	const [, written] = await lines(at, 'fake/views.jsonl', 2);
+	expect(written).toMatchObject({ method: 'PUT', path: `/api/view/${id}/context/legacy1`, status: 200, body: { markdown: 'Which **one**?' } });
+	expect(await run(at, ['view', 'status', id], { env })).toMatchObject({ code: 0, out: { id, tabs: ['A', 'B'], expiresAt } });
+	const other = 'BBBBBBBBBBBBBBBBBBBBBB';
+	expect(await run(at, ['view', 'status', other], { env })).toMatchObject({ code: 0, out: { id: other, missing: true } });
+	expect(await run(at, ['view', 'context', other, '--ref', 'legacy1', 'q.md'], { env })).toMatchObject({ code: EXIT.refused, out: { code: 'unknown-view' } });
+	for (const command of [['view', 'status', id], ['view', 'context', id, '--ref', 'legacy1', 'q.md']]) {
+		expect(await run(at, command, { env: { ...env, TELEGRAM_AGENT_UI_FAKE_SCENARIO: 'refused' } })).toMatchObject({ code: EXIT.refused, out: { code: 'view-host' } });
+		expect(await run(at, command, { env: { ...env, TELEGRAM_AGENT_UI_FAKE_SCENARIO: 'uncertain' } })).toMatchObject({ code: EXIT.uncertain, out: { error: 'uncertain', id } });
+	}
+	expect(await run(at, ['view', 'context', id, '--ref', 'no space', 'q.md'], { env })).toMatchObject({ code: EXIT.usage });
 });
 
 test('an identical ask with its ref returns the stored question after its view lost the tab labels, and a changed body still conflicts', async () => {

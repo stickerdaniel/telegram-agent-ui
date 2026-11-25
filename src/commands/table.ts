@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from 'node:path';
 import { within } from '../chat/calls.ts';
-import { deliveryKey } from '../chat/create.ts';
+import { deliveryKey, questionKey } from '../chat/create.ts';
 import { attemptsSince, LISTENER_KEY, listenerStatus, parseListener, spent } from '../chat/listener.ts';
 import { choice, message, text, yesNo } from '../core/builders.ts';
 import { isRecord, isString, optional } from '../core/check.ts';
@@ -599,10 +599,12 @@ const viewPut = command({
 	},
 });
 
+const VIEW_ID_PARAM = { name: 'id', type: 'string', required: true, description: 'The id that view put printed.', cli: { positional: true } } as const;
+
 const viewDelete = command({
 	name: 'view delete',
 	description: 'Deletes a view and its media from the view host. A button that opens it shows that the view is gone.',
-	params: [{ name: 'id', type: 'string', required: true, description: 'The id that view put printed.', cli: { positional: true } }],
+	params: [VIEW_ID_PARAM],
 	async run(input, context) {
 		if (!VIEW_ID.test(input.id)) return failed({ error: 'usage', message: `the view id "${input.id}" is not 22 base64url characters` });
 		const session = await openSession(context);
@@ -610,6 +612,54 @@ const viewDelete = command({
 		if (deleted.kind === 'ok') return done({ id: input.id, deleted: true });
 		if (deleted.kind === 'missing') return failed({ error: 'refused', code: 'unknown-view', message: `no view ${input.id} is on the view host` });
 		return failed({ error: 'refused', code: 'view-host', message: deleted.reason });
+	},
+});
+
+const viewContext = command({
+	name: 'view context',
+	description: 'Shows a question in Markdown behind the "?" button of a view, for the ref that its message opens the view with. Writing it again replaces it.',
+	params: [VIEW_ID_PARAM, { name: 'ref', type: 'string', required: true, description: 'The ref of the question: 1 to 32 characters of [A-Za-z0-9_-].' }, { ...BODY, description: 'The question in Markdown.' }],
+	async run(input, context) {
+		if (!VIEW_ID.test(input.id)) return failed({ error: 'usage', message: `the view id "${input.id}" is not 22 base64url characters` });
+		if (!REF.test(input.ref)) return failed({ error: 'usage', message: `the ref "${input.ref}" is not 1 to 32 characters of [A-Za-z0-9_-]` });
+		const session = await openSession(context);
+		const views = viewsOf(session);
+		const written = await session.store.lock(questionKey(input.ref), async () => {
+			const question = parseQuestion(await session.store.get(questionKey(input.ref)));
+			if (question && question.status !== 'closed' && question.spec.view === input.id && bindingOf(question)) return 'bound' as const;
+			try {
+				return await views.context(input.id, input.ref, { markdown: input.body });
+			} catch (error) {
+				return { kind: 'failed' as const, reason: error instanceof Error ? error.message : String(error) };
+			}
+		});
+		if (written === 'bound') {
+			return failed({ error: 'refused', code: 'shape', message: `the open question ${input.ref} is answered in the view ${input.id}, and its stored question holds its options: close it first, or use another ref` });
+		}
+		if (written.kind === 'failed') return failed({ error: 'uncertain', message: `${written.reason}. The question may be stored: run view context again with the same file`, id: input.id });
+		if (written.kind === 'ok') return done({ id: input.id, ref: input.ref });
+		if (written.kind === 'missing') return failed({ error: 'refused', code: 'unknown-view', message: `no view ${input.id} is on the view host` });
+		return failed({ error: 'refused', code: 'view-host', message: written.reason });
+	},
+});
+
+const viewStatus = command({
+	name: 'view status',
+	description: 'Prints the tab labels and the expiry of a view on the view host, or missing: true when it has none of that id.',
+	params: [VIEW_ID_PARAM],
+	async run(input, context) {
+		if (!VIEW_ID.test(input.id)) return failed({ error: 'usage', message: `the view id "${input.id}" is not 22 base64url characters` });
+		const session = await openSession(context);
+		const views = viewsOf(session);
+		let found: Awaited<ReturnType<ViewClient['has']>>;
+		try {
+			found = await views.has(input.id);
+		} catch (error) {
+			return failed({ error: 'uncertain', message: `${error instanceof Error ? error.message : String(error)}. Nothing changed: run view status again`, id: input.id });
+		}
+		if (found.kind === 'present') return done({ id: input.id, tabs: found.tabs, expiresAt: found.expiresAt });
+		if (found.kind === 'missing') return done({ id: input.id, missing: true });
+		return failed({ error: 'refused', code: 'view-host', message: found.reason });
 	},
 });
 
@@ -668,6 +718,8 @@ export const commands: readonly Command[] = [
 	close,
 	viewPut,
 	viewDelete,
+	viewContext,
+	viewStatus,
 	viewDeployCommand,
 	listenCommand,
 	fetchCommand,

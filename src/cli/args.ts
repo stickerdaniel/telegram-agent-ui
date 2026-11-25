@@ -1,4 +1,5 @@
 import { describeType, kebab, labelOf, type Param } from '../commands/params.ts';
+import { VIEW_ID } from '../core/shape.ts';
 
 export type Parsed = { ok: true; raw: Record<string, unknown>; files: Map<string, string> } | { ok: false; message: string };
 
@@ -67,6 +68,10 @@ export function parseArgs(params: readonly Param[], args: readonly string[]): Pa
 			continue;
 		}
 		const param = flags.get(flag);
+		if (!param && VIEW_ID.test(arg)) {
+			positionals.push(arg);
+			continue;
+		}
 		if (!param) return { ok: false, message: `unknown flag ${flag}` };
 		if (param.type === 'boolean') {
 			if (inline !== undefined) return { ok: false, message: `${flag} takes no value` };

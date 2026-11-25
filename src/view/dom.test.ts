@@ -120,7 +120,7 @@ test('a pill draws a tag of one or two characters in a badge before its title, a
 	const labels = ['A', '12', 'C: Soft Shadow', 'Review: x', 'Zusammenfassung'];
 	const shell = await openShell(`/?v=${ID}`, () => false, { published: { media: [], tabs: labels.map((label) => ({ label, content: { markdown: label } })) } });
 	const buttons = await until(() => {
-		const found = [...shell.document.querySelectorAll('#tabs button')];
+		const found = [...shell.document.querySelectorAll('#tabs [role="tab"]')];
 		return found.length === labels.length && found;
 	});
 	expect(buttons.map((button) => [button.querySelector('b')?.textContent ?? null, button.querySelector('span')?.textContent ?? null, button.textContent])).toEqual([
@@ -143,7 +143,7 @@ test('the served shell draws a page in a frame that runs scripts alone, behind t
 	expect(srcdoc).toMatch(new RegExp(`<h1>Mock</h1><img src="${ORIGIN}/m/${ID}/g1/0\\?e=\\d+&s=[A-Za-z0-9_-]{43}">$`));
 	expect(shell.requests[0]).toBe(`/api/view?v=${ID}&q=ask1`);
 	expect(shell.window.location.hash).toBe('');
-	expect([...shell.document.querySelectorAll('#tabs button')].map((button) => [button.textContent, button.getAttribute('aria-selected')])).toEqual([
+	expect([...shell.document.querySelectorAll('#tabs [role="tab"]')].map((button) => [button.textContent, button.getAttribute('aria-selected')])).toEqual([
 		['Notes', 'false'],
 		['Mock', 'true'],
 	]);
@@ -206,7 +206,7 @@ test('a gallery tab draws its images and an mp4 video that plays inline, each ca
 		},
 	});
 	const gallery = await until(() => shell.document.querySelector('.gallery'));
-	expect([...shell.document.querySelectorAll('#tabs button')].map((button) => button.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+	expect([...shell.document.querySelectorAll('#tabs [role="tab"]')].map((button) => button.getAttribute('aria-selected'))).toEqual(['false', 'true']);
 	const figures = [...gallery.querySelectorAll('figure')];
 	expect(figures.map((figure) => [figure.firstElementChild?.tagName, figure.querySelector('figcaption')?.textContent ?? null])).toEqual([
 		['IMG', 'Before <b>x</b>'],
@@ -267,11 +267,14 @@ test('a diff tab draws one text line per line of the diff, classed by its kind',
 	expect(shell.document.querySelector('#tabs')).toBeNull();
 });
 
-test('a context that shows after the view is added to the open view', async () => {
+test('a context that shows after the view adds a folded question behind a "?" button at the start of the pill row', async () => {
 	const shell = await openShell(`/?v=${ID}&q=ask1`);
 	await until(() => shell.document.querySelector('iframe'));
 	const context = await until(() => shell.document.querySelector('.context'));
 	expect(context.textContent).toBe('Ship it?');
+	expect(context.hasAttribute('hidden')).toBe(true);
+	const button = shell.document.querySelector('#tabs')?.firstElementChild;
+	expect([button?.id, button?.textContent, button?.getAttribute('aria-label'), button?.getAttribute('aria-expanded')]).toEqual(['ask', '?', 'Question', 'false']);
 	expect(shell.memory.reads.get(`c:${ID}:ask1`)).toBe(2);
 });
 

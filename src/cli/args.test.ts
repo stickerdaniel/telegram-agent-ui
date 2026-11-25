@@ -44,6 +44,12 @@ test('optional positionals fill from the left once the required ones have theirs
 	expect(parse(['edit', '{"chat":111,"message":632,"files":[]}', 'new.md'])).toEqual({ raw: { sent: { chat: 111, message: 632, files: [] } }, files: { body: 'new.md' } });
 });
 
+test.each(['-W1w9gYt68k9bkl2D_9rpA', '--AAAAAAAAAAAAAAAAAAAA'])('the view id %s is an argument, not a flag', (id) => {
+	expect(parse(['view', 'context', id, '--ref', 'legacy1', 'q.md'])).toEqual({ raw: { id, ref: 'legacy1' }, files: { body: 'q.md' } });
+	expect(parse(['view', 'status', id])).toEqual({ raw: { id }, files: {} });
+	expect(parse(['view', 'delete', id])).toEqual({ raw: { id }, files: {} });
+});
+
 test('every malformed argument list names its fault', () => {
 	expect(parse(['send', '--loud', 'm.md'])).toBe('unknown flag --loud');
 	expect(parse(['ask', '--yes-no', '--text', 'q.md'])).toBe('--yes-no and --text exclude each other');
@@ -53,5 +59,6 @@ test('every malformed argument list names its fault', () => {
 	expect(parse(['ask', '--meta', '{', 'q.md'])).toBe('meta needs JSON, not "{"');
 	expect(parse(['send'])).toBe('missing file or -');
 	expect(parse(['close', 'merge1', 'done.md', 'extra'])).toBe('unexpected argument extra');
+	expect(parse(['send', '-x', 'm.md'])).toBe('unknown flag -x');
 	expect(parse(['send', '--silent=yes', 'm.md'])).toBe('--silent takes no value');
 });

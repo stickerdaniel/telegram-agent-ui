@@ -48,7 +48,7 @@ html, body { margin: 0; height: 100%; }
 body { background: var(--background); color: var(--foreground); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
 #view { display: flex; flex-direction: column; height: 100%; }
 .title { flex: none; margin: 12px 16px 0; font-size: 18px; line-height: 1.3; }
-.context { flex: 0 1 auto; max-height: 35vh; overflow-y: auto; margin: 10px 12px 0; padding: 10px 14px; border-radius: var(--radius); background: var(--muted); color: var(--foreground); overflow-wrap: anywhere; }
+.context { overflow-wrap: anywhere; }
 .context > :first-child { margin-top: 0; }
 .context > :last-child { margin-bottom: 0; }
 #tabs { flex: none; display: flex; gap: 8px; padding: 12px; overflow-x: auto; scrollbar-width: none; }
@@ -57,7 +57,14 @@ body { background: var(--background); color: var(--foreground); font: 16px/1.5 s
 #tabs button[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); }
 #tabs b { flex: none; box-sizing: border-box; min-width: 28px; height: 28px; margin-left: -10px; padding: 0 8px; border-radius: 14px; display: grid; place-items: center; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 14px; font-weight: 700; }
 #tabs b:only-child { margin-right: -10px; }
+#tabs [role="tablist"] { flex: none; display: flex; gap: 8px; }
+#ask { justify-content: center; width: 40px; padding: 0; border-radius: 50%; font-size: 18px; font-weight: 700; }
+#ask[aria-expanded="true"] { box-shadow: inset 0 0 0 2px currentColor; }
 #tabs button:focus-visible, .link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+#stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.shield { position: absolute; inset: 0; z-index: 1; background: color-mix(in srgb, var(--foreground) 16%, transparent); }
+.sheet { position: absolute; z-index: 2; top: 0; left: 12px; right: 12px; max-height: calc(100% - 12px); box-sizing: border-box; overflow-y: auto; padding: 12px 16px; border-radius: var(--radius); background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
+.sheet:focus { outline: none; }
 #panels { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; }
 #panels::-webkit-scrollbar { display: none; }
 .panel { flex: 0 0 100%; min-width: 0; box-sizing: border-box; overflow-y: auto; scroll-snap-align: start; scroll-snap-stop: always; padding: 0 16px 16px; }
@@ -801,6 +808,59 @@ function fill(panel, content, media, index) {
 	});
 }
 
+// The question behind a round "?" button at the start of the pill row, folded until a tap opens
+// it over the page. While it is open, a layer over the page takes a tap, which closes it, so the
+// tap reaches no page, and the page takes no focus; a second tap on the button, Escape, a tap
+// elsewhere and a key that changes the tab close it too.
+function unfold(row, stage, context) {
+	var button = element('button', '', '?');
+	button.id = 'ask';
+	button.type = 'button';
+	button.setAttribute('aria-label', labels.question);
+	button.setAttribute('aria-controls', 'question');
+	var sheet = build({ t: 'div', k: 'context', c: contextNodes(context, htmlText) });
+	sheet.id = 'question';
+	sheet.className = 'sheet context';
+	sheet.setAttribute('role', 'dialog');
+	sheet.setAttribute('aria-label', labels.question);
+	sheet.tabIndex = -1;
+	var shield = element('div', 'shield');
+	var strip = stage.firstElementChild;
+	function show(open) {
+		button.setAttribute('aria-expanded', String(open));
+		sheet.hidden = !open;
+		shield.hidden = !open;
+		strip.inert = open;
+		var focused = document.activeElement;
+		if (open) sheet.focus({ preventScroll: true });
+		else if (!focused || focused === document.body || sheet.contains(focused)) button.focus({ preventScroll: true });
+	}
+	button.addEventListener('click', function () { show(sheet.hidden); });
+	shield.addEventListener('click', function () { show(false); });
+	var outside = function (event) { return !sheet.hidden && !sheet.contains(event.target) && !button.contains(event.target) && event.target !== shield; };
+	document.addEventListener('pointerdown', function (event) {
+		if (!outside(event)) return;
+		event.preventDefault();
+		show(false);
+	}, true);
+	document.addEventListener('click', function (event) { if (outside(event)) show(false); }, true);
+	document.addEventListener('keydown', function (event) {
+		if (sheet.hidden) return;
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			show(false);
+		} else if (navigationKey(event)) {
+			show(false);
+		}
+	}, true);
+	button.setAttribute('aria-expanded', 'false');
+	sheet.hidden = true;
+	shield.hidden = true;
+	row.prepend(button);
+	if (!row.isConnected) stage.before(row);
+	stage.append(shield, sheet);
+}
+
 function draw(answer) {
 	if (expired) return;
 	if (answer.expiresAt < expiresAt) { expiresAt = answer.expiresAt; arm(); }
@@ -810,24 +870,6 @@ function draw(answer) {
 	if (answer.view.title) {
 		document.title = answer.view.title;
 		parts.push(element('h1', 'title', answer.view.title));
-	}
-	var drawContext = function (context) { return build({ t: 'div', k: 'context', c: contextNodes(context, htmlText) }); };
-	if (answer.context) {
-		parts.push(drawContext(answer.context));
-	} else if (ref) {
-		// The view of a question that shows no context yet: its slot fills once the context shows,
-		// with the binding that comes with it. Until then the main button stays hidden.
-		var slot = element('div');
-		slot.hidden = true;
-		parts.push(slot);
-		fetchContext(viewUrl, viewInit, io).then(function (late) {
-			if (expired || !slot.isConnected) return;
-			if (!late) return say(labels.viewLate);
-			slot.replaceWith(drawContext(late.context));
-			binding = late.choice || null;
-			if (binding) say(binding.closed ? labels.closed : '');
-			bottom();
-		});
 	}
 	var buttons = [];
 	current = Math.max(0, tabs.findIndex(function (tab) { return tab.label === wanted; }));
@@ -854,10 +896,11 @@ function draw(answer) {
 		step(key);
 		if (buttons[current]) buttons[current].focus({ preventScroll: true });
 	}
+	var row = element('nav');
+	row.id = 'tabs';
 	if (tabs.length > 1) {
-		var row = element('nav');
-		row.id = 'tabs';
-		row.setAttribute('role', 'tablist');
+		var list = element('div');
+		list.setAttribute('role', 'tablist');
 		tabs.forEach(function (tab, index) {
 			var button = element('button');
 			var pill = pillParts(tab.label);
@@ -868,8 +911,9 @@ function draw(answer) {
 			button.setAttribute('role', 'tab');
 			button.addEventListener('click', function () { select(index); });
 			buttons.push(button);
-			row.append(button);
+			list.append(button);
 		});
+		row.append(list);
 		parts.push(row);
 	}
 	tabs.forEach(function (tab, index) {
@@ -880,9 +924,26 @@ function draw(answer) {
 	// A question answered in the view needs no hint: its bottom button names the pick, and a
 	// closed one says that it is closed.
 	hint = element('p', 'hint');
-	parts.push(strip, hint);
+	var stage = element('div');
+	stage.id = 'stage';
+	stage.append(strip);
+	parts.push(stage, hint);
 	say(binding ? (binding.closed ? labels.closed : '') : labels.viewHint);
 	view.replaceChildren.apply(view, parts);
+	if (answer.context) {
+		unfold(row, stage, answer.context);
+	} else if (ref) {
+		// The view of a question that shows no context yet: its button comes once the context shows,
+		// with the binding that comes with it. Until then the main button stays hidden.
+		fetchContext(viewUrl, viewInit, io).then(function (late) {
+			if (expired || !stage.isConnected) return;
+			if (!late) return say(labels.viewLate);
+			unfold(row, stage, late.context);
+			binding = late.choice || null;
+			if (binding) say(binding.closed ? labels.closed : '');
+			bottom();
+		});
+	}
 	strip.scrollLeft = current * strip.clientWidth;
 	mark(current);
 	// A swipe scrolls the strip from panel to panel; content that scrolls sideways scrolls first.
@@ -984,6 +1045,7 @@ export function shellPage(options: { labels: Labels; theme?: CssVars | undefined
 		choose: labels.choose,
 		chosen: labels.chosen,
 		closed: labels.closed,
+		question: labels.question,
 	};
 	return `<!doctype html>
 <html>
