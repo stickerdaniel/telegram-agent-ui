@@ -198,9 +198,10 @@ test('prepareView refuses media that each pass 20 MiB and together exceed 50 MiB
 	expect((await prepareView(gallery(2), { roots: at.roots })).kind).toBe('ok');
 });
 
-test('prepareView refuses a view of more than 2 MiB without its media before any upload', async () => {
+test('prepareView refuses a view of more than 6 MiB without its media before any upload, and takes one of a review label of 48 characters', async () => {
 	const at = project();
-	expect(await prepareView({ tabs: [{ label: 'A', content: { markdown: 'x'.repeat(2 * 1024 * 1024) } }] }, { roots: at.roots })).toMatchObject({ kind: 'refused', code: 'shape', reason: expect.stringContaining('2097152') });
+	expect(await prepareView({ tabs: [{ label: 'A', content: { markdown: 'x'.repeat(6 * 1024 * 1024) } }] }, { roots: at.roots })).toMatchObject({ kind: 'refused', code: 'shape', reason: expect.stringContaining('6291456') });
+	expect((await prepareView({ tabs: [{ label: `Review: ${'o'.repeat(19)}/${'r'.repeat(18)}#1`, content: { markdown: 'x'.repeat(5 * 1024 * 1024) } }] }, { roots: at.roots })).kind).toBe('ok');
 });
 
 test('prepareView refuses a path outside the roots, a secret, a link that leaves the roots, a script and broken tabs', async () => {
@@ -217,7 +218,7 @@ test('prepareView refuses a path outside the roots, a secret, a link that leaves
 		[{ tabs: [{ label: 'A', content: { markdown: '![x](notes.txt)', base: at.dir } }] }, 'shape'],
 		[{ tabs: [] }, 'shape'],
 		[{ tabs: [{ label: 'A', content: { diff: '' } }, { label: 'A', content: { diff: '' } }] }, 'shape'],
-		[{ tabs: [{ label: 'x'.repeat(47), content: { diff: '' } }] }, 'shape'],
+		[{ tabs: [{ label: 'x'.repeat(55), content: { diff: '' } }] }, 'shape'],
 	];
 	at.file('notes.txt', 'not an image');
 	for (const [input, code] of cases) expect(await prepareView(input, { roots }), JSON.stringify(input)).toMatchObject({ kind: 'refused', code });

@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isRecord, isString } from '../core/check.ts';
 import { type CssVars, parseTheme, themeIssue } from '../view/theme.ts';
-import { type Config, type Env, findSecret, isAccount, KEY_NAMES, readConfig, routeOrigin, writeConfigFile, writeSecrets } from './config.ts';
+import { type Config, type Env, findSecret, isAccount, isZone, KEY_NAMES, readConfig, routeOrigin, writeConfigFile, writeSecrets } from './config.ts';
 import { done, failed, type Result } from './result.ts';
 import { type Context, readBodyFile, rootsOf } from './session.ts';
 
@@ -92,14 +92,14 @@ export function fillTemplate(template: string, values: Record<string, string>): 
 	});
 }
 
-export async function wranglerConfig(config: Config, deploy: { kv: string; account?: string | undefined; route?: string | undefined; theme?: CssVars | undefined }): Promise<string> {
-	const { kv, account, route, theme } = deploy;
+export async function wranglerConfig(config: Config, deploy: { kv: string; account?: string | undefined; route?: string | undefined; zone?: string | undefined; theme?: CssVars | undefined }): Promise<string> {
+	const { kv, account, route, zone, theme } = deploy;
 	return fillTemplate(await readFile(TEMPLATE, 'utf8'), {
 		name: tomlString(`telegram-agent-ui-${config.bot.id}`),
 		main: tomlString(WORKER),
 		workersDev: route === undefined ? 'true' : 'false',
 		account: account === undefined ? '# account_id: the one account of the wrangler login' : `account_id = ${tomlString(account)}`,
-		routes: route === undefined ? '# routes: none, the host serves on workers.dev' : `routes = [${tomlString(route)}]`,
+		routes: route === undefined ? '# routes: none, the host serves on workers.dev' : zone === undefined ? `routes = [${tomlString(route)}]` : `routes = [{ pattern = ${tomlString(route)}, zone_name = ${tomlString(zone)} }]`,
 		kv: tomlString(kv),
 		botId: tomlString(String(config.bot.id)),
 		allowedUsers: tomlString(JSON.stringify(config.users)),
@@ -112,7 +112,7 @@ function workersDev(stdout: string, name: string): string | undefined {
 	return new RegExp(`https://${name}\\.[a-z0-9-]+\\.workers\\.dev`).exec(stdout)?.[0];
 }
 
-export type DeployInput = { theme?: string; noTheme?: boolean; route?: string; account?: string; rotateKeys?: boolean };
+export type DeployInput = { theme?: string; noTheme?: boolean; route?: string; zone?: string; account?: string; rotateKeys?: boolean };
 
 export async function viewDeploy(input: DeployInput, context: Context): Promise<Result> {
 	const { env } = context;
@@ -120,10 +120,12 @@ export async function viewDeploy(input: DeployInput, context: Context): Promise<
 	if (input.theme !== undefined && input.noTheme) return failed({ error: 'usage', message: '--theme and --no-theme exclude each other' });
 	const config = await readConfig(env);
 	const route = input.route ?? config.views.route;
+	const zone = input.zone ?? (input.route === undefined ? config.views.zone : undefined);
 	const account = input.account ?? config.views.account ?? (env.CLOUDFLARE_ACCOUNT_ID || undefined);
 	if (route !== undefined && routeOrigin(route) === undefined) {
 		return failed({ error: 'usage', message: `the route "${route}" is no <host>/* of one host, such as views.example.com/*: the shell, the API and the media URLs sit at the root of the host` });
 	}
+	if (zone !== undefined && (route === undefined || !isZone(zone))) return failed({ error: 'usage', message: `the zone "${zone}" is no domain name of a route: --zone names the Cloudflare zone of --route, such as example.com` });
 	if (account !== undefined && !isAccount(account)) return failed({ error: 'usage', message: `the account "${account}" is no Cloudflare account id of 32 hex digits` });
 	const fromEnv = Object.values(KEY_NAMES).filter((name) => env[name]);
 	if (input.rotateKeys && fromEnv.length > 0) {
@@ -157,7 +159,7 @@ export async function viewDeploy(input: DeployInput, context: Context): Promise<
 		if (!kv.ok) return failed({ error: 'refused', code: 'wrangler', message: `${kv.message}\nNothing was deployed: check the wrangler login and run view deploy again` });
 		const toml = join(dir, 'wrangler.toml');
 		const secrets = join(dir, 'secrets.json');
-		await writeFile(toml, await wranglerConfig(config, { kv: kv.id, account, route, theme }));
+		await writeFile(toml, await wranglerConfig(config, { kv: kv.id, account, route, zone, theme }));
 		await writeFile(secrets, JSON.stringify({ UPLOAD_KEY: keys.upload, MEDIA_KEY: keys.media }), { mode: 0o600 });
 		await chmod(secrets, 0o600);
 		context.log(`view deploy: deploying ${name} with wrangler ${WRANGLER_VERSION}`);
@@ -168,8 +170,8 @@ export async function viewDeploy(input: DeployInput, context: Context): Promise<
 			return failed({ error: 'uncertain', message: `wrangler deploy ${end}:\n${tail(deployed)}\nThe Worker may be live: run view deploy again` });
 		}
 		if (config.views.origin !== undefined && config.views.origin !== origin) context.log(`warning: the view host moves from ${config.views.origin} to ${origin}; buttons sent before open the old address`);
-		await writeConfigFile(env, { ...config, views: { origin, ...(account !== undefined ? { account } : {}), ...(route !== undefined ? { route } : {}), ...(theme ? { theme } : {}) } });
-		return done({ origin, worker: name, kv: kv.id, ...(account !== undefined ? { account } : {}), ...(route !== undefined ? { route } : {}), theme: theme !== undefined, rotated: input.rotateKeys === true });
+		await writeConfigFile(env, { ...config, views: { origin, ...(account !== undefined ? { account } : {}), ...(route !== undefined ? { route } : {}), ...(zone !== undefined ? { zone } : {}), ...(theme ? { theme } : {}) } });
+		return done({ origin, worker: name, kv: kv.id, ...(account !== undefined ? { account } : {}), ...(route !== undefined ? { route } : {}), ...(zone !== undefined ? { zone } : {}), theme: theme !== undefined, rotated: input.rotateKeys === true });
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

@@ -156,13 +156,13 @@ test('the view answers 401 without launch data, for another user, for older than
 	expect((await getView(at, `v=${ID}`, await launch({ userId: 112 }))).status).toBe(200);
 });
 
-test('a view and its media may expire 365 days ahead and not 1 ms later', async () => {
+test('a view and its media may expire 3650 days ahead and not 1 ms later, and a tab label has up to 54 characters', async () => {
 	const now = 1_800_000_000_000;
 	setSystemTime(new Date(now));
 	const at = host();
-	const last = now + 365 * DAY;
+	const last = now + 3650 * DAY;
 	const media = [{ type: 'image/png', size: MEDIA.png.byteLength }];
-	const view = { v: 1, tabs: [{ label: 'A', content: { markdown: 'x' } }] };
+	const view = { v: 1, tabs: [{ label: 'C'.repeat(12) + ': ' + 't'.repeat(40), content: { markdown: 'x' } }] };
 	expect((await putMedia(at, 'g1', 0, MEDIA.png, 'image/png', last + 1)).status).toBe(400);
 	expect((await putView(at, { generation: 'g1', expiresAt: last + 1, media, view })).status).toBe(400);
 	expect((await putMedia(at, 'g1', 0, MEDIA.png, 'image/png', last)).status).toBe(200);
@@ -193,11 +193,11 @@ test('an upload without the key, over a limit or of a wrong type is refused and 
 		['no key', at.handle(raw(`PUT /api/view/${ID} HTTP/1.1\nHost: views.example.com\n\n${JSON.stringify(upload)}`)), 401],
 		['a wrong key', putView(at, upload, 'upload-key-0123456789abcdeX'), 401],
 		['9 tabs', putView(at, { ...upload, view: { v: 1, tabs: Array.from({ length: 9 }, (_, index) => tab(`t${index}`)) } }), 400],
-		['a label of 47 characters', putView(at, { ...upload, view: { v: 1, tabs: [tab('x'.repeat(47))] } }), 400],
+		['a label of 55 characters', putView(at, { ...upload, view: { v: 1, tabs: [tab('x'.repeat(55))] } }), 400],
 		['a label twice', putView(at, { ...upload, view: { v: 1, tabs: [tab('a'), tab('a')] } }), 400],
 		['a page with a script', putView(at, { ...upload, view: { v: 1, tabs: [tab('p', { page: '<p>x</p><SCRIPT>1</SCRIPT>' })] } }), 400],
-		['a view over 2 MiB', putView(at, { ...upload, view: { v: 1, tabs: [tab('big', { markdown: 'x'.repeat(2 * 1024 * 1024) })] } }), 400],
-		['a body over the upload limit', putView(at, { ...upload, view: { v: 1, tabs: [tab('big', { markdown: 'x'.repeat(3 * 1024 * 1024) })] } }), 413],
+		['a view over 6 MiB', putView(at, { ...upload, view: { v: 1, tabs: [tab('big', { markdown: 'x'.repeat(6 * 1024 * 1024) })] } }), 400],
+		['a body over the upload limit', putView(at, { ...upload, view: { v: 1, tabs: [tab('big', { markdown: 'x'.repeat(7 * 1024 * 1024) })] } }), 413],
 		['21 media', putView(at, { ...upload, media: Array.from({ length: 21 }, () => media[0]) }), 400],
 		['media of 51 MiB', putView(at, { ...upload, media: [0, 1, 2].map(() => ({ type: 'video/mp4', size: 17 * 1024 * 1024 })) }), 400],
 		['a media type outside the list', putView(at, { ...upload, media: [{ type: 'image/svg+xml', size: 10 }] }), 400],
@@ -206,14 +206,14 @@ test('an upload without the key, over a limit or of a wrong type is refused and 
 		['a Markdown image of a video', putView(at, { ...upload, media: [{ type: 'video/mp4', size: 10 }], view: { v: 1, tabs: [tab('m', { markdown: '![a](a.mp4)', media: { 'a.mp4': 0 } })] } }), 400],
 		['a Markdown map whose index is an object JSON cannot turn into text', putView(at, { ...upload, view: { v: 1, tabs: [tab('m', { markdown: '![x](x.png)', media: { 'x.png': { toString: null } } })] } }), 400],
 		['a Markdown map that is no object', putView(at, { ...upload, view: { v: 1, tabs: [tab('m', { markdown: '![a](a.png)', media: [0] })] } }), 400],
-		['an expiry past 365 days', putView(at, { ...upload, expiresAt: Date.now() + 367 * DAY }), 400],
+		['an expiry past 3650 days', putView(at, { ...upload, expiresAt: Date.now() + 3651 * DAY }), 400],
 		['an expiry in the past', putView(at, { ...upload, expiresAt: Date.now() - 1 }), 400],
 		['a view format of another release', putView(at, { ...upload, view: { ...VIEW, v: 2 } }), 409],
 		['media of a declared type with other bytes', putMedia(at, 'g1', 0, MEDIA.jpeg, 'image/png'), 415],
 		['media of a type outside the list', putMedia(at, 'g1', 0, new TextEncoder().encode('<svg onload=x>'), 'image/svg+xml'), 415],
 		['media over 20 MiB', putMedia(at, 'g1', 0, new Uint8Array(20 * 1024 * 1024 + 1), 'image/png'), 413],
 		['media index 20', putMedia(at, 'g1', 20, MEDIA.png, 'image/png'), 400],
-		['media expiring past 365 days', putMedia(at, 'g1', 0, MEDIA.png, 'image/png', Date.now() + 367 * DAY), 400],
+		['media expiring past 3650 days', putMedia(at, 'g1', 0, MEDIA.png, 'image/png', Date.now() + 3651 * DAY), 400],
 	];
 	for (const [name, response, status] of refused) expect((await response).status, name).toBe(status);
 	expect(at.writes).toEqual([]);

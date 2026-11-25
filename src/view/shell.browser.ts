@@ -15,7 +15,7 @@ const DEVICES = {
 } satisfies Record<string, BrowserContextOptions>;
 type Device = keyof typeof DEVICES;
 type Tab = { label: string; content: StoredContent };
-type Options = { device?: Device; wanted?: string; answer?: unknown; delayMedia?: number; media?: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; question?: string; late?: boolean };
+type Options = { device?: Device; wanted?: string; answer?: unknown; delayMedia?: number; media?: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; question?: string; late?: boolean; query?: [string, string][] };
 
 const page = (html: string): StoredContent => ({ page: html });
 const STYLE = '<style>html, body { margin: 0; } p, a, button, div { display: block; width: 100%; height: 40px; margin: 0; padding: 0; border: 0; }</style>';
@@ -88,6 +88,7 @@ for (const engine of [chromium, webkit])
 			});
 			const tab = await context.newPage();
 			const search = new URLSearchParams({ v: ID, ...(opts.wanted ? { t: opts.wanted } : {}), ...(opts.question !== undefined ? { q: 'ask1' } : {}) });
+			for (const [name, value] of opts.query ?? []) search.append(name, value);
 			await tab.goto(`${ORIGIN}/?${search}#tgWebAppData=${encodeURIComponent(initData)}`, { waitUntil: 'domcontentloaded' });
 			await tab.locator('#panels').waitFor();
 			if (opts.question !== undefined && opts.late) expect((await ask()).status).toBe(200);
@@ -531,6 +532,53 @@ for (const engine of [chromium, webkit])
 			await tab.getByRole('tab', { name: 'B', exact: true }).click();
 			await settled(tab, 'B');
 			expect(Math.abs((await share(tab, 1, 'main')) - first)).toBeLessThanOrEqual(0.01);
+		});
+
+		const titled = (): Tab[] => ['A: Kompakt', 'B: Weit', 'C'].map((label) => ({ label, content: page(`<h1>${label}</h1>`) }));
+
+		test.each([
+			['its tag', [['c', 'B']], 'B Weit'],
+			['its full label', [['c', 'B: Weit']], 'B Weit'],
+			['a tag without a title', [['c', 'C']], 'C'],
+			['t before c', [['t', 'A: Kompakt'], ['c', 'B']], 'A Kompakt'],
+		] as const)('an old desk button opens the tab of %s', async (_, query, label) => {
+			const { page: tab, requests } = await open(titled(), { query: query.map(([name, value]) => [name, value]) });
+			await selected(tab, label);
+			expect(await tab.locator('#ask').count()).toBe(0);
+			expect(requests.filter((url) => url.includes('/api/view?')).every((url) => !url.includes('q='))).toBe(true);
+		});
+
+		test('an old desk question shows behind the button with its http links, and the host is asked for no question', async () => {
+			const question = 'Which one?\nA: Fast\n  B: Thorough\n\nSee the docs and this.';
+			const start = question.indexOf('the docs');
+			const links: [string, string][] = [
+				['l', `${start},${start + 8},https://example.com/docs`],
+				['l', `${start + 2},${start + 5},https://example.com/overlap`],
+				['l', `${question.indexOf('this')},${question.indexOf('this') + 4},javascript:alert(1)`],
+			];
+			const { page: tab, requests } = await open(titled(), { query: [['q', question], ...links, ['c', 'B']] });
+			await selected(tab, 'B Weit');
+			await tab.locator('#ask').click();
+			expect(await tab.locator('#question p').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).innerText))).toEqual(['Which one?\nA: Fast\n  B: Thorough', 'See the docs and this.']);
+			expect(await tab.locator('#question .link').allTextContents()).toEqual(['the docs']);
+			await tab.locator('#question .link').click();
+			expect(await tab.evaluate(() => Reflect.get(window, 'opened'))).toEqual(['https://example.com/docs']);
+			expect(requests.filter((url) => url.includes('/api/view?')).every((url) => !url.includes('q='))).toBe(true);
+		});
+
+		test.each([
+			['no ref', [['q', 'Ok?']], 'Ok?'],
+			['a ref with a link', [['q', 'Docs'], ['l', '0,4,https://example.com/docs']], 'Docs'],
+		] as const)('a q that is %s is an old question, and a ref alone asks the host', async (_, query, text) => {
+			const old = await open(titled(), { query: query.map(([name, value]) => [name, value]) });
+			await old.page.locator('#ask').click();
+			expect(await old.page.locator('#question').textContent()).toBe(text);
+			expect(old.requests.some((url) => url.includes('/api/view?') && url.includes('q='))).toBe(false);
+			await context?.close();
+			const current = await open(titled(), { question: 'From the host' });
+			await current.page.locator('#ask').click();
+			expect(await current.page.locator('#question').textContent()).toBe('From the host');
+			expect(current.requests.some((url) => url.includes('/api/view?') && url.includes('q=ask1'))).toBe(true);
 		});
 
 		test('in a view of pages and a Markdown tab, keys pass the Markdown tab and the pages keep their share', async () => {

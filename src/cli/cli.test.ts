@@ -538,8 +538,10 @@ test('view context writes a Markdown question for a ref and view status reads th
 	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.work, 'fake') };
 	file(at, 'mock.html', '<h1>Mock</h1>');
 	file(at, 'q.md', 'Which **one**?');
-	const put = await run(at, ['view', 'put', '--ttl', '7', '--tab', 'A', 'mock.html', '--tab', 'B', 'mock.html'], { env });
+	expect(await run(at, ['view', 'put', '--ttl', '3651', '--tab', 'A', 'mock.html'], { env })).toMatchObject({ code: EXIT.usage });
+	const put = await run(at, ['view', 'put', '--ttl', '3650', '--tab', 'A', 'mock.html', '--tab', 'B', 'mock.html'], { env });
 	const { id, expiresAt } = put.out as { id: string; expiresAt: number };
+	expect(expiresAt).toBeGreaterThan(Date.now() + 3649 * 86_400_000);
 	expect(await run(at, ['view', 'context', id, '--ref', 'legacy1', 'q.md'], { env })).toMatchObject({ code: 0, out: { id, ref: 'legacy1' } });
 	const [, written] = await lines(at, 'fake/views.jsonl', 2);
 	expect(written).toMatchObject({ method: 'PUT', path: `/api/view/${id}/context/legacy1`, status: 200, body: { markdown: 'Which **one**?' } });

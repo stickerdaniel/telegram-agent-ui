@@ -10,7 +10,7 @@ export const CHOICE_LIMITS = { perRef: 32, life: 86_400_000 } as const;
 
 const MIB = 1024 * 1024;
 const DAY = 86_400_000;
-export const VIEW_LIMITS = { tabs: [1, 8], label: 46, viewBytes: 2 * MIB, mediaBytes: 20 * MIB, media: 20, totalBytes: 50 * MIB, ahead: 365 * DAY } as const;
+export const VIEW_LIMITS = { tabs: [1, 8], label: 54, viewBytes: 6 * MIB, mediaBytes: 20 * MIB, media: 20, totalBytes: 50 * MIB, ahead: 3650 * DAY } as const;
 
 export const MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/mp4'] as const;
 export type MediaType = (typeof MEDIA_TYPES)[number];
@@ -191,7 +191,7 @@ export function parseUpload(value: unknown, now: number): { ok: true; upload: Vi
 	if (Object.keys(value).some((key) => key !== 'generation' && key !== 'expiresAt' && key !== 'media' && key !== 'view')) return shape('the upload is { generation, expiresAt, media, view }');
 	const { generation, expiresAt, media, view } = value;
 	if (!isString(generation) || !GENERATION.test(generation)) return shape('generation is 1 to 32 characters of [A-Za-z0-9_-]');
-	if (!isNat(expiresAt) || expiresAt <= now || expiresAt > now + VIEW_LIMITS.ahead) return shape('expiresAt is a time in ms within the next 365 days');
+	if (!isNat(expiresAt) || expiresAt <= now || expiresAt > now + VIEW_LIMITS.ahead) return shape(`expiresAt is a time in ms within the next ${VIEW_LIMITS.ahead / DAY} days`);
 	const issue = mediaIssue(media);
 	if (issue !== undefined || !arrayOf(isMediaEntry)(media)) return shape(issue ?? 'media breaks its type');
 	if (!isRecord(view)) return shape('the view is no JSON object');

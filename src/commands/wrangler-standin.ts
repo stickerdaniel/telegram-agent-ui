@@ -53,7 +53,8 @@ if (step === 'kv namespace list') {
 	}
 	const toml = parse(readFileSync(config, 'utf8'));
 	const name = String(toml.name);
-	const routes = Array.isArray(toml.routes) ? toml.routes.map(String) : [];
+	const route = (entry: unknown) => (typeof entry === 'object' && entry !== null && 'pattern' in entry && 'zone_name' in entry ? `${String(entry.pattern)} (zone name: ${String(entry.zone_name)})` : String(entry));
+	const routes = Array.isArray(toml.routes) ? toml.routes.map(route) : [];
 	const targets = [...(toml.workers_dev === true ? [`https://${name}.dana.workers.dev`] : []), ...routes];
 	process.stdout.write(
 		`${banner}Total Upload: 61.32 KiB / gzip: 15.20 KiB\nUploaded ${name} (2.31 sec)\nDeployed ${name} triggers (0.42 sec)\n${targets.map((target) => `  ${target}\n`).join('')}Current Version ID: 3c1f0d4e-8a3b-4b8e-9d1f-2a7c5e6b9f10\n`,

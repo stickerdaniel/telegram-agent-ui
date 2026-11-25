@@ -4,7 +4,7 @@ import { viewUrl } from '../core/render.ts';
 import { CHOICE_ID, REF, VIEW_ID } from '../core/shape.ts';
 import type { Body, ChoiceBinding, HostRefusal, PreparedView, StoredChoice, ViewClient } from '../core/types.ts';
 
-export const VIEW_TTL = { default: 7, most: 365 } as const;
+export const VIEW_TTL = { default: 7, most: 3650 } as const;
 export const LATE_VIEW = { window: 10_000, pause: 500 } as const;
 const DEADLINE = { request: 30_000, media: 120_000 } as const;
 const DAY = 86_400_000;

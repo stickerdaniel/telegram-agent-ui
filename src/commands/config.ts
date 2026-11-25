@@ -22,9 +22,10 @@ export type Config = {
 	localFiles?: string;
 	views: Views;
 };
-export type Views = { origin?: string; account?: string; route?: string; theme?: CssVars };
+export type Views = { origin?: string; account?: string; route?: string; zone?: string; theme?: CssVars };
 
 export const isAccount = (value: string) => /^[0-9a-f]{32}$/.test(value);
+export const isZone = (value: string) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(value);
 
 export function routeOrigin(route: string): string | undefined {
 	const match = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/\*$/i.exec(route);
@@ -34,16 +35,18 @@ export function routeOrigin(route: string): string | undefined {
 
 function parseViews(value: unknown): Views | undefined {
 	if (!isRecord(value)) return undefined;
-	const { origin, account, route, theme } = value;
+	const { origin, account, route, zone, theme } = value;
 	if (origin !== undefined && !(isString(origin) && isOrigin(origin))) return undefined;
 	if (account !== undefined && !(isString(account) && isAccount(account))) return undefined;
 	if (route !== undefined && !(isString(route) && routeOrigin(route) !== undefined)) return undefined;
+	if (zone !== undefined && !(isString(zone) && isZone(zone) && route !== undefined)) return undefined;
 	const parsedTheme = theme === undefined ? undefined : parseTheme(theme);
 	if (theme !== undefined && parsedTheme === undefined) return undefined;
 	return {
 		...(isString(origin) ? { origin } : {}),
 		...(isString(account) ? { account } : {}),
 		...(isString(route) ? { route } : {}),
+		...(isString(zone) ? { zone } : {}),
 		...(parsedTheme ? { theme: parsedTheme } : {}),
 	};
 }

@@ -259,7 +259,7 @@ export function createViewHandler(config: ViewHandlerConfig): (request: Request)
 		const e = url.searchParams.get('e') ?? '';
 		const expiresAt = Number(e);
 		const now = Date.now();
-		if (!/^\d{1,15}$/.test(e) || expiresAt <= now || expiresAt > now + VIEW_LIMITS.ahead) return refuse(400, 'e is the expiry in ms, within the next 365 days');
+		if (!/^\d{1,15}$/.test(e) || expiresAt <= now || expiresAt > now + VIEW_LIMITS.ahead) return refuse(400, `e is the expiry in ms, within the next ${VIEW_LIMITS.ahead / 86_400_000} days`);
 		const declared = (request.headers.get('Content-Type') ?? '').split(';')[0]?.trim().toLowerCase();
 		if (!isMediaType(declared)) return refuse(415, 'Content-Type is image/png, image/jpeg, image/webp, image/gif or video/mp4');
 		const bytes = await readCapped(request, VIEW_LIMITS.mediaBytes);

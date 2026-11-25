@@ -131,6 +131,26 @@ test('an account from CLOUDFLARE_ACCOUNT_ID is stored, and a later deploy keeps 
 	expect((await readConfig(at.env)).views.account).toBe(first);
 });
 
+test('a zone goes into the route of the deploy and the config, a later deploy keeps it, a new route drops it, and a zone needs a route', async () => {
+	const fresh = await machine();
+	expect(await fresh.deploy({ zone: 'example.com' })).toMatchObject({ ok: false, failure: { error: 'usage' } });
+	expect(fresh.calls()).toHaveLength(0);
+	expect((await readConfig(fresh.env)).views).toEqual({});
+	const at = await machine();
+	expect(output(await at.deploy({ route: 'desk.example.org/*', zone: 'example.com' }))).toMatchObject({ origin: 'https://desk.example.org', route: 'desk.example.org/*', zone: 'example.com' });
+	expect(parse(at.calls().at(-1)?.config ?? '')).toMatchObject({ workers_dev: false, routes: [{ pattern: 'desk.example.org/*', zone_name: 'example.com' }] });
+	expect((await readConfig(at.env)).views).toMatchObject({ route: 'desk.example.org/*', zone: 'example.com' });
+	output(await at.deploy());
+	expect(parse(at.calls().at(-1)?.config ?? '')).toMatchObject({ routes: [{ pattern: 'desk.example.org/*', zone_name: 'example.com' }] });
+	output(await at.deploy({ route: 'views.example.com/*' }));
+	expect(parse(at.calls().at(-1)?.config ?? '')).toMatchObject({ routes: ['views.example.com/*'] });
+	expect((await readConfig(at.env)).views.zone).toBeUndefined();
+	const calls = at.calls().length;
+	expect(await at.deploy({ zone: 'example.com', route: 'bad' })).toMatchObject({ ok: false, failure: { error: 'usage' } });
+	expect(await at.deploy({ zone: 'not a zone' })).toMatchObject({ ok: false, failure: { error: 'usage' } });
+	expect(at.calls()).toHaveLength(calls);
+});
+
 test('route, account and theme go into the deploy and the config, and a later deploy keeps them', async () => {
 	const at = await machine();
 	const theme = { theme: { radius: '0.5rem' }, dark: { background: 'oklch(0.2 0 0)' } };

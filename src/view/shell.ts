@@ -51,6 +51,7 @@ body { background: var(--background); color: var(--foreground); font: 16px/1.5 s
 .context { overflow-wrap: anywhere; }
 .context > :first-child { margin-top: 0; }
 .context > :last-child { margin-bottom: 0; }
+.context .plain { white-space: pre-wrap; }
 #tabs { flex: none; display: flex; gap: 8px; padding: 12px; overflow-x: auto; scrollbar-width: none; }
 #tabs::-webkit-scrollbar { display: none; }
 #tabs button { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 16px; border: 0; border-radius: 20px; background: var(--secondary); color: var(--secondary-foreground); font: 500 15px/1 system-ui, -apple-system, sans-serif; cursor: pointer; }
@@ -519,6 +520,47 @@ function blocksText(blocks) {
 	return out;
 }
 
+// The question of an old desk button as nodes: its text in paragraphs at each blank line, and each
+// link range start,end,href of an http or https URL as a link. A range that is malformed, overlaps
+// or names another scheme stays text.
+function legacyNodes(question, links) {
+	var blocks = [{ t: 'p', k: 'plain', c: [] }];
+	var text = function (value) {
+		value.split(/\n[ \t]*\n\s*/).forEach(function (part, i) {
+			if (i > 0) blocks.push({ t: 'p', k: 'plain', c: [] });
+			if (part) blocks[blocks.length - 1].c.push(part);
+		});
+	};
+	var at = 0;
+	links.forEach(function (value) {
+		var found = /^([0-9]+),([0-9]+),(.+)$/.exec(value);
+		if (!found) return;
+		var start = Number(found[1]);
+		var end = Number(found[2]);
+		var url;
+		try {
+			url = new URL(found[3]);
+		} catch (error) {
+			return;
+		}
+		if ((url.protocol !== 'https:' && url.protocol !== 'http:') || start < at || end <= start || end > question.length) return;
+		text(question.slice(at, start));
+		blocks[blocks.length - 1].c.push({ t: 'a', href: url.href, telegram: url.hostname === 't.me' || url.hostname === 'telegram.me', c: [question.slice(start, end)] });
+		at = end;
+	});
+	text(question.slice(at));
+	return blocks;
+}
+
+// The tab an old desk button names in c: its full label, or the tag before ': ' in it. -1 for none.
+function legacyTab(tabs, chosen) {
+	if (!chosen) return -1;
+	return tabs.findIndex(function (tab) {
+		var split = tab.label.indexOf(': ');
+		return tab.label === chosen || (split > 0 && tab.label.slice(0, split) === chosen);
+	});
+}
+
 // A question's body as nodes: Markdown drawn, HTML and blocks as plain text. htmlText turns HTML into its text.
 function contextNodes(body, htmlText) {
 	if (!body || typeof body !== 'object') return [];
@@ -533,7 +575,7 @@ var app = window.Telegram && window.Telegram.WebApp;
 var root = document.documentElement;
 var view = document.getElementById('view');
 var VARS = ${JSON.stringify(THEME_VARIABLES)};
-var CLASSES = ['wide', 'diff', 'add', 'del', 'hunk', 'meta', 'ctx', 'markdown', 'context', 'muted'];
+var CLASSES = ['wide', 'diff', 'add', 'del', 'hunk', 'meta', 'ctx', 'markdown', 'context', 'muted', 'plain'];
 
 function data(id) {
 	try {
@@ -548,6 +590,12 @@ var query = new URLSearchParams(location.search);
 var viewId = query.get('v');
 var ref = query.get('q');
 var wanted = query.get('t');
+// An old desk button carries the question text in q, its links in l and the chosen tab in c. Its
+// question shows from the URL, and the host is asked for none.
+var legacy = query.has('l') || query.has('c') || (ref !== null && !/^[A-Za-z0-9_-]{1,32}$/.test(ref));
+var legacyText = legacy ? ref || '' : '';
+var chosen = legacy ? query.get('c') : null;
+if (legacy) ref = null;
 var initData = app ? app.initData : '';
 // The SDK has read the launch data from the fragment, and keeps it in sessionStorage.
 history.replaceState(null, '', location.pathname + location.search);
@@ -812,13 +860,13 @@ function fill(panel, content, media, index) {
 // it over the page. While it is open, a layer over the page takes a tap, which closes it, so the
 // tap reaches no page, and the page takes no focus; a second tap on the button, Escape, a tap
 // elsewhere and a key that changes the tab close it too.
-function unfold(row, stage, context) {
+function unfold(row, stage, nodes) {
 	var button = element('button', '', '?');
 	button.id = 'ask';
 	button.type = 'button';
 	button.setAttribute('aria-label', labels.question);
 	button.setAttribute('aria-controls', 'question');
-	var sheet = build({ t: 'div', k: 'context', c: contextNodes(context, htmlText) });
+	var sheet = build({ t: 'div', k: 'context', c: nodes });
 	sheet.id = 'question';
 	sheet.className = 'sheet context';
 	sheet.setAttribute('role', 'dialog');
@@ -872,7 +920,8 @@ function draw(answer) {
 		parts.push(element('h1', 'title', answer.view.title));
 	}
 	var buttons = [];
-	current = Math.max(0, tabs.findIndex(function (tab) { return tab.label === wanted; }));
+	var named = tabs.findIndex(function (tab) { return tab.label === wanted; });
+	current = Math.max(0, named > -1 ? named : legacyTab(tabs, chosen));
 	var strip = element('div');
 	strip.id = 'panels';
 	function mark(index) {
@@ -931,14 +980,16 @@ function draw(answer) {
 	say(binding ? (binding.closed ? labels.closed : '') : labels.viewHint);
 	view.replaceChildren.apply(view, parts);
 	if (answer.context) {
-		unfold(row, stage, answer.context);
+		unfold(row, stage, contextNodes(answer.context, htmlText));
+	} else if (legacyText) {
+		unfold(row, stage, legacyNodes(legacyText, query.getAll('l')));
 	} else if (ref) {
 		// The view of a question that shows no context yet: its button comes once the context shows,
 		// with the binding that comes with it. Until then the main button stays hidden.
 		fetchContext(viewUrl, viewInit, io).then(function (late) {
 			if (expired || !stage.isConnected) return;
 			if (!late) return say(labels.viewLate);
-			unfold(row, stage, late.context);
+			unfold(row, stage, contextNodes(late.context, htmlText));
 			binding = late.choice || null;
 			if (binding) say(binding.closed ? labels.closed : '');
 			bottom();

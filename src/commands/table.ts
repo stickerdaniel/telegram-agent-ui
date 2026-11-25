@@ -83,7 +83,7 @@ const TABS = {
 	many: true,
 	required: true,
 	description:
-		'The tabs in order, 1 to 8, each { label, file, caption? }: a label of 1 to 46 characters, and a file below the roots, as an absolute path for an MCP client. A .md, .diff, .patch or .html file is a tab of its own. A png, jpg, jpeg, webp, gif or mp4 file is one picture of a gallery tab: the entries of one label form one gallery in order, and caption is the text below its picture.',
+		'The tabs in order, 1 to 8, each { label, file, caption? }: a label of 1 to 54 characters, and a file below the roots, as an absolute path for an MCP client. A .md, .diff, .patch or .html file is a tab of its own. A png, jpg, jpeg, webp, gif or mp4 file is one picture of a gallery tab: the entries of one label form one gallery in order, and caption is the text below its picture.',
 	schema: { type: 'object', properties: { label: { type: 'string' }, file: { type: 'string' }, caption: { type: 'string' } }, required: ['label', 'file'], additionalProperties: false },
 	cli: { flag: 'tab', pair: ['label', 'file'], more: true },
 } as const;
@@ -559,7 +559,7 @@ const viewPut = command({
 	params: [
 		{ name: 'title', type: 'string', description: 'The title above the tabs.', cli: { label: 'text' } },
 		TABS,
-		{ name: 'ttl', type: 'integer', description: 'The days the view lives: 7 by default, at most 365.', cli: { label: 'days' } },
+		{ name: 'ttl', type: 'integer', description: `The days the view lives: 7 by default, at most ${VIEW_TTL.most}.`, cli: { label: 'days' } },
 		{ name: 'replace', type: 'string', description: 'The id of a view to replace. It keeps its id, so a button sent before opens the new view.', cli: { label: 'id' } },
 		{ name: 'raw', type: 'boolean', description: "Shows each page tab as its file has it, without the theme's colours, font and body margin." },
 		DRY_RUN,
@@ -670,6 +670,7 @@ const viewDeployCommand = command({
 		{ name: 'theme', type: 'string', description: 'A shadcn cssVars theme as JSON, below the roots. It stays for later deploys.', cli: { label: 'file' } },
 		{ name: 'noTheme', type: 'boolean', description: 'Drops the stored theme.' },
 		{ name: 'route', type: 'string', description: 'A whole host of your own domain, such as views.example.com/*, in place of workers.dev. It stays for later deploys.', cli: { label: 'pattern' } },
+		{ name: 'zone', type: 'string', description: 'The Cloudflare zone of --route, such as example.com, for a host whose zone wrangler cannot infer. It stays for later deploys until --route changes.', cli: { label: 'name' } },
 		{ name: 'account', type: 'string', description: 'The Cloudflare account id, for a login with several accounts; CLOUDFLARE_ACCOUNT_ID by default. It stays for later deploys.', cli: { label: 'id' } },
 		{ name: 'rotateKeys', type: 'boolean', description: 'Replaces the upload key and the media key: every media URL signed before ends.' },
 	],
