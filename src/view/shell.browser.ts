@@ -149,7 +149,14 @@ for (const engine of [chromium, webkit])
 				Reflect.set(window, 'seen', seen);
 				strip.addEventListener('scroll', () => seen.push(Math.round((strip.scrollLeft / strip.clientWidth) * 100) / 100));
 			});
-		const passed = async (tab: Page) => ((await tab.evaluate(() => Reflect.get(window, 'seen'))) as number[]).filter((value, i, all) => value !== all[i - 1]);
+		async function passed(tab: Page) {
+			const trace = await tab.waitForFunction(() => {
+				const seen: unknown = Reflect.get(window, 'seen');
+				const strip = document.getElementById('panels');
+				return Array.isArray(seen) && strip !== null && seen.at(-1) === Math.round((strip.scrollLeft / strip.clientWidth) * 100) / 100 && seen;
+			});
+			return ((await trace.jsonValue()) as number[]).filter((value, i, all) => value !== all[i - 1]);
+		}
 		async function tapPage(tab: Page, x: number, id: string, touch: boolean) {
 			const frame = await tab.locator(frameSelector(await position(tab))).boundingBox();
 			const target = await (await preview(tab)).locator(`#${id}`).boundingBox();
