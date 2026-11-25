@@ -101,7 +101,7 @@ async function decide(chat: Chat, ref: string, spec: Question['spec'], expiresAt
 			if (answer.kind === 'choice' && answer.value === 'allow') return ALLOW;
 			return denial(`${by?.name ?? 'the user'} denied this on Telegram`);
 		}
-		if (question.status === 'closed') return denial(`the question ${ref} was closed without an answer`);
+		if (question.status === 'closed') return denial(Date.now() >= expiresAt ? 'no answer on Telegram before the deadline' : `the question ${ref} was closed without an answer`);
 		const left = expiresAt - Date.now();
 		if (left <= 0 || signal.aborted) {
 			await quietly(() => chat.close(ref, expired));
