@@ -171,11 +171,19 @@ assert.deepEqual(JSON.parse(supervised.stdout.trim()), { ended: 'exit', code: 3 
 const startedFile = join(root, 'started');
 const deadline = 30_000 + (process.pid % 1_000);
 const shell = pathToFileURL(join(dirname(bin), '..', 'commands', 'shell.js')).href;
-const owner = spawnSync(process.execPath, ['--input-type=module', '-e', `import { runShell } from ${JSON.stringify(shell)}; void runShell(${JSON.stringify(`echo started > ${startedFile}; sleep 59`)}, {}, ${deadline}); process.kill(process.pid, 'SIGKILL');`]);
+const hold = join(root, 'hold.mjs');
+const heldFile = join(root, 'held');
+writeFileSync(
+	hold,
+	`import { writeFileSync } from 'node:fs';\nconst [, script = '', , owner = ''] = process.argv;\nif (script.endsWith('supervise.js')) {\n\twhile (process.ppid === Number(owner)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);\n\twriteFileSync(${JSON.stringify(heldFile)}, '');\n}\n`,
+);
+const holdEnv = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(hold).href}`].filter(Boolean).join(' ') };
+const owner = spawnSync(process.execPath, ['--input-type=module', '-e', `import { runShell } from ${JSON.stringify(shell)}; void runShell(${JSON.stringify(`echo started > ${startedFile}; sleep 59`)}, {}, ${deadline}); process.kill(process.pid, 'SIGKILL');`], { env: holdEnv, timeout: 30_000 });
 assert.equal(owner.signal, 'SIGKILL');
 const alive = () => spawnSync('pgrep', ['-f', `supervise.js ${deadline}`]).status === 0;
 for (const until = Date.now() + 60_000; alive() && !existsSync(startedFile) && Date.now() < until; ) await new Promise((resolve) => setTimeout(resolve, 50));
 assert.equal(alive(), false);
+assert.equal(existsSync(heldFile), true);
 assert.equal(existsSync(startedFile), false);
 
 const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
