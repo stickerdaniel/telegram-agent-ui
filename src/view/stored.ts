@@ -141,7 +141,7 @@ export function parseManifest(value: unknown): ManifestRecord | undefined {
 
 export function contextIssue(body: unknown): string | undefined {
 	if (!isBody(body)) return 'a context is a body: { markdown }, { html } or { blocks }';
-	return questionBodyIssue(body);
+	return questionBodyIssue(body, LIMITS.body);
 }
 
 const isBound = (value: unknown): value is ChoiceBinding['options'][number] =>

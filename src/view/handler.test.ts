@@ -254,6 +254,15 @@ test('contexts of 2 refs on one view each come back for their own ref', async ()
 	expect((await putContext(fresh, 'ask1', { markdown: 'x' })).status).toBe(404);
 });
 
+test('a context holds a message body of up to 32,768 characters, longer than a question body', async () => {
+	const at = host();
+	await publish(at);
+	const escaped = '\\!'.repeat(1_751);
+	expect((await putContext(at, 'ask1', { markdown: escaped })).status).toBe(200);
+	expect((await open(at, `v=${ID}&q=ask1`)).context).toEqual({ markdown: escaped });
+	expect((await putContext(at, 'ask2', { markdown: 'x'.repeat(32_769) })).status).toBe(400);
+});
+
 test('one ref on two views comes back with each view its own context', async () => {
 	const at = host();
 	await publish(at, 'g1', Date.now() + DAY, ID);

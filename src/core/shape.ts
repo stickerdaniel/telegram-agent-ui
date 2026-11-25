@@ -98,8 +98,8 @@ export const messageBodyIssue = (body: Body) => bodyIssue(body, LIMITS.body);
 
 export const sameForm = (a: Body, b: Body) => ('blocks' in a && 'blocks' in b) || ('html' in a && 'html' in b) || ('markdown' in a && 'markdown' in b);
 
-export function questionBodyIssue(body: Body): string | undefined {
-	const issue = bodyIssue(body, LIMITS.questionBody);
+export function questionBodyIssue(body: Body, limit: number = LIMITS.questionBody): string | undefined {
+	const issue = bodyIssue(body, limit);
 	if (issue || 'blocks' in body) return issue;
 	const text = 'html' in body ? body.html : body.markdown;
 	if (/<\/details\s*>/i.test(text)) return 'a question body may not contain </details>';
