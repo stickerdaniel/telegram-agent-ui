@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { PAGE_BRIDGE, PAGE_BRIDGE_HASH } from './bridge.ts';
 import { BOT, ID, launchKey, MEDIA_KEY, memoryStorage, ORIGIN, UPLOAD_KEY, USER } from './fixtures.ts';
 import { createViewHandler } from './handler.ts';
 import { PLACEHOLDER_SVG } from './media.ts';
@@ -9,7 +10,7 @@ type Io = { fetch: (url: string, init: RequestInit) => Promise<Response>; sleep:
 type Lib = {
 	fetchRetry(url: string, init: RequestInit, io: Io): Promise<Response>;
 	fetchContext(url: string, init: RequestInit, io: Io): Promise<unknown>;
-	pagePrefix(origin: string, vars: Record<string, string>, dark: boolean): string;
+	pagePrefix(origin: string, vars: Record<string, string>, dark: boolean, raw: boolean, bridge: boolean): string;
 	themeBlocks(theme: unknown, dark: boolean): Record<string, string>;
 	resolveVars(names: string[], read: (name: string) => string): Record<string, string>;
 	mediaIndexes(text: string): number[];
@@ -89,11 +90,28 @@ test('a context that a storage shows after its view is asked for again, for up t
 	expect(never.clock).toEqual({ now: 10_000, asks: 10 });
 });
 
+const policy = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '${PAGE_BRIDGE_HASH}'; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src data: ${ORIGIN}; font-src data:">`;
+const theme = ':root { --background: #101010; --foreground: #fafafa; color-scheme: dark; }';
+
 test('a page starts with the doctype, the page policy of its origin and the resolved theme', () => {
-	const prefix = lib.pagePrefix(ORIGIN, { background: '#101010', foreground: '#fafafa' }, true);
-	expect(prefix.startsWith(`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src ${ORIGIN}; font-src data:">`)).toBe(true);
-	expect(prefix).toContain(':root { --background: #101010; --foreground: #fafafa; color-scheme: dark; }');
+	const prefix = lib.pagePrefix(ORIGIN, { background: '#101010', foreground: '#fafafa' }, true, false, false);
+	expect(prefix.startsWith(policy)).toBe(true);
+	expect(prefix).toContain(theme);
 	expect(prefix).not.toContain('<script');
+});
+
+test('a page of a view of several tabs runs the bridge, and a raw page gets no theme and no body rule', () => {
+	const several = lib.pagePrefix(ORIGIN, { background: '#101010', foreground: '#fafafa' }, true, false, true);
+	expect(several.startsWith(policy)).toBe(true);
+	expect(several).toContain(`<script>${PAGE_BRIDGE}</script>`);
+	expect(several).toContain(theme);
+	const raw = lib.pagePrefix(ORIGIN, { background: '#101010', foreground: '#fafafa' }, true, true, true);
+	expect(raw).toBe(`${policy}<meta name="viewport" content="width=device-width, initial-scale=1"><script>${PAGE_BRIDGE}</script>`);
+});
+
+test('the bridge hash is the sha256 of the bridge text', async () => {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(PAGE_BRIDGE));
+	expect(PAGE_BRIDGE_HASH).toBe(`sha256-${Buffer.from(digest).toString('base64')}`);
 });
 
 test('a theme block wins in its own colour scheme, and a value that could leave its declaration is dropped', () => {

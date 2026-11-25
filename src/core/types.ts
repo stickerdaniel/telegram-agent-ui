@@ -89,7 +89,7 @@ export type Publishable = { path: string; type: string; size: number; stream(): 
 export type Readable = { kind: 'ok'; files: Publishable[] } | { kind: 'refused'; code: 'outside-roots' | 'secret-file' | 'publish-root' | 'shape'; reason: string };
 
 export type StoredView = { v: 1; title?: string; tabs: { label: string; content: StoredContent }[] };
-export type StoredContent = { markdown: string; media?: Record<string, number> } | { diff: string } | { page: string } | { gallery: { media: number; type: string; caption?: string }[] };
+export type StoredContent = { markdown: string; media?: Record<string, number> } | { diff: string } | { page: string; raw?: true } | { gallery: { media: number; type: string; caption?: string }[] };
 export type PreparedView = { view: StoredView; media: { type: string; bytes: Uint8Array }[] };
 export type HostRefusal = { kind: 'refused'; reason: string; status?: number };
 

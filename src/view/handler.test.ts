@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { mergeLabels } from '../core/labels.ts';
 import type { StoredView } from '../core/types.ts';
 import { BOT, ID, launchKey, MEDIA, MEDIA_KEY, memoryStorage, ORIGIN, raw, UPLOAD_KEY, USER } from './fixtures.ts';
+import { PAGE_BRIDGE_HASH } from './bridge.ts';
 import { createViewHandler, type ViewHandlerConfig } from './handler.ts';
 import { MEDIA_WAIT, mediaPath, PLACEHOLDER_SVG } from './media.ts';
 import { decode, parseChoiceRecord, parseContext, parseManifest, parseViewRecord, VERSION } from './stored.ts';
@@ -592,7 +593,7 @@ test('the shell carries one script, the policy with its sha256, and labels and t
 	const inline = executable[1]?.[2] ?? '';
 	const hash = createHash('sha256').update(inline).digest('base64');
 	expect(response.headers.get('Content-Security-Policy')).toBe(
-		`default-src 'none'; script-src 'sha256-${hash}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src ${ORIGIN}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`,
+		`default-src 'none'; script-src 'sha256-${hash}' '${PAGE_BRIDGE_HASH}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src data: ${ORIGIN}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`,
 	);
 	const blocks = Object.fromEntries(scripts.flatMap(([, attributes, body]) => (/id="(\w+)"/.exec(attributes ?? '')?.[1] ? [[/id="(\w+)"/.exec(attributes ?? '')?.[1], JSON.parse(body ?? '')]] : [])));
 	expect(blocks.labels.choose).toBe('Wähle </script><b>');

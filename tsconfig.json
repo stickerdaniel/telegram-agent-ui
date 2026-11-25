@@ -16,5 +16,6 @@
 		"skipLibCheck": true,
 		"types": ["bun"]
 	},
-	"include": ["src", "evals"]
+	"include": ["src", "evals"],
+	"exclude": ["src/**/*.browser.ts"]
 }

@@ -501,6 +501,21 @@ test('view put makes one gallery tab of the images and mp4 videos given under on
 	expect(await run(at, ['view', 'put', '--tab', 'Shots', 'a.png', '--tab', 'Shots', 'notes.md'], { env })).toMatchObject({ code: EXIT.refused, out: { code: 'shape', message: expect.stringContaining('used twice') } });
 });
 
+test('view put --raw stores each page tab as raw, which the view host takes, and without it a page stays themed', async () => {
+	const at = await machine();
+	const env = { TELEGRAM_AGENT_UI_FAKE: join(at.work, 'fake') };
+	file(at, 'mock.html', '<h1>Mock</h1>');
+	file(at, 'notes.md', '# Notes');
+	const raw = await run(at, ['view', 'put', '--raw', '--ttl', '7', '--tab', 'A', 'mock.html', '--tab', 'Notes', 'notes.md'], { env });
+	expect(raw).toMatchObject({ code: 0 });
+	const themed = await run(at, ['view', 'put', '--ttl', '7', '--tab', 'A', 'mock.html'], { env });
+	expect(themed).toMatchObject({ code: 0 });
+	const [first, second] = await lines(at, 'fake/views.jsonl', 2);
+	expect(first?.body).toMatchObject({ view: { tabs: [{ label: 'A', content: { page: '<h1>Mock</h1>', raw: true } }, { label: 'Notes', content: { markdown: '# Notes' } }] } });
+	expect(second?.body).toMatchObject({ view: { tabs: [{ label: 'A', content: { page: '<h1>Mock</h1>' } }] } });
+	expect(JSON.stringify(second?.body)).not.toContain('raw');
+});
+
 test('an identical ask with its ref returns the stored question after its view lost the tab labels, and a changed body still conflicts', async () => {
 	const at = await machine();
 	const fake = join(at.root, 'fake');

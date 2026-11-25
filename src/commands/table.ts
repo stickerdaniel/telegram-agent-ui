@@ -561,6 +561,7 @@ const viewPut = command({
 		TABS,
 		{ name: 'ttl', type: 'integer', description: 'The days the view lives: 7 by default, at most 365.', cli: { label: 'days' } },
 		{ name: 'replace', type: 'string', description: 'The id of a view to replace. It keeps its id, so a button sent before opens the new view.', cli: { label: 'id' } },
+		{ name: 'raw', type: 'boolean', description: "Shows each page tab as its file has it, without the theme's colours, font and body margin." },
 		DRY_RUN,
 	],
 	async run(input, context) {
@@ -584,7 +585,7 @@ const viewPut = command({
 			}
 		}
 		const views = input.dryRun ? undefined : viewsOf(session);
-		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: read.tabs }, { roots: session.roots });
+		const ready = await prepareView({ ...(input.title !== undefined ? { title: input.title } : {}), tabs: read.tabs }, { roots: session.roots, ...(input.raw ? { raw: true } : {}) });
 		if (ready.kind === 'refused') return failed({ error: 'refused', code: ready.code, message: ready.reason });
 		report(context, ready.warnings);
 		const labels = read.tabs.map((tab) => tab.label);

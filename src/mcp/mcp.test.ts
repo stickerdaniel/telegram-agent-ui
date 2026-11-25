@@ -134,7 +134,7 @@ test('publish_view uploads files below the roots to the view host and refuses a 
 	const client = await fake(root, project, { roots: [project] });
 	const tool = (await client.listTools()).tools.find((candidate) => candidate.name === 'publish_view');
 	expect(tool?.description).toContain('Cloudflare account');
-	expect(Object.keys(tool?.inputSchema.properties ?? {})).toEqual(['title', 'tabs', 'ttl', 'replace', 'dryRun']);
+	expect(Object.keys(tool?.inputSchema.properties ?? {})).toEqual(['title', 'tabs', 'ttl', 'replace', 'raw', 'dryRun']);
 
 	const publish = async (file: string) => client.callTool({ name: 'publish_view', arguments: { tabs: [{ label: 'Tab', file }] } });
 	const published = json(await publish(join(project, 'mock.html')));

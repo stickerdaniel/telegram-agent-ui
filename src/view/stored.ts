@@ -77,12 +77,13 @@ function contentIssue(content: unknown, media: readonly MediaEntry[]): string | 
 	if (isRecord(content) && 'markdown' in content && Object.keys(content).every((key) => key === 'markdown' || key === 'media')) {
 		return isString(content.markdown) ? mapIssue(content.media, media) : 'markdown is text';
 	}
-	if (!isRecord(content) || Object.keys(content).length !== 1) return 'a tab content is one of markdown, diff, page and gallery';
-	if ('diff' in content) return isString(content.diff) ? undefined : 'diff is text';
-	if ('page' in content) {
+	if (isRecord(content) && 'page' in content && Object.keys(content).every((key) => key === 'page' || key === 'raw')) {
 		if (!isString(content.page)) return 'page is text';
+		if (content.raw !== undefined && content.raw !== true) return 'raw is true or absent';
 		return /<script/i.test(content.page) ? 'a page may hold no <script' : undefined;
 	}
+	if (!isRecord(content) || Object.keys(content).length !== 1) return 'a tab content is one of markdown, diff, page and gallery';
+	if ('diff' in content) return isString(content.diff) ? undefined : 'diff is text';
 	if (!('gallery' in content) || !Array.isArray(content.gallery) || content.gallery.length === 0) return 'a gallery is a list of 1 or more media';
 	for (const item of content.gallery) {
 		if (!isRecord(item) || !isNat(item.media) || !isString(item.type) || !optional(isString)(item.caption)) return 'a gallery item is { media, type, caption? }';

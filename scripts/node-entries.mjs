@@ -105,7 +105,7 @@ const stored = await viewHost(new Request(`https://views.example.com/api/view/${
 assert.equal(stored.status, 200);
 const opened = await viewHost(new Request(`https://views.example.com/api/view?v=${viewId}`, { headers: { Authorization: `tma ${initData}` } }));
 assert.deepEqual((await opened.json()).view, published.view);
-assert.match((await viewHost(new Request('https://views.example.com/'))).headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/]{43}=' https:\/\/telegram\.org/);
+assert.match((await viewHost(new Request('https://views.example.com/'))).headers.get('content-security-policy'), /script-src 'sha256-[A-Za-z0-9+/]{43}=' 'sha256-[A-Za-z0-9+/]{43}=' https:\/\/telegram\.org/);
 
 const project = join(realpathSync(root), 'project');
 mkdirSync(join(project, 'shots'), { recursive: true });

@@ -70,7 +70,7 @@ function contentIssue(content: unknown): string | undefined {
 	return content.gallery.every(item) ? undefined : 'a gallery is a list of { path, caption? }';
 }
 
-export async function prepareView(input: ViewInput, options: { roots: string[] }): Promise<Prepared> {
+export async function prepareView(input: ViewInput, options: { roots: string[]; raw?: boolean }): Promise<Prepared> {
 	const issue = inputIssue(input);
 	if (issue !== undefined) return refused(issue);
 	const cwd = process.cwd();
@@ -177,6 +177,8 @@ export async function prepareView(input: ViewInput, options: { roots: string[] }
 		return resolveImages(text, base, refs);
 	}
 
+	const pageContent = (page: string): StoredContent => (options.raw ? { page, raw: true } : { page });
+
 	async function contentOf(tab: TabInput): Promise<StoredContent | FileRefusal> {
 		const { content, label } = tab;
 		if ('file' in content) {
@@ -188,12 +190,12 @@ export async function prepareView(input: ViewInput, options: { roots: string[] }
 			if (kind === 'diff') return { diff: got.text };
 			if (kind === 'markdown') return markdownOf(got.text, base);
 			const resolved = await pageOf(got.text, base, label);
-			return 'kind' in resolved ? resolved : { page: resolved.text };
+			return 'kind' in resolved ? resolved : pageContent(resolved.text);
 		}
 		if ('markdown' in content) return markdownOf(content.markdown, resolve(cwd, content.base ?? '.'));
 		if ('page' in content) {
 			const resolved = await pageOf(content.page, resolve(cwd, content.base ?? '.'), label);
-			return 'kind' in resolved ? resolved : { page: resolved.text };
+			return 'kind' in resolved ? resolved : pageContent(resolved.text);
 		}
 		if ('diff' in content) return { diff: content.diff };
 		const gallery: { media: number; type: string; caption?: string }[] = [];

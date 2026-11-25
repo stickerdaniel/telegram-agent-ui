@@ -1,4 +1,5 @@
 import type { Labels } from '../core/types.ts';
+import { NAVIGATION_KEY, PAGE_BRIDGE, PAGE_BRIDGE_HASH } from './bridge.ts';
 import { MEDIA_URL_LIFE, PLACEHOLDER_SVG } from './media.ts';
 import type { CssVars } from './theme.ts';
 
@@ -52,8 +53,10 @@ body { background: var(--background); color: var(--foreground); font: 16px/1.5 s
 .context > :last-child { margin-bottom: 0; }
 #tabs { flex: none; display: flex; gap: 8px; padding: 12px; overflow-x: auto; scrollbar-width: none; }
 #tabs::-webkit-scrollbar { display: none; }
-#tabs button { flex: none; min-height: 40px; padding: 0 16px; border: 0; border-radius: 20px; background: var(--secondary); color: var(--secondary-foreground); font: 500 15px/1 system-ui, -apple-system, sans-serif; cursor: pointer; }
+#tabs button { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 16px; border: 0; border-radius: 20px; background: var(--secondary); color: var(--secondary-foreground); font: 500 15px/1 system-ui, -apple-system, sans-serif; cursor: pointer; }
 #tabs button[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); }
+#tabs b { flex: none; box-sizing: border-box; min-width: 28px; height: 28px; margin-left: -10px; padding: 0 8px; border-radius: 14px; display: grid; place-items: center; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 14px; font-weight: 700; }
+#tabs b:only-child { margin-right: -10px; }
 #tabs button:focus-visible, .link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 #panels { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; }
 #panels::-webkit-scrollbar { display: none; }
@@ -92,6 +95,10 @@ var RETRY = { window: ${LATE_KEY.window}, pause: ${LATE_KEY.pause} };
 var LIFE = ${MEDIA_URL_LIFE};
 var CLOSE_DELAY = ${CHOSEN_CLOSE};
 var PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent(${JSON.stringify(PLACEHOLDER_SVG)});
+var BRIDGE = ${JSON.stringify(PAGE_BRIDGE)};
+var BRIDGE_HASH = '${PAGE_BRIDGE_HASH}';
+
+${NAVIGATION_KEY}
 
 // Fetches url and asks again every RETRY.pause ms while the answer is 404, until RETRY.window ms
 // have passed since the first ask. A storage may show a new key late; the last answer counts.
@@ -139,15 +146,26 @@ function choiceId(bytes) {
 
 // The policy of a page, as the meta element in front of its markup states it.
 function pagePolicy(origin) {
-	return "default-src 'none'; style-src 'unsafe-inline'; img-src data: " + origin + '; media-src ' + origin + '; font-src data:';
+	return "default-src 'none'; script-src '" + BRIDGE_HASH + "'; style-src 'unsafe-inline'; img-src data: " + origin + '; media-src data: ' + origin + '; font-src data:';
 }
 
-// What a page's srcdoc starts with: the doctype, the page policy, a viewport and the resolved
-// theme as a :root block, with a base rule for the body.
-function pagePrefix(origin, vars, dark) {
+// What a page's srcdoc starts with: the doctype, the page policy, a viewport, the bridge in a view
+// of several tabs, and, unless the page is raw, the resolved theme as a :root block with a base
+// rule for the body.
+function pagePrefix(origin, vars, dark, raw, bridge) {
+	var head = '<!doctype html><meta http-equiv="Content-Security-Policy" content="' + pagePolicy(origin) + '"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+		(bridge ? '<script>' + BRIDGE + '<\/script>' : '');
+	if (raw) return head;
 	var lines = Object.keys(vars).map(function (name) { return '--' + name + ': ' + vars[name] + ';'; }).join(' ');
-	return '<!doctype html><meta http-equiv="Content-Security-Policy" content="' + pagePolicy(origin) + '"><meta name="viewport" content="width=device-width, initial-scale=1">' +
-		'<style>:root { ' + lines + ' color-scheme: ' + (dark ? 'dark' : 'light') + '; } body { margin: 16px; background: var(--background); color: var(--foreground); font: 16px/1.5 system-ui, -apple-system, sans-serif; }</style>';
+	return head + '<style>:root { ' + lines + ' color-scheme: ' + (dark ? 'dark' : 'light') + '; } body { margin: 16px; background: var(--background); color: var(--foreground); font: 16px/1.5 system-ui, -apple-system, sans-serif; }</style>';
+}
+
+// A tab label as a pill draws it: a tag of one or two characters, alone or before ': <title>', as
+// { badge, title }; any other label as { title }.
+function pillParts(label) {
+	var found = /^([^\s:]+)(?:: (.+))?$/.exec(label);
+	if (found && Array.from(found[1]).length <= 2) return found[2] === undefined ? { badge: found[1] } : { badge: found[1], title: found[2] };
+	return { title: label };
 }
 
 // A CSS value that cannot end a declaration, a rule or the style block, else null.
@@ -532,6 +550,8 @@ var expired = false;
 var timer = 0;
 var themed = [];
 var frames = [];
+// The share of its scroll range the shown page is at; every other page follows it.
+var ratio = 0;
 var probes = {};
 // The tabs and the open one, the binding of the question once visible, and the state of a choice:
 // sending while the host has not answered, done once it stored one, and the option and choice id
@@ -636,7 +656,10 @@ function resolved() {
 	return resolveVars(VARS.concat(themed), function (name) { return style.getPropertyValue('--' + name); });
 }
 function drawFrame(entry) {
-	entry.frame.srcdoc = pagePrefix(location.origin, resolved(), dark()) + entry.page;
+	entry.frame.srcdoc = pagePrefix(location.origin, resolved(), dark(), entry.raw, tabs.length > 1) + entry.page;
+}
+function place(entry) {
+	if (entry && entry.frame.contentWindow) entry.frame.contentWindow.postMessage({ type: 'view-position', ratio: ratio }, '*');
 }
 
 function openLink(node) {
@@ -739,7 +762,7 @@ function drawGallery(items) {
 	return list;
 }
 
-function fill(panel, content, media) {
+function fill(panel, content, media, index) {
 	if (typeof content.diff === 'string') {
 		panel.append(build({ t: 'div', k: 'diff', c: diffLines(content.diff) }));
 		return;
@@ -765,8 +788,9 @@ function fill(panel, content, media) {
 		if (expired) return;
 		if (page) {
 			var frame = document.createElement('iframe');
-			frame.setAttribute('sandbox', '');
-			var entry = { frame: frame, page: resolveMedia(content.page, urls) };
+			frame.setAttribute('sandbox', 'allow-scripts');
+			var entry = { frame: frame, page: resolveMedia(content.page, urls), raw: content.raw === true, index: index };
+			frame.addEventListener('load', function () { place(entry); });
 			frames.push(entry);
 			drawFrame(entry);
 			panel.classList.add('page');
@@ -810,20 +834,36 @@ function draw(answer) {
 	var strip = element('div');
 	strip.id = 'panels';
 	function mark(index) {
+		current = index;
 		buttons.forEach(function (button, position) { button.setAttribute('aria-selected', String(position === index)); });
 		if (buttons[index]) buttons[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+		place(frames.find(function (entry) { return entry.index === index; }));
 		bottom();
 	}
+	// A pill, a key and a tap jump to the tab; only a swipe moves the strip through the tabs between.
 	function select(index) {
 		if (index < 0 || index >= tabs.length) return;
-		strip.scrollTo({ left: index * strip.clientWidth, behavior: 'smooth' });
+		stay = 0;
+		mark(index);
+		strip.scrollTo({ left: index * strip.clientWidth, behavior: 'instant' });
+	}
+	function step(key) {
+		select((current + (key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length);
+	}
+	function move(key) {
+		step(key);
+		if (buttons[current]) buttons[current].focus({ preventScroll: true });
 	}
 	if (tabs.length > 1) {
 		var row = element('nav');
 		row.id = 'tabs';
 		row.setAttribute('role', 'tablist');
 		tabs.forEach(function (tab, index) {
-			var button = element('button', '', tab.label);
+			var button = element('button');
+			var pill = pillParts(tab.label);
+			if (pill.badge !== undefined) button.append(element('b', '', pill.badge));
+			if (pill.badge !== undefined && pill.title !== undefined) button.append(' ');
+			if (pill.title !== undefined) button.append(element('span', '', pill.title));
 			button.type = 'button';
 			button.setAttribute('role', 'tab');
 			button.addEventListener('click', function () { select(index); });
@@ -832,10 +872,10 @@ function draw(answer) {
 		});
 		parts.push(row);
 	}
-	tabs.forEach(function (tab) {
+	tabs.forEach(function (tab, index) {
 		var panel = element('section', 'panel');
 		strip.append(panel);
-		fill(panel, tab.content, answer.media);
+		fill(panel, tab.content, answer.media, index);
 	});
 	// A question answered in the view needs no hint: its bottom button names the pick, and a
 	// closed one says that it is closed.
@@ -846,15 +886,47 @@ function draw(answer) {
 	strip.scrollLeft = current * strip.clientWidth;
 	mark(current);
 	// A swipe scrolls the strip from panel to panel; content that scrolls sideways scrolls first.
-	strip.addEventListener('scroll', function () {
-		var index = Math.round(strip.scrollLeft / Math.max(1, strip.clientWidth));
-		if (index !== current) { current = index; mark(index); }
-	}, { passive: true });
-	document.addEventListener('keydown', function (event) {
-		if (event.key === 'ArrowRight') select(current + 1);
-		else if (event.key === 'ArrowLeft') select(current - 1);
+	// A key that a field of the page keeps may still scroll the strip; it stays on its tab until
+	// the next gesture or tab change.
+	var stay = 0;
+	['wheel', 'touchstart', 'pointerdown'].forEach(function (name) {
+		strip.addEventListener(name, function () { stay = 0; }, { capture: true, passive: true });
 	});
+	strip.addEventListener('scroll', function () {
+		if (performance.now() < stay) {
+			strip.scrollLeft = current * strip.clientWidth;
+			return;
+		}
+		var index = Math.round(strip.scrollLeft / Math.max(1, strip.clientWidth));
+		if (index !== current && index >= 0 && index < tabs.length) mark(index);
+	}, { passive: true });
 	window.addEventListener('resize', function () { strip.scrollLeft = current * strip.clientWidth; });
+	if (tabs.length < 2) return;
+	document.addEventListener('keydown', function (event) {
+		var key = navigationKey(event);
+		if (!key) return;
+		event.preventDefault();
+		move(key);
+	});
+	// Keys count from any page of the view; a tap and a position only from the shown one.
+	window.addEventListener('message', function (event) {
+		var entry = frames.find(function (candidate) { return candidate.frame.contentWindow === event.source; });
+		var data = event.data;
+		if (!entry || !data) return;
+		var side = data.key === 'ArrowLeft' || data.key === 'ArrowRight';
+		if (data.type === 'view-key' && side) move(data.key);
+		if (entry.index !== current) return;
+		if (data.type === 'view-tap' && side) step(data.key);
+		if (data.type === 'view-free') stay = 0;
+		if (data.type === 'view-stay') {
+			stay = performance.now() + 500;
+			strip.scrollLeft = current * strip.clientWidth;
+		}
+		if (data.type === 'view-position' && typeof data.ratio === 'number' && data.ratio >= 0 && data.ratio <= 1) {
+			ratio = data.ratio;
+			frames.forEach(function (other) { if (other !== entry) place(other); });
+		}
+	});
 }
 
 applyTheme();
@@ -897,7 +969,7 @@ export function shellScriptHash(): Promise<string> {
 }
 
 export const shellPolicy = (origin: string, hash: string) =>
-	`default-src 'none'; script-src '${hash}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${origin}; media-src ${origin}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`;
+	`default-src 'none'; script-src '${hash}' '${PAGE_BRIDGE_HASH}' https://telegram.org; style-src 'unsafe-inline'; img-src data: ${origin}; media-src data: ${origin}; font-src data:; connect-src 'self'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'`;
 
 const dataBlock = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u003c');
 

@@ -56,7 +56,7 @@ export async function launchKey() {
 	return { hex, launch };
 }
 
-export function raw(text: string, body?: Uint8Array | ReadableStream<Uint8Array>): Request {
+export function raw(text: string, body?: RequestInit['body']): Request {
 	const split = text.search(/\n[ \t]*\n/);
 	const head = (split === -1 ? text : text.slice(0, split)).trim().split('\n').map((line) => line.trim());
 	const textBody = split === -1 ? '' : text.slice(text.indexOf('\n', split + 1) + 1);

@@ -2,6 +2,7 @@ import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import { mergeLabels } from '../core/labels.ts';
 import { BOT, ID, launchKey, MEDIA, MEDIA_KEY, memoryStorage, ORIGIN, UPLOAD_KEY, USER } from './fixtures.ts';
+import { PAGE_BRIDGE, PAGE_BRIDGE_HASH } from './bridge.ts';
 import { createViewHandler } from './handler.ts';
 import { MEDIA_WAIT, PLACEHOLDER_SVG } from './media.ts';
 import { SHELL_SCRIPT } from './shell.ts';
@@ -115,13 +116,30 @@ async function openShell(
 const objectKey = `m:${ID}:g1:0`;
 const placeholderUrl = `data:image/svg+xml,${encodeURIComponent(PLACEHOLDER_SVG)}`;
 
-test('the served shell draws a page in a frame with an empty sandbox behind the page policy, on the tab of t', async () => {
+test('a pill draws a tag of one or two characters in a badge before its title, and any other label as text', async () => {
+	const labels = ['A', '12', 'C: Soft Shadow', 'Review: x', 'Zusammenfassung'];
+	const shell = await openShell(`/?v=${ID}`, () => false, { published: { media: [], tabs: labels.map((label) => ({ label, content: { markdown: label } })) } });
+	const buttons = await until(() => {
+		const found = [...shell.document.querySelectorAll('#tabs button')];
+		return found.length === labels.length && found;
+	});
+	expect(buttons.map((button) => [button.querySelector('b')?.textContent ?? null, button.querySelector('span')?.textContent ?? null, button.textContent])).toEqual([
+		['A', null, 'A'],
+		['12', null, '12'],
+		['C', 'Soft Shadow', 'C Soft Shadow'],
+		[null, 'Review: x', 'Review: x'],
+		[null, 'Zusammenfassung', 'Zusammenfassung'],
+	]);
+});
+
+test('the served shell draws a page in a frame that runs scripts alone, behind the page policy and with the bridge, on the tab of t', async () => {
 	const shell = await openShell(`/?v=${ID}&q=ask1&t=Mock`);
 	const frame = await until(() => shell.document.querySelector('iframe'));
 	expect(frame.hasAttribute('sandbox')).toBe(true);
-	expect(frame.getAttribute('sandbox')).toBe('');
+	expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
 	const srcdoc = frame.getAttribute('srcdoc') ?? '';
-	expect(srcdoc.startsWith(`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src ${ORIGIN}; font-src data:">`)).toBe(true);
+	expect(srcdoc.startsWith(`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '${PAGE_BRIDGE_HASH}'; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src data: ${ORIGIN}; font-src data:">`)).toBe(true);
+	expect(srcdoc).toContain(`<script>${PAGE_BRIDGE}</script>`);
 	expect(srcdoc).toMatch(new RegExp(`<h1>Mock</h1><img src="${ORIGIN}/m/${ID}/g1/0\\?e=\\d+&s=[A-Za-z0-9_-]{43}">$`));
 	expect(shell.requests[0]).toBe(`/api/view?v=${ID}&q=ask1`);
 	expect(shell.window.location.hash).toBe('');
@@ -135,6 +153,20 @@ test('the served shell draws a page in a frame with an empty sandbox behind the 
 	expect(notes.querySelector('td img')?.getAttribute('src')).toStartWith(`${ORIGIN}/m/${ID}/g1/0?`);
 	expect(notes.querySelectorAll('img')).toHaveLength(1);
 	expect(notes.querySelector('p > code')?.textContent).toBe('![example](a|b.png)');
+});
+
+test('a raw page tab keeps the policy and the bridge but no theme and no body rule, and the same page without raw keeps both', async () => {
+	const mock = '<h1>Mock</h1>';
+	const shell = await openShell(`/?v=${ID}`, () => false, { published: { media: [], tabs: [{ label: 'Raw', content: { page: mock, raw: true } }, { label: 'Themed', content: { page: mock } }] } });
+	const frames = await until(() => {
+		const found = [...shell.document.querySelectorAll('iframe')];
+		return found.length === 2 && found;
+	});
+	const [raw, themed] = frames.map((frame) => frame.getAttribute('srcdoc') ?? '');
+	const head = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src '${PAGE_BRIDGE_HASH}'; style-src 'unsafe-inline'; img-src data: ${ORIGIN}; media-src data: ${ORIGIN}; font-src data:"><meta name="viewport" content="width=device-width, initial-scale=1"><script>${PAGE_BRIDGE}</script>`;
+	expect(raw).toBe(`${head}${mock}`);
+	expect(themed).toStartWith(head);
+	expect(themed).toMatch(/<style>:root \{ [^<]*\} body \{ margin: 16px;[^<]*<\/style><h1>Mock<\/h1>$/);
 });
 
 test("a page's image whose load misses the object after the probe found it gets the placeholder image from the host", async () => {
