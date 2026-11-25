@@ -132,10 +132,10 @@ for (const engine of [chromium, webkit])
 				(strip: HTMLElement) =>
 					new Promise<void>((resolve) => {
 						let last = strip.scrollLeft;
-						let since = performance.now();
+						let since = Date.now();
 						const check = () => {
-							if (strip.scrollLeft !== last) [last, since] = [strip.scrollLeft, performance.now()];
-							if (performance.now() - since >= 400) resolve();
+							if (strip.scrollLeft !== last) [last, since] = [strip.scrollLeft, Date.now()];
+							if (Date.now() - since >= 400) resolve();
 							else setTimeout(check, 30);
 						};
 						check();
@@ -378,27 +378,44 @@ for (const engine of [chromium, webkit])
 			expect(await frame.locator('#count').inputValue()).toBe('19234');
 		});
 
-		test('a wheel right after an arrow in a field changes the tab, on the page and on a Markdown tab picked at once', async () => {
+		test('a wheel right after an arrow in a field changes the tab, again on the same page, after a pick of another page and on a Markdown tab', async () => {
 			const tabs: Tab[] = [
-				...['A', 'B'].map((label) => ({ label, content: page(`<h1>${label}</h1><input id="mail" type="email" value="ab@c.de">`) })),
+				...['A', 'B', 'C'].map((label) => ({ label, content: page(`<h1>${label}</h1><input id="mail" type="email" value="ab@c.de">`) })),
 				{ label: 'Notes', content: { markdown: '# Notes' } },
 			];
 			const { page: tab } = await open(tabs);
-			const wheel = async (dx: number) => {
-				const box = await tab.locator('#panels').boundingBox();
-				if (!box) throw new Error('strip missing');
-				await tab.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-				await tab.mouse.wheel(dx * box.width, 0);
+			await tab.evaluate(() => {
+				const frozen = performance.now();
+				Object.defineProperty(performance, 'now', { value: () => frozen, configurable: true });
+			});
+			const box = await tab.locator('#panels').boundingBox();
+			if (!box) throw new Error('strip missing');
+			const pill = (label: string) => tab.getByRole('tab', { name: label, exact: true });
+			const painted = () => tab.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+			const picked = (label: string) => async () => {
+				await pill(label).click();
+				await selected(tab, label);
 			};
-			await (await preview(tab, 0)).locator('#mail').click();
-			await tab.keyboard.press('ArrowRight');
-			await wheel(1);
+			const armed = async (index: number, between: () => Promise<void>, dx: number) => {
+				await (await preview(tab, index)).locator('#mail').click();
+				await tab.keyboard.press('ArrowRight');
+				await between();
+				await painted();
+				await tab.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+				await tab.mouse.wheel(dx * box.width * 0.6, 0);
+			};
+			await armed(0, async () => {}, 1);
 			await settled(tab, 'B');
-			await (await preview(tab, 1)).locator('#mail').click();
-			await tab.keyboard.press('ArrowRight');
-			await tab.getByRole('tab', { name: 'Notes', exact: true }).click();
-			await wheel(-1);
+			await pill('A').click();
+			await settled(tab, 'A');
+			await armed(0, async () => {}, 1);
 			await settled(tab, 'B');
+			await pill('A').click();
+			await settled(tab, 'A');
+			await armed(0, picked('B'), 1);
+			await settled(tab, 'C');
+			await armed(2, picked('Notes'), -1);
+			await settled(tab, 'C');
 		});
 
 		const folded = (tab: Page) =>
