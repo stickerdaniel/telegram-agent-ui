@@ -175,11 +175,12 @@ test('an Allow tap prints the allow decision alone, and a Deny tap a denial with
 test('a passed deadline closes the question and prints a denial, and a tap after it changes nothing', async () => {
 	const at = await machine();
 	await listener(at);
-	const started = Date.now();
 	const waiting = hook(at, 'claude', CLAUDE_INPUT, 2);
 	const asked = await question(at);
-	expect((await stored(at, asked.ref))?.expiresAt).toBeLessThanOrEqual(Date.now() + 2000);
-	await Bun.sleep(Math.max(0, started + 3500 - Date.now()));
+	const expiresAt = (await stored(at, asked.ref))?.expiresAt;
+	if (expiresAt === undefined) throw new Error(`question ${asked.ref} is stored without a deadline`);
+	expect(expiresAt).toBeLessThanOrEqual(Date.now() + 2000);
+	await Bun.sleep(Math.max(0, expiresAt + 1500 - Date.now()));
 	at.server.push({ callback_query: { id: 'late-tap', from: { id: 111, is_bot: false, first_name: 'Dana' }, message: structuredClone(asked.sent), chat_instance: '1', data: `q:${asked.ref}:0` } });
 	const late = await at.server.waitFor('answerCallbackQuery', (call) => call.payload.callback_query_id === 'late-tap');
 	expect(late.payload.text).toBe(defaultLabels.closed);
