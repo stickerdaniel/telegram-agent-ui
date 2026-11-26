@@ -68,6 +68,22 @@ test('fetch makes no Bot API call for an unknown id, another chat or a sender re
 	expect(reads(server).filter((call) => call.payload.file_id === 'nosuch' || call.payload.file_id === 'elsewhere')).toEqual([]);
 });
 
+test('every size of a photo is fetched, also when the last size is not the largest by area', async () => {
+	const { server, store, fetch } = setup();
+	const sizes = [
+		{ file_id: 'photo-small', file_unique_id: 'u-photo-small', file_size: 726, width: 90, height: 22 },
+		{ file_id: 'photo-wide', file_unique_id: 'u-photo-wide', file_size: 25_070, width: 1384, height: 334 },
+		{ file_id: 'photo-last', file_unique_id: 'u-photo-last', file_size: 32_235, width: 1280, height: 309 },
+	];
+	const update: unknown = { update_id: 1, message: { message_id: 701, from: { id: 111, is_bot: false, first_name: 'Dana' }, chat: { id: 111, type: 'private' }, date: 1, photo: sizes } };
+	if (!isUpdate(update)) throw new Error('no update');
+	await recordFiles(store, update);
+	for (const [index, size] of sizes.entries()) {
+		server.file(size.file_id, { unique: size.file_unique_id, path: `photos/file_${index}.jpg`, bytes: BYTES });
+		expect(await fetch(size.file_id)).toMatchObject({ kind: 'ok', id: size.file_id });
+	}
+});
+
 test('a file id whose one sender left allow is fetched while another occurrence has a sender in allow', async () => {
 	const { server, store, fetch } = setup();
 	await sent(store, 'shared', { sender: 333, message: 700 });

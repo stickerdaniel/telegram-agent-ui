@@ -102,23 +102,24 @@ export async function recordFiles(store: Store, update: Update): Promise<void> {
 	const sender = idOf(message.from);
 	if (chat === undefined || sender === undefined) return;
 	const edit = isNat(message.edit_date) ? message.edit_date : 0;
-	for (const [position, file] of filesOf(message).entries()) {
-		const occurrence: Occurrence = {
-			chat,
-			sender,
-			message: message.message_id,
-			edit,
-			position,
-			...(file.name !== undefined ? { name: file.name } : {}),
-			...(file.type !== undefined ? { type: file.type } : {}),
-			...(file.bytes !== undefined ? { bytes: file.bytes } : {}),
-		};
-		const key = await fileKey(file.id);
-		await store.lock(key, async () => {
-			const stored = parseFileRecord(await store.get(key));
-			if (stored?.occurrences.some((known) => sameOccurrence(known, occurrence))) return;
-			const record: FileRecord = stored ? { ...stored, occurrences: [...stored.occurrences, occurrence] } : { v: 1, id: file.id, unique: file.unique, kind: file.kind, occurrences: [occurrence] };
-			await store.set(key, record);
-		});
+	const photoSizes = Array.isArray(message.photo) ? message.photo.map((size) => fileOf('photo', size)).filter((size) => size !== undefined) : [];
+	for (const [position, shown] of filesOf(message).entries()) {
+		for (const file of shown.kind === 'photo' ? photoSizes : [shown]) await recordFile(store, file, { chat, sender, message: message.message_id, edit, position });
 	}
+}
+
+async function recordFile(store: Store, file: MessageFile, at: Omit<Occurrence, 'name' | 'type' | 'bytes'>): Promise<void> {
+	const occurrence: Occurrence = {
+		...at,
+		...(file.name !== undefined ? { name: file.name } : {}),
+		...(file.type !== undefined ? { type: file.type } : {}),
+		...(file.bytes !== undefined ? { bytes: file.bytes } : {}),
+	};
+	const key = await fileKey(file.id);
+	await store.lock(key, async () => {
+		const stored = parseFileRecord(await store.get(key));
+		if (stored?.occurrences.some((known) => sameOccurrence(known, occurrence))) return;
+		const record: FileRecord = stored ? { ...stored, occurrences: [...stored.occurrences, occurrence] } : { v: 1, id: file.id, unique: file.unique, kind: file.kind, occurrences: [occurrence] };
+		await store.set(key, record);
+	});
 }
