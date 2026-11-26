@@ -2,7 +2,7 @@
 
 A coding agent asks its human on Telegram, the human taps or replies on a phone, and the agent gets a typed answer.
 
-Nothing is published yet. `facts/` holds the records the design rests on.
+The package is not on npm yet. `facts/` holds the records the design rests on.
 
 ## Core
 
@@ -173,3 +173,7 @@ telegram-agent-ui hook init --client claude
 The supported setup has this hook as the only `PermissionRequest` handler that can allow, in every settings file the harness reads. A hook that fails or times out then allows nothing: Claude Code denies the call through `onFailure: "block"`, and Codex goes on with its own approval flow. Claude Code applies its deny and ask rules after an allow from the hook.
 
 The hook guards the approval against an agent that reaches Telegram only through this package's commands and MCP tools, or that the harness's sandbox confines. A process of the same user that can write the store or read the bot token can forge an approval.
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE).
