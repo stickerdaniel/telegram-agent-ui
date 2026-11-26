@@ -617,7 +617,7 @@ const viewDelete = command({
 
 const viewContext = command({
 	name: 'view context',
-	description: 'Shows a question in Markdown behind the "?" button of a view, for the ref that its message opens the view with. Writing it again replaces it.',
+	description: 'Shows a question in Markdown above the tabs of a view, for the ref that its message opens the view with. Writing it again replaces it.',
 	params: [VIEW_ID_PARAM, { name: 'ref', type: 'string', required: true, description: 'The ref of the question: 1 to 32 characters of [A-Za-z0-9_-].' }, { ...BODY, description: 'The question in Markdown.' }],
 	async run(input, context) {
 		if (!VIEW_ID.test(input.id)) return failed({ error: 'usage', message: `the view id "${input.id}" is not 22 base64url characters` });

@@ -59,13 +59,26 @@ body { background: var(--background); color: var(--foreground); font: 16px/1.5 s
 #tabs b { flex: none; box-sizing: border-box; min-width: 28px; height: 28px; margin-left: -10px; padding: 0 8px; border-radius: 14px; display: grid; place-items: center; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 14px; font-weight: 700; }
 #tabs b:only-child { margin-right: -10px; }
 #tabs [role="tablist"] { flex: none; display: flex; gap: 8px; }
-#ask { justify-content: center; width: 40px; padding: 0; border-radius: 50%; font-size: 18px; font-weight: 700; }
-#ask[aria-expanded="true"] { box-shadow: inset 0 0 0 2px currentColor; }
-#tabs button:focus-visible, .link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+#tabs button:focus-visible, #ask:focus-visible, .link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+#question { flex: none; margin: 12px 12px 0; padding: 11px 10px 11px 16px; border-radius: 20px; background: var(--secondary); color: var(--secondary-foreground); font-size: 15px; line-height: 22px; }
+#question + #stage { margin-top: 12px; }
+#question:focus { outline: none; }
+.fold { box-sizing: border-box; height: 44px; overflow: hidden; cursor: pointer; transition: height 200ms cubic-bezier(0.23, 1, 0.32, 1); -webkit-mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; }
+.fold .context { color: color-mix(in srgb, var(--secondary-foreground) 72%, transparent); transition: color 200ms ease; }
+.open .fold { height: auto; max-height: 50vh; margin-top: -3px; padding-top: 3px; overflow-x: hidden; overflow-y: auto; }
+.open .fold, .closing .fold { cursor: auto; -webkit-mask: none; mask: none; }
+.open .fold .context, .closing .fold .context, .whole .fold .context { color: inherit; }
+#question pre { overflow-x: auto; }
+.whole .fold { height: auto; cursor: auto; -webkit-mask: none; mask: none; }
+.whole #ask { display: none; }
+#ask { float: right; position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin: -3px 0 -3px 10px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--secondary-foreground) 8%, var(--secondary)); color: var(--muted-foreground); cursor: pointer; -webkit-tap-highlight-color: transparent; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+#ask::after { content: ""; position: absolute; inset: -8px; }
+.open #ask { position: sticky; top: -3px; }
+#ask:active { transform: scale(0.94); }
+#ask svg { display: block; transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+#ask[aria-expanded="true"] svg { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { #ask, #ask svg, .fold .context { transition: none; } }
 #stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
-.shield { position: absolute; inset: 0; z-index: 1; background: color-mix(in srgb, var(--foreground) 16%, transparent); }
-.sheet { position: absolute; z-index: 2; top: 0; left: 12px; right: 12px; max-height: calc(100% - 12px); box-sizing: border-box; overflow-y: auto; padding: 12px 16px; border-radius: var(--radius); background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
-.sheet:focus { outline: none; }
 #panels { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; }
 #panels::-webkit-scrollbar { display: none; }
 .panel { flex: 0 0 100%; min-width: 0; box-sizing: border-box; overflow-y: auto; scroll-snap-align: start; scroll-snap-stop: always; padding: 0 16px 16px; }
@@ -856,57 +869,121 @@ function fill(panel, content, media, index) {
 	});
 }
 
-// The question behind a round "?" button at the start of the pill row, folded until a tap opens
-// it over the page. While it is open, a layer over the page takes a tap, which closes it, so the
-// tap reaches no page, and the page takes no focus; a second tap on the button, Escape, a tap
-// elsewhere and a key that changes the tab close it too.
+// The chevron of the question's button: down while folded, turned up while open.
+function chevron() {
+	var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+	var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+	[['width', '18'], ['height', '18'], ['viewBox', '0 0 24 24'], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '2.25'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'], ['aria-hidden', 'true']].forEach(function (pair) { svg.setAttribute(pair[0], pair[1]); });
+	path.setAttribute('d', 'm6 9 6 6 6-6');
+	svg.append(path);
+	return svg;
+}
+
+// The question above the pill row: its first two lines, the text flowing around a chevron button
+// at the top right. A tap on the button or the folded text slides the rest in, pushing the page
+// down; a second tap on the button or Escape, also from a page of a view of several tabs, slides
+// it out. A question of two lines shows whole and has no button.
 function unfold(row, stage, nodes) {
-	var button = element('button', '', '?');
+	var button = element('button');
 	button.id = 'ask';
 	button.type = 'button';
 	button.setAttribute('aria-label', labels.question);
 	button.setAttribute('aria-controls', 'question');
-	var sheet = build({ t: 'div', k: 'context', c: nodes });
-	sheet.id = 'question';
-	sheet.className = 'sheet context';
-	sheet.setAttribute('role', 'dialog');
-	sheet.setAttribute('aria-label', labels.question);
-	sheet.tabIndex = -1;
-	var shield = element('div', 'shield');
-	var strip = stage.firstElementChild;
-	function show(open) {
-		button.setAttribute('aria-expanded', String(open));
-		sheet.hidden = !open;
-		shield.hidden = !open;
-		strip.inert = open;
-		var focused = document.activeElement;
-		if (open) sheet.focus({ preventScroll: true });
-		else if (!focused || focused === document.body || sheet.contains(focused)) button.focus({ preventScroll: true });
+	button.setAttribute('aria-expanded', 'false');
+	button.append(chevron());
+	var text = build({ t: 'div', k: 'context', c: nodes });
+	var fold = element('div', 'fold');
+	fold.append(button, text);
+	var box = element('section');
+	box.id = 'question';
+	box.tabIndex = -1;
+	box.setAttribute('aria-label', labels.question);
+	box.append(fold);
+	var still = window.matchMedia('(prefers-reduced-motion: reduce)');
+	var open = function () { return box.classList.contains('open'); };
+	// The links and sideways scrollers of the folded text take no focus, so Tab stays off the hidden
+	// part; focus inside it moves to the chevron.
+	function reach(folded) {
+		text.querySelectorAll('.link').forEach(function (link) { link.tabIndex = folded ? -1 : 0; });
+		text.querySelectorAll('pre, .wide').forEach(function (block) {
+			if (folded) block.tabIndex = -1;
+			else block.removeAttribute('tabindex');
+		});
+		if (folded && text.contains(document.activeElement)) button.focus({ preventScroll: true });
 	}
-	button.addEventListener('click', function () { show(sheet.hidden); });
-	shield.addEventListener('click', function () { show(false); });
-	var outside = function (event) { return !sheet.hidden && !sheet.contains(event.target) && !button.contains(event.target) && event.target !== shield; };
-	document.addEventListener('pointerdown', function (event) {
-		if (!outside(event)) return;
+	// Whole when the body, without the button beside its first line, takes two lines at most.
+	function measure() {
+		if (open() || box.classList.contains('closing')) return;
+		box.classList.add('whole');
+		box.classList.toggle('whole', fold.scrollHeight <= 2 * parseFloat(getComputedStyle(fold).lineHeight) + 1);
+		reach(!box.classList.contains('whole'));
+		if (box.classList.contains('whole') && document.activeElement === button) box.focus({ preventScroll: true });
+	}
+	// Slides the fold from its height to the other state's height. While it closes the text stays
+	// whole and unmasked, so it slides out instead of vanishing first; the folded look comes at the end.
+	function show(wanted) {
+		if (wanted === open()) return;
+		var from = fold.getBoundingClientRect().height;
+		fold.style.transition = 'none';
+		fold.style.height = '';
+		box.classList.remove('closing');
+		box.classList.toggle('open', wanted);
+		button.setAttribute('aria-expanded', String(wanted));
+		reach(!wanted);
+		if (!wanted) fold.scrollTop = 0;
+		var to = fold.getBoundingClientRect().height;
+		if (still.matches || Math.abs(from - to) < 1) {
+			fold.style.transition = '';
+			measure();
+			return;
+		}
+		if (!wanted) box.classList.add('closing');
+		fold.style.height = from + 'px';
+		fold.getBoundingClientRect();
+		fold.style.transition = '';
+		fold.style.height = to + 'px';
+	}
+	// Ends a slide once no slide of the height runs: the end of one that a later slide replaced
+	// ends nothing.
+	fold.addEventListener('transitionend', function (event) {
+		if (event.target !== fold || event.propertyName !== 'height') return;
+		if (fold.getAnimations().some(function (animation) { return animation.transitionProperty === 'height'; })) return;
+		fold.style.height = '';
+		box.classList.remove('closing');
+		measure();
+	});
+	button.addEventListener('click', function () { show(!open()); });
+	// A tap anywhere on the folded text opens it, a link in it too, which then opens nothing; a
+	// selection made in it keeps it folded.
+	fold.addEventListener('click', function (event) {
+		if (open() || box.classList.contains('whole') || button.contains(event.target)) return;
+		event.preventDefault();
+		event.stopPropagation();
+		var selection = window.getSelection();
+		if (selection && !selection.isCollapsed && text.contains(selection.anchorNode)) return;
+		show(true);
+	}, true);
+	fold.addEventListener('keydown', function (event) {
+		if (open() || box.classList.contains('whole') || event.key !== 'Enter' || !event.target.closest || !event.target.closest('.link')) return;
+		event.preventDefault();
+		event.stopPropagation();
+		show(true);
+	}, true);
+	fold.addEventListener('scroll', function () {
+		if (!open() && !box.classList.contains('closing')) fold.scrollTop = 0;
+	});
+	document.addEventListener('keydown', function (event) {
+		if (event.key !== 'Escape' || !open()) return;
 		event.preventDefault();
 		show(false);
 	}, true);
-	document.addEventListener('click', function (event) { if (outside(event)) show(false); }, true);
-	document.addEventListener('keydown', function (event) {
-		if (sheet.hidden) return;
-		if (event.key === 'Escape') {
-			event.preventDefault();
-			show(false);
-		} else if (navigationKey(event)) {
-			show(false);
-		}
-	}, true);
-	button.setAttribute('aria-expanded', 'false');
-	sheet.hidden = true;
-	shield.hidden = true;
-	row.prepend(button);
-	if (!row.isConnected) stage.before(row);
-	stage.append(shield, sheet);
+	window.addEventListener('message', function (event) {
+		if (!event.data || event.data.type !== 'view-escape') return;
+		if (frames.some(function (entry) { return entry.frame.contentWindow === event.source; })) show(false);
+	});
+	window.addEventListener('resize', measure);
+	(row.isConnected ? row : stage).before(box);
+	measure();
 }
 
 function draw(answer) {

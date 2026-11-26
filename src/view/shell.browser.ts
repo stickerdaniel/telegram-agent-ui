@@ -15,7 +15,7 @@ const DEVICES = {
 } satisfies Record<string, BrowserContextOptions>;
 type Device = keyof typeof DEVICES;
 type Tab = { label: string; content: StoredContent };
-type Options = { device?: Device; wanted?: string; answer?: unknown; delayMedia?: number; media?: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; question?: string; late?: boolean; query?: [string, string][] };
+type Options = { device?: Device; reducedMotion?: 'reduce'; wanted?: string; answer?: unknown; delayMedia?: number; media?: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; question?: string; late?: boolean; query?: [string, string][] };
 
 const page = (html: string): StoredContent => ({ page: html });
 const STYLE = '<style>html, body { margin: 0; } p, a, button, div { display: block; width: 100%; height: 40px; margin: 0; padding: 0; border: 0; }</style>';
@@ -68,7 +68,7 @@ for (const engine of [chromium, webkit])
 			expect((await upload(`/api/view/${ID}`, JSON.stringify(stored))).status).toBe(200);
 			const ask = () => upload(`/api/view/${ID}/context/ask1`, JSON.stringify({ markdown: opts.question }));
 			if (opts.question !== undefined && !opts.late) expect((await ask()).status).toBe(200);
-			context = await browser.newContext(DEVICES[opts.device ?? 'desktop']);
+			context = await browser.newContext({ ...DEVICES[opts.device ?? 'desktop'], ...(opts.reducedMotion ? { reducedMotion: opts.reducedMotion } : {}) });
 			context.setDefaultTimeout(5000);
 			const initData = await launch();
 			const requests: string[] = [];
@@ -418,137 +418,307 @@ for (const engine of [chromium, webkit])
 			await settled(tab, 'C');
 		});
 
+		const LONG = `Which **one**? ${'The page keeps the swipe and the keys while the question is open. '.repeat(6)}`;
 		const folded = (tab: Page) =>
 			tab.evaluate(() => {
-				const sheet = document.getElementById('question');
-				const shield = document.querySelector('.shield');
+				const fold = document.querySelector('#question .fold');
+				const button = document.getElementById('ask');
 				return {
-					expanded: document.getElementById('ask')?.getAttribute('aria-expanded'),
-					sheet: sheet ? getComputedStyle(sheet).display !== 'none' : null,
-					shield: shield ? getComputedStyle(shield).display !== 'none' : null,
-					focus: document.activeElement?.id,
+					expanded: button?.getAttribute('aria-expanded'),
+					button: button ? getComputedStyle(button).display !== 'none' : null,
+					height: fold ? Math.round(fold.getBoundingClientRect().height) : null,
 				};
 			});
-		const CLOSED = { expanded: 'false', sheet: false, shield: false, focus: 'ask' };
-		const OPEN = { expanded: 'true', sheet: true, shield: true, focus: 'question' };
-		const released = async (tab: Page, label: string) => {
-			await selected(tab, label);
-			expect(await folded(tab)).toMatchObject({ expanded: 'false', sheet: false, shield: false });
-			expect(await tab.evaluate(() => ({ inert: document.getElementById('panels')?.inert, focus: document.activeElement?.textContent }))).toEqual({ inert: false, focus: label });
-		};
+		const CLOSED = { expanded: 'false', button: true, height: 44 };
+		const settle = (tab: Page) => tab.waitForFunction(() => document.querySelector('#question .fold')?.getAnimations().length === 0);
 		const frameHeight = (tab: Page) => tab.locator(frameSelector(0)).evaluate((frame: HTMLElement) => frame.getBoundingClientRect().height);
 
-		test('a question starts folded behind a "?" button first in the pill row, opens over the page on a tap and closes on a second, and the page keeps its height', async () => {
-			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: 'Which **one**?' });
+		test('a question shows two lines above the pill row, flowing under the chevron, slides open on a tap and pushes the page down by its height, and a second tap closes it', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: LONG });
 			await preview(tab, 0);
-			expect(await tab.locator('#tabs > *').evaluateAll((nodes) => nodes.map((node) => node.id || node.getAttribute('role')))).toEqual(['ask', 'tablist']);
-			expect(await tab.getByRole('button', { name: 'Question', exact: true }).textContent()).toBe('?');
-			expect(await folded(tab)).toMatchObject({ expanded: 'false', sheet: false, shield: false });
-			const height = await frameHeight(tab);
-			await tab.locator('#ask').tap();
-			expect(await folded(tab)).toEqual(OPEN);
-			expect(await tab.locator('#question').textContent()).toBe('Which one?');
-			expect(await frameHeight(tab)).toBe(height);
-			await tab.locator('#ask').tap();
+			expect(await tab.locator('#view > *').evaluateAll((nodes) => nodes.map((node) => node.id || node.className))).toEqual(['question', 'tabs', 'stage', 'hint']);
 			expect(await folded(tab)).toEqual(CLOSED);
+			expect(
+				await tab.evaluate(() => {
+					const button = document.getElementById('ask')?.getBoundingClientRect();
+					const walker = document.createTreeWalker(document.querySelector('#question .context') as Node, NodeFilter.SHOW_TEXT);
+					const lines: DOMRect[] = [];
+					for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+						const range = document.createRange();
+						range.selectNodeContents(node);
+						lines.push(...[...range.getClientRects()].filter((rect) => rect.width > 0));
+					}
+					if (!button) return null;
+					const beside = lines.filter((rect) => rect.top < button.bottom - 4);
+					return { first: beside.length > 0 && beside.every((rect) => rect.right <= button.left), under: lines.some((rect) => rect.top >= button.bottom - 4 && rect.right > button.left) };
+				}),
+			).toEqual({ first: true, under: true });
+			const page = await frameHeight(tab);
+			const boxHeight = () => tab.locator('#question').evaluate((node: HTMLElement) => node.getBoundingClientRect().height);
+			const shut = await boxHeight();
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			const opened = await folded(tab);
+			expect(opened).toMatchObject({ expanded: 'true', button: true });
+			expect(opened.height ?? 0).toBeGreaterThan(44 * 2);
+			expect(await tab.locator('#question').textContent()).toBe(LONG.replace(/\*\*/g, ''));
+			expect(Math.round(page - (await frameHeight(tab)))).toBe(Math.round((await boxHeight()) - shut));
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			expect(await folded(tab)).toEqual(CLOSED);
+			expect(await frameHeight(tab)).toBe(page);
 		});
 
-		test.each([
-			['desktop', false],
-			['phone', true],
-		] as const)('on a %s, Escape, a tap on the shell and a tap on the page region close the question, and the tap on the page keeps the tab', async (device, touch) => {
-			const { page: tab } = await open(stacked([2000, 2000]), { device, question: 'Which one?' });
+		const tapAt = async (tab: Page, selector: string, dx: number, dy: number) => {
+			const box = await tab.locator(selector).boundingBox();
+			if (!box) throw new Error(`${selector} missing`);
+			await tab.touchscreen.tap(box.x + dx, box.y + dy);
+		};
+
+		test('a tap on the folded text opens the question, Escape closes it, and while it is open a pill and a key still change the tab', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: LONG });
 			await preview(tab, 0);
-			const press = async (x: number, y: number) => (touch ? tab.touchscreen.tap(x, y) : tab.mouse.click(x, y));
-			const ask = async () => {
-				const box = await tab.locator('#ask').boundingBox();
-				if (!box) throw new Error('button missing');
-				await press(box.x + box.width / 2, box.y + box.height / 2);
-			};
-			await ask();
-			await tab.keyboard.press('Escape');
-			expect(await folded(tab)).toEqual(CLOSED);
-			await ask();
-			const hint = await tab.locator('.hint').boundingBox();
-			if (!hint) throw new Error('hint missing');
-			await press(hint.x + hint.width / 2, hint.y + hint.height / 2);
-			expect(await folded(tab)).toEqual(CLOSED);
-			await ask();
-			const frame = await tab.locator(frameSelector(0)).boundingBox();
-			if (!frame) throw new Error('page missing');
-			await press(frame.x + frame.width * 0.9, frame.y + frame.height * 0.8);
-			await drain(tab);
-			expect(await folded(tab)).toEqual(CLOSED);
+			await tapAt(tab, '#question .fold', 20, 30);
+			await settle(tab);
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
+			await tab.getByRole('tab', { name: 'B', exact: true }).tap();
+			await settled(tab, 'B');
+			await tab.keyboard.press('ArrowLeft');
 			await settled(tab, 'A');
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
+			await tab.keyboard.press('Escape');
+			await settle(tab);
+			expect(await folded(tab)).toEqual(CLOSED);
 		});
 
-		test('while the question is open the page takes no focus, Escape still closes it, and a key that changes the tab closes it', async () => {
-			const tabs: Tab[] = ['A', 'B'].map((label) => ({ label, content: page(`<h1>${label}</h1><input id="field" value="abcd"><button id="under">Knopf</button>`) }));
-			const { page: tab } = await open(tabs, { question: 'Which one?' });
+		test('the question slides with a height transition, and with reduced motion it opens and closes at once', async () => {
+			const run = (tab: Page) =>
+				tab.evaluate(() => {
+					const fold = document.querySelector('#question .fold') as HTMLElement;
+					(document.getElementById('ask') as HTMLElement).click();
+					return fold.getAnimations().map((animation) => (animation as CSSTransition).transitionProperty);
+				});
+			const moving = await open(stacked([2000, 2000]), { question: LONG });
+			await moving.page.locator('#ask').waitFor();
+			expect(await run(moving.page)).toContain('height');
+			await context?.close();
+			const still = await open(stacked([2000, 2000]), { question: LONG, reducedMotion: 'reduce' });
+			await still.page.locator('#ask').waitFor();
+			expect(await run(still.page)).toEqual([]);
+			expect((await folded(still.page)).height ?? 0).toBeGreaterThan(44);
+			expect(await run(still.page)).toEqual([]);
+			expect(await folded(still.page)).toEqual(CLOSED);
+		});
+
+		test('a folded link takes no tap and no focus: a tap or Enter on it opens the question alone, and Tab skips it and a hidden code block', async () => {
+			const code = `\n\n\`\`\`\n${'x'.repeat(300)}\n\`\`\``;
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: `See [the docs](https://example.com/docs). ${LONG}${code}` });
+			await preview(tab, 0);
+			await tab.locator('#ask').focus();
+			await tab.keyboard.press('Tab');
+			expect(await tab.evaluate(() => ({ inside: document.activeElement?.closest('#question .context') ?? null, top: document.querySelector('#question .fold')?.scrollTop }))).toEqual({ inside: null, top: 0 });
+			const link = await tab.locator('#question .link').boundingBox();
+			if (!link) throw new Error('link missing');
+			await tab.touchscreen.tap(link.x + link.width / 2, link.y + link.height / 2);
+			await settle(tab);
+			expect(await tab.evaluate(() => Reflect.get(window, 'opened'))).toEqual([]);
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			await tab.locator('#question .link').focus();
+			await tab.keyboard.press('Enter');
+			await settle(tab);
+			expect(await tab.evaluate(() => Reflect.get(window, 'opened'))).toEqual([]);
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
+		});
+
+		test('the folded text stays in the accessibility tree of chromium, and Escape from a link of the open question puts focus on the chevron', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: `See [the docs](https://example.com/docs). ${LONG}` });
+			await preview(tab, 0);
+			if (engine === chromium) {
+				const { nodes } = await (await tab.context().newCDPSession(tab)).send('Accessibility.getFullAXTree');
+				expect(nodes.some((node) => String(node.name?.value ?? '').includes('The page keeps the swipe'))).toBe(true);
+			}
+			await tab.locator('#ask').click();
+			await settle(tab);
+			await tab.locator('#question .link').focus();
+			await tab.keyboard.press('Escape');
+			expect(await tab.evaluate(() => document.activeElement?.id)).toBe('ask');
+		});
+
+		test('Escape pressed in a page closes the question', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: LONG });
 			const frame = await preview(tab, 0);
 			await tab.locator('#ask').click();
-			for (const key of ['Shift+Tab', 'Shift+Tab', 'Tab', 'Tab', 'Tab']) {
-				await tab.keyboard.press(key);
-				expect(await tab.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
-			}
-			expect(await frame.evaluate(() => document.activeElement?.id ?? '')).not.toMatch(/field|under/);
-			await tab.locator('#question').focus();
+			await settle(tab);
+			await frame.locator('#button').click();
 			await tab.keyboard.press('Escape');
+			await tab.waitForFunction(() => document.getElementById('ask')?.getAttribute('aria-expanded') === 'false');
+			await settle(tab);
+			expect(await folded(tab)).toEqual(CLOSED);
+		});
+
+		test('while it closes the question shows all its text unmasked, and the folded fade comes once it is closed', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: LONG });
+			await tab.locator('#ask').click();
+			await settle(tab);
+			const mask = () =>
+				tab.evaluate(() => {
+					const style = getComputedStyle(document.querySelector('#question .fold') as Element);
+					return style.maskImage || style.webkitMaskImage;
+				});
+			expect(
+				await tab.evaluate(() => {
+					(document.getElementById('ask') as HTMLElement).click();
+					const style = getComputedStyle(document.querySelector('#question .fold') as Element);
+					return style.maskImage || style.webkitMaskImage;
+				}),
+			).toBe('none');
+			await settle(tab);
+			expect(await mask()).not.toBe('none');
+		});
+
+		test('a slide reversed halfway keeps the text unmasked until the panel is shut, and ends open or folded as last asked', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: LONG });
+			await tab.locator('#ask').waitFor();
+			const masked = await tab.evaluate(async () => {
+				const fold = document.querySelector('#question .fold') as HTMLElement;
+				const button = document.getElementById('ask') as HTMLElement;
+				button.click();
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				button.click();
+				const wrong: number[] = [];
+				const end = performance.now() + 350;
+				while (performance.now() < end) {
+					const style = getComputedStyle(fold);
+					const height = fold.getBoundingClientRect().height;
+					if ((style.maskImage || style.webkitMaskImage) !== 'none' && height > 45) wrong.push(height);
+					await new Promise((resolve) => requestAnimationFrame(resolve));
+				}
+				return wrong;
+			});
+			expect(masked).toEqual([]);
+			await settle(tab);
 			expect(await folded(tab)).toEqual(CLOSED);
 			await tab.locator('#ask').click();
-			await tab.keyboard.press('ArrowRight');
-			await released(tab, 'B');
+			await settle(tab);
+			const full = (await folded(tab)).height ?? 0;
+			await tab.evaluate(async () => {
+				const button = document.getElementById('ask') as HTMLElement;
+				button.click();
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				button.click();
+			});
+			await settle(tab);
+			expect(await folded(tab)).toEqual({ expanded: 'true', button: true, height: full });
 		});
 
-		test.each(['Enter', ' '])('a pill activated by the key %j while the question is open selects its tab and closes the question', async (key) => {
-			const { page: tab } = await open(stacked([2000, 2000]), { question: 'Which one?' });
+		test('the chevron stays in sight while a long open question scrolls, and a wide code line scrolls sideways', async () => {
+			const code = `\n\n\`\`\`\n${'x'.repeat(300)}\n\`\`\``;
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: `${LONG.repeat(4)}${code}` });
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			const sight = await tab.evaluate(() => {
+				const fold = document.querySelector('#question .fold') as HTMLElement;
+				fold.scrollTop = fold.scrollHeight;
+				const port = fold.getBoundingClientRect();
+				const button = (document.getElementById('ask') as HTMLElement).getBoundingClientRect();
+				const pre = fold.querySelector('pre') as HTMLElement;
+				pre.scrollLeft = 100;
+				return { scrolled: fold.scrollTop > 0, inside: button.top >= port.top - 1 && button.bottom <= port.bottom + 1, sideways: pre.scrollLeft };
+			});
+			expect(sight).toEqual({ scrolled: true, inside: true, sideways: 100 });
+		});
+
+		test('a resize measures the question again: three lines at 390 px show whole at 1100 px, fold again at 390 px, and show whole once closed after a resize while open', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: 'Which one? '.repeat(9) });
 			await preview(tab, 0);
-			await tab.locator('#ask').click();
-			await tab.locator('#tabs [role="tab"]').nth(1).focus();
-			await tab.keyboard.press(key === ' ' ? 'Space' : key);
-			await released(tab, 'B');
+			expect(await folded(tab)).toEqual(CLOSED);
+			await tab.setViewportSize({ width: 1100, height: 844 });
+			await tab.waitForFunction(() => getComputedStyle(document.getElementById('ask') as Element).display === 'none');
+			expect(await folded(tab)).toEqual({ expanded: 'false', button: false, height: 22 });
+			await tab.setViewportSize({ width: 390, height: 844 });
+			await tab.waitForFunction(() => getComputedStyle(document.getElementById('ask') as Element).display !== 'none');
+			expect(await folded(tab)).toEqual(CLOSED);
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			await tab.setViewportSize({ width: 1100, height: 844 });
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			expect(await folded(tab)).toEqual({ expanded: 'false', button: false, height: 22 });
 		});
 
-		test('a link in the question opens through Telegram', async () => {
-			const { page: tab } = await open(stacked([2000, 2000]), { question: 'See [the docs](https://example.com/docs).' });
+		test('a selection in the folded text keeps it folded, and an open question fits its text after a resize', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: `${LONG}\n\n### Heading\n\n${LONG}` });
+			await preview(tab, 0);
+			expect(
+				await tab.evaluate(() => {
+					const first = document.querySelector('#question .context p') as Node;
+					getSelection()?.selectAllChildren(first);
+					(document.querySelector('#question .fold') as HTMLElement).click();
+					return document.getElementById('ask')?.getAttribute('aria-expanded');
+				}),
+			).toBe('false');
+			await tab.evaluate(() => getSelection()?.removeAllRanges());
+			await tab.locator('#ask').tap();
+			await settle(tab);
+			await tab.setViewportSize({ width: 844, height: 844 });
+			await tab.waitForFunction(() => {
+				const fold = document.querySelector('#question .fold') as HTMLElement;
+				const text = fold.querySelector('.context') as HTMLElement;
+				return Math.abs(fold.getBoundingClientRect().bottom - text.getBoundingClientRect().bottom) < 1;
+			});
+		});
+
+		test('a focused link of a whole question hands focus to the chevron once a resize folds it', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: `${'Which one? '.repeat(9)}See [the docs](https://example.com/docs).` });
+			await preview(tab, 0);
+			expect(await folded(tab)).toMatchObject({ button: false });
+			await tab.locator('#question .link').focus();
+			await tab.setViewportSize({ width: 390, height: 844 });
+			await tab.waitForFunction(() => document.activeElement?.id === 'ask');
+		});
+
+		test('a link in the question opens through Telegram and leaves the question open', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: `${LONG} See [the docs](https://example.com/docs).` });
 			await tab.locator('#ask').click();
+			await settle(tab);
 			await tab.locator('#question .link').click();
 			expect(await tab.evaluate(() => Reflect.get(window, 'opened'))).toEqual(['https://example.com/docs']);
-			expect(await folded(tab)).toEqual({ ...OPEN, focus: '' });
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
 		});
 
-		test('a view of one tab shows the button alone in its row, and a view without a question shows none', async () => {
+		test('a question of two lines shows whole without a button, in a view of one tab too, and a view without a question shows none', async () => {
 			const one = await open(stacked([2000]).slice(0, 1), { question: 'Which one?' });
-			expect(await one.page.locator('#tabs > *').evaluateAll((nodes) => nodes.map((node) => node.id))).toEqual(['ask']);
-			await one.page.locator('#ask').click();
-			expect(await folded(one.page)).toEqual(OPEN);
-			await one.page.locator('#ask').click();
-			expect(await folded(one.page)).toEqual(CLOSED);
+			await preview(one.page, 0);
+			expect(await one.page.locator('#view > *').evaluateAll((nodes) => nodes.map((node) => node.id || node.className))).toEqual(['question', 'stage', 'hint']);
+			expect(await folded(one.page)).toEqual({ expanded: 'false', button: false, height: 22 });
+			expect(await one.page.locator('#question').textContent()).toBe('Which one?');
 			await context?.close();
 			const none = await open(stacked([2000, 2000]));
 			await preview(none.page, 0);
-			expect(await none.page.locator('#ask').count()).toBe(0);
+			expect(await none.page.locator('#question').count()).toBe(0);
 			expect(await none.page.locator('#tabs [role="tab"]').count()).toBe(2);
 		});
 
-		test('a question that shows late adds its button, and the page keeps its height', async () => {
-			const { page: tab } = await open(stacked([2000, 2000]), { question: 'Which one?', late: true });
+		test('a question that shows late appears above the pill row, takes its height from the page once, and opens and closes', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { question: LONG, late: true });
 			await preview(tab, 0);
 			const height = await frameHeight(tab);
 			await tab.locator('#ask').waitFor({ timeout: 15_000 });
-			expect(await folded(tab)).toMatchObject({ expanded: 'false', sheet: false, shield: false });
-			expect(await frameHeight(tab)).toBe(height);
-			await tab.locator('#ask').click();
-			expect(await folded(tab)).toEqual(OPEN);
-			await tab.keyboard.press('Escape');
 			expect(await folded(tab)).toEqual(CLOSED);
+			const box = await tab.locator('#question').evaluate((node: HTMLElement) => node.getBoundingClientRect().height + parseFloat(getComputedStyle(node).marginTop));
+			expect(Math.round(height - (await frameHeight(tab)))).toBe(Math.round(box));
 			await tab.locator('#ask').click();
-			await tab.keyboard.press('ArrowRight');
-			await released(tab, 'B');
+			await settle(tab);
+			expect(await folded(tab)).toMatchObject({ expanded: 'true' });
+			await tab.keyboard.press('Escape');
+			await settle(tab);
+			expect(await folded(tab)).toEqual(CLOSED);
 		});
 
-		test('with the button present a full-height container keeps its share across tabs', async () => {
-			const { page: tab } = await open(contained(FULL_HEIGHT), { device: 'phone', question: 'Which one?' });
+		test('with the question present a full-height container keeps its share across tabs', async () => {
+			const { page: tab } = await open(contained(FULL_HEIGHT), { device: 'phone', question: LONG });
 			await preview(tab, 0);
 			await scrollIn(tab, 0, 740, 'main');
 			const first = await share(tab, 0, 'main');
@@ -568,7 +738,7 @@ for (const engine of [chromium, webkit])
 		] as const)('an old desk button opens the tab of %s', async (_, query, label) => {
 			const { page: tab, requests } = await open(titled(), { query: query.map(([name, value]) => [name, value]) });
 			await selected(tab, label);
-			expect(await tab.locator('#ask').count()).toBe(0);
+			expect(await tab.locator('#question').count()).toBe(0);
 			expect(requests.filter((url) => url.includes('/api/view?')).every((url) => !url.includes('q='))).toBe(true);
 		});
 
@@ -595,12 +765,10 @@ for (const engine of [chromium, webkit])
 			['a ref with a link', [['q', 'Docs'], ['l', '0,4,https://example.com/docs']], 'Docs'],
 		] as const)('a q that is %s is an old question, and a ref alone asks the host', async (_, query, text) => {
 			const old = await open(titled(), { query: query.map(([name, value]) => [name, value]) });
-			await old.page.locator('#ask').click();
 			expect(await old.page.locator('#question').textContent()).toBe(text);
 			expect(old.requests.some((url) => url.includes('/api/view?') && url.includes('q='))).toBe(false);
 			await context?.close();
 			const current = await open(titled(), { question: 'From the host' });
-			await current.page.locator('#ask').click();
 			expect(await current.page.locator('#question').textContent()).toBe('From the host');
 			expect(current.requests.some((url) => url.includes('/api/view?') && url.includes('q=ask1'))).toBe(true);
 		});

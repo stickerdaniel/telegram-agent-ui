@@ -61,6 +61,7 @@ function report() {
 document.addEventListener('keydown', function (event) {
 	var key = navigationKey(event);
 	if (key) post({ type: 'view-key', key: key });
+	else if (event.key === 'Escape') post({ type: 'view-escape' });
 	else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
 		if (!held) document.addEventListener('wheel', free, blocking);
 		held = true;
@@ -118,4 +119,4 @@ document.addEventListener('toggle', report, true);
 new ResizeObserver(report).observe(document.documentElement);
 })();`;
 
-export const PAGE_BRIDGE_HASH = 'sha256-9MBZCOF3UBELE70+2LtbyyJ0SoI5CPUbjYrtQzrj7hA=';
+export const PAGE_BRIDGE_HASH = 'sha256-7oem/eTDd7ml89ffEYaaUNTgPFnDlphNFh/0uO4YF+A=';

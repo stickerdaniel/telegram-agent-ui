@@ -267,14 +267,17 @@ test('a diff tab draws one text line per line of the diff, classed by its kind',
 	expect(shell.document.querySelector('#tabs')).toBeNull();
 });
 
-test('a context that shows after the view adds a folded question behind a "?" button at the start of the pill row', async () => {
+test('a context that shows after the view adds a folded question above the pill row, with a chevron button that opens it', async () => {
 	const shell = await openShell(`/?v=${ID}&q=ask1`);
 	await until(() => shell.document.querySelector('iframe'));
-	const context = await until(() => shell.document.querySelector('.context'));
-	expect(context.textContent).toBe('Ship it?');
-	expect(context.hasAttribute('hidden')).toBe(true);
-	const button = shell.document.querySelector('#tabs')?.firstElementChild;
-	expect([button?.id, button?.textContent, button?.getAttribute('aria-label'), button?.getAttribute('aria-expanded')]).toEqual(['ask', '?', 'Question', 'false']);
+	const question = await until(() => shell.document.querySelector('#question'));
+	expect(question.querySelector('.context')?.textContent).toBe('Ship it?');
+	expect(question.nextElementSibling?.id).toBe('tabs');
+	const button = question.querySelector('#ask');
+	expect([button?.tagName, button?.getAttribute('aria-label'), button?.getAttribute('aria-controls'), button?.getAttribute('aria-expanded')]).toEqual(['BUTTON', 'Question', 'question', 'false']);
+	expect(button?.querySelector('svg')).not.toBeNull();
+	button?.dispatchEvent(new shell.window.MouseEvent('click', { bubbles: true }));
+	expect([button?.getAttribute('aria-expanded'), question.classList.contains('open')]).toEqual(['true', true]);
 	expect(shell.memory.reads.get(`c:${ID}:ask1`)).toBe(2);
 });
 
