@@ -426,7 +426,7 @@ for (const engine of [chromium, webkit])
 				return {
 					expanded: button?.getAttribute('aria-expanded'),
 					button: button ? getComputedStyle(button).display !== 'none' : null,
-					height: fold ? Math.round(fold.getBoundingClientRect().height) : null,
+					height: fold ? Math.round(fold.getBoundingClientRect().height - parseFloat(getComputedStyle(fold).paddingTop)) : null,
 				};
 			});
 		const CLOSED = { expanded: 'false', button: true, height: 44 };
@@ -453,6 +453,13 @@ for (const engine of [chromium, webkit])
 					return { first: beside.length > 0 && beside.every((rect) => rect.right <= button.left), under: lines.some((rect) => rect.top >= button.bottom - 4 && rect.right > button.left) };
 				}),
 			).toEqual({ first: true, under: true });
+			const inside = () =>
+				tab.evaluate(() => {
+					const fold = (document.querySelector('#question .fold') as HTMLElement).getBoundingClientRect();
+					const button = (document.getElementById('ask') as HTMLElement).getBoundingClientRect();
+					return button.top >= fold.top && button.bottom <= fold.bottom && button.right <= fold.right;
+				});
+			expect(await inside()).toBe(true);
 			const page = await frameHeight(tab);
 			const boxHeight = () => tab.locator('#question').evaluate((node: HTMLElement) => node.getBoundingClientRect().height);
 			const shut = await boxHeight();
@@ -463,6 +470,7 @@ for (const engine of [chromium, webkit])
 			expect(opened.height ?? 0).toBeGreaterThan(44 * 2);
 			expect(await tab.locator('#question').textContent()).toBe(LONG.replace(/\*\*/g, ''));
 			expect(Math.round(page - (await frameHeight(tab)))).toBe(Math.round((await boxHeight()) - shut));
+			expect(await inside()).toBe(true);
 			await tab.locator('#ask').tap();
 			await settle(tab);
 			expect(await folded(tab)).toEqual(CLOSED);
@@ -564,13 +572,13 @@ for (const engine of [chromium, webkit])
 			await settle(tab);
 			const mask = () =>
 				tab.evaluate(() => {
-					const style = getComputedStyle(document.querySelector('#question .fold') as Element);
+					const style = getComputedStyle(document.querySelector('#question .context') as Element);
 					return style.maskImage || style.webkitMaskImage;
 				});
 			expect(
 				await tab.evaluate(() => {
 					(document.getElementById('ask') as HTMLElement).click();
-					const style = getComputedStyle(document.querySelector('#question .fold') as Element);
+					const style = getComputedStyle(document.querySelector('#question .context') as Element);
 					return style.maskImage || style.webkitMaskImage;
 				}),
 			).toBe('none');
@@ -591,8 +599,9 @@ for (const engine of [chromium, webkit])
 				const end = performance.now() + 350;
 				while (performance.now() < end) {
 					const style = getComputedStyle(fold);
-					const height = fold.getBoundingClientRect().height;
-					if ((style.maskImage || style.webkitMaskImage) !== 'none' && height > 45) wrong.push(height);
+					const text = getComputedStyle(fold.querySelector('.context') as Element);
+					const height = fold.getBoundingClientRect().height - parseFloat(style.paddingTop);
+					if ((text.maskImage || text.webkitMaskImage) !== 'none' && height > 45) wrong.push(height);
 					await new Promise((resolve) => requestAnimationFrame(resolve));
 				}
 				return wrong;
@@ -677,6 +686,37 @@ for (const engine of [chromium, webkit])
 			await tab.locator('#question .link').focus();
 			await tab.setViewportSize({ width: 390, height: 844 });
 			await tab.waitForFunction(() => document.activeElement?.id === 'ask');
+		});
+
+		test('the view keeps its content inside the safe area and the content safe area that Telegram reports', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: LONG });
+			await preview(tab, 0);
+			const edges = await tab.evaluate(() => {
+				const root = document.documentElement.style;
+				[['safe-area-inset-top', 59], ['content-safe-area-inset-top', 46], ['safe-area-inset-bottom', 34]].forEach(([name, px]) => root.setProperty(`--tg-${name}`, `${px}px`));
+				const top = (document.getElementById('question') as HTMLElement).getBoundingClientRect().top;
+				const bottom = (document.querySelector('.hint') as HTMLElement).getBoundingClientRect().bottom;
+				return { top: Math.round(top), gap: Math.round(innerHeight - bottom) };
+			});
+			expect(edges).toEqual({ top: 59 + 46 + 12, gap: 34 });
+		});
+
+		test('in a landscape phone view with Telegram insets an open long question leaves the page in sight, and a late side inset folds it again', async () => {
+			const { page: tab } = await open(stacked([2000, 2000]), { device: 'phone', question: LONG.repeat(3) });
+			await tab.setViewportSize({ width: 844, height: 390 });
+			await preview(tab, 0);
+			await tab.evaluate(() => document.documentElement.style.setProperty('--tg-safe-area-inset-top', '70px'));
+			await tab.locator('#ask').click();
+			await settle(tab);
+			expect(await frameHeight(tab)).toBeGreaterThan(40);
+			await tab.locator('#ask').click();
+			await settle(tab);
+			await context?.close();
+			const { page: wide } = await open(stacked([2000, 2000]), { question: 'Which one? '.repeat(12) });
+			await preview(wide, 0);
+			expect(await folded(wide)).toMatchObject({ button: false });
+			await wide.evaluate(() => ['left', 'right'].forEach((side) => document.documentElement.style.setProperty(`--tg-safe-area-inset-${side}`, '300px')));
+			await wide.waitForFunction(() => getComputedStyle(document.getElementById('ask') as Element).display !== 'none');
 		});
 
 		test('a link in the question opens through Telegram and leaves the question open', async () => {

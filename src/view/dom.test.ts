@@ -39,7 +39,7 @@ const NOTES_AND_MOCK = {
 async function openShell(
 	path: string,
 	hidden = (key: string, read: number) => key === `c:${ID}:ask1` && read === 1,
-	options: { binding?: unknown; diff?: boolean; published?: { media: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; tabs: unknown[] } } = {},
+	options: { binding?: unknown; diff?: boolean; client?: { platform: string; version: string }; published?: { media: { type: string; bytes: Uint8Array<ArrayBuffer> }[]; tabs: unknown[] } } = {},
 ) {
 	const published = options.published ?? NOTES_AND_MOCK;
 	const memory = memoryStorage({ hidden });
@@ -70,6 +70,7 @@ async function openShell(
 		ready: () => void app.calls.push('ready'),
 		expand: () => void app.calls.push('expand'),
 		disableVerticalSwipes: () => void app.calls.push('disableVerticalSwipes'),
+		...(options.client ? { platform: options.client.platform, isVersionAtLeast: (version: string) => Number(options.client?.version) >= Number(version), requestFullscreen: () => void app.calls.push('requestFullscreen') } : {}),
 		close: () => void app.calls.push('close'),
 		openLink: (url: string) => void app.calls.push(`openLink ${url}`),
 		openTelegramLink: (url: string) => void app.calls.push(`openTelegramLink ${url}`),
@@ -279,6 +280,18 @@ test('a context that shows after the view adds a folded question above the pill 
 	button?.dispatchEvent(new shell.window.MouseEvent('click', { bubbles: true }));
 	expect([button?.getAttribute('aria-expanded'), question.classList.contains('open')]).toEqual(['true', true]);
 	expect(shell.memory.reads.get(`c:${ID}:ask1`)).toBe(2);
+});
+
+test.each([
+	['ios', '8.0', true],
+	['android', '9.1', true],
+	['ios', '7.10', false],
+	['tdesktop', '9.1', false],
+	['macos', '9.1', false],
+] as const)('a client on %s at version %s asks for fullscreen: %p', async (platform, version, fullscreen) => {
+	const shell = await openShell(`/?v=${ID}&q=ask1`, undefined, { client: { platform, version } });
+	await until(() => shell.document.querySelector('iframe'));
+	expect(shell.app.calls.includes('requestFullscreen')).toBe(fullscreen);
 });
 
 test("a view without a choice shows no main button and closes through Telegram's own control, a theme change rebuilds the frame, and after 2 hours the view expires", async () => {

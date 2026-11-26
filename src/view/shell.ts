@@ -46,7 +46,7 @@ const STYLE = `
 :root.dark { ${declarations('dark')} color-scheme: dark; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--background); color: var(--foreground); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
-#view { display: flex; flex-direction: column; height: 100%; }
+#view { display: flex; flex-direction: column; box-sizing: border-box; height: 100%; padding: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)) calc(var(--tg-safe-area-inset-right, 0px) + var(--tg-content-safe-area-inset-right, 0px)) calc(var(--tg-safe-area-inset-bottom, 0px) + var(--tg-content-safe-area-inset-bottom, 0px)) calc(var(--tg-safe-area-inset-left, 0px) + var(--tg-content-safe-area-inset-left, 0px)); }
 .title { flex: none; margin: 12px 16px 0; font-size: 18px; line-height: 1.3; }
 .context { overflow-wrap: anywhere; }
 .context > :first-child { margin-top: 0; }
@@ -63,13 +63,13 @@ body { background: var(--background); color: var(--foreground); font: 16px/1.5 s
 #question { flex: none; margin: 12px 12px 0; padding: 11px 10px 11px 16px; border-radius: 20px; background: var(--secondary); color: var(--secondary-foreground); font-size: 15px; line-height: 22px; }
 #question + #stage { margin-top: 12px; }
 #question:focus { outline: none; }
-.fold { box-sizing: border-box; height: 44px; overflow: hidden; cursor: pointer; transition: height 200ms cubic-bezier(0.23, 1, 0.32, 1); -webkit-mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; }
-.fold .context { color: color-mix(in srgb, var(--secondary-foreground) 72%, transparent); transition: color 200ms ease; }
-.open .fold { height: auto; max-height: 50vh; margin-top: -3px; padding-top: 3px; overflow-x: hidden; overflow-y: auto; }
-.open .fold, .closing .fold { cursor: auto; -webkit-mask: none; mask: none; }
-.open .fold .context, .closing .fold .context, .whole .fold .context { color: inherit; }
+.fold { box-sizing: border-box; height: 47px; margin-top: -3px; padding-top: 3px; overflow: hidden; cursor: pointer; transition: height 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.fold .context { color: color-mix(in srgb, var(--secondary-foreground) 72%, transparent); transition: color 200ms ease; -webkit-mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; mask: linear-gradient(#000 0 0) 0 0 / 100% 22px no-repeat, linear-gradient(to left, transparent, #000 56px) 0 22px / 100% 22px no-repeat; }
+.open .fold { --room: calc(100vh - var(--tg-safe-area-inset-top, 0px) - var(--tg-content-safe-area-inset-top, 0px) - var(--tg-safe-area-inset-bottom, 0px) - var(--tg-content-safe-area-inset-bottom, 0px)); height: auto; max-height: max(69px, min(calc(var(--room) / 2), calc(var(--room) - 230px))); overflow-x: hidden; overflow-y: auto; }
+.open .fold, .closing .fold { cursor: auto; }
+.open .fold .context, .closing .fold .context, .whole .fold .context { color: inherit; -webkit-mask: none; mask: none; }
 #question pre { overflow-x: auto; }
-.whole .fold { height: auto; cursor: auto; -webkit-mask: none; mask: none; }
+.whole .fold { height: auto; cursor: auto; }
 .whole #ask { display: none; }
 #ask { float: right; position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin: -3px 0 -3px 10px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--secondary-foreground) 8%, var(--secondary)); color: var(--muted-foreground); cursor: pointer; -webkit-tap-highlight-color: transparent; transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
 #ask::after { content: ""; position: absolute; inset: -8px; }
@@ -915,7 +915,8 @@ function unfold(row, stage, nodes) {
 	function measure() {
 		if (open() || box.classList.contains('closing')) return;
 		box.classList.add('whole');
-		box.classList.toggle('whole', fold.scrollHeight <= 2 * parseFloat(getComputedStyle(fold).lineHeight) + 1);
+		var style = getComputedStyle(fold);
+		box.classList.toggle('whole', fold.scrollHeight - parseFloat(style.paddingTop) <= 2 * parseFloat(style.lineHeight) + 1);
 		reach(!box.classList.contains('whole'));
 		if (box.classList.contains('whole') && document.activeElement === button) box.focus({ preventScroll: true });
 	}
@@ -981,7 +982,8 @@ function unfold(row, stage, nodes) {
 		if (!event.data || event.data.type !== 'view-escape') return;
 		if (frames.some(function (entry) { return entry.frame.contentWindow === event.source; })) show(false);
 	});
-	window.addEventListener('resize', measure);
+	if (typeof ResizeObserver === 'function') new ResizeObserver(measure).observe(box);
+	else window.addEventListener('resize', measure);
 	(row.isConnected ? row : stage).before(box);
 	measure();
 }
@@ -1123,6 +1125,9 @@ arm();
 document.addEventListener('visibilitychange', check);
 if (app) {
 	try { app.ready(); app.expand(); } catch (error) {}
+	if (['ios', 'android', 'android_x'].indexOf(app.platform) > -1 && typeof app.isVersionAtLeast === 'function' && app.isVersionAtLeast('8.0')) {
+		try { app.requestFullscreen(); } catch (error) {}
+	}
 	try { app.disableVerticalSwipes(); } catch (error) {}
 	invoke(main, 'onClick', function () {
 		var option = chosenOption();
